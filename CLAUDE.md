@@ -22,7 +22,7 @@ ValidationResult validatePng(const void* data, size_t dataSize);
 - `libpng/` — contains the bundled LibPNG dependency; 
 - `libpng/src/` — **strictly read-only**, never modify these files; use libpng/src/CMakeLists.txt to build the LibPNG library
 - The library must produce a `.h` header suitable for inclusion by external consumers
-- Tests live in `test/` and link against **CPPUNIT** (provided externally)
+- Tests live in `test/` and link against **CPPUNIT** (provided externally; locate with `find_library`/`find_path`, **not** `pkg-config` which is unavailable)
 
 ## Typical Build & Test Workflow
 
