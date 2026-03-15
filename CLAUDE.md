@@ -17,12 +17,15 @@ A C++23 SQLite-backed database library for an image processor. Single public cla
 database/
 ├── CLAUDE.md
 ├── README.md
-├── CMakeLists.txt              # Top-level: builds library + tests
+├── CMakeLists.txt              # Top-level: builds library, sample, and tests
 ├── include/
 │   └── database/
 │       └── Database.h          # Public header
 ├── src/
 │   └── Database.cpp            # Implementation
+├── sample/
+│   ├── CMakeLists.txt          # Builds dbcli executable
+│   └── main.cpp                # CLI sample application
 ├── sqlite/
 │   ├── CMakeLists.txt          # Builds SQLite as a static library
 │   └── src/                    # READONLY — do not modify anything here
@@ -161,6 +164,10 @@ public:
 - `target_link_libraries(database PRIVATE sqlite3_lib)`
 - `add_subdirectory(test)`
 
+**`sample/CMakeLists.txt`**:
+- `add_executable(dbcli main.cpp)`
+- `target_link_libraries(dbcli PRIVATE database)`
+
 **`test/CMakeLists.txt`**:
 - `add_executable(database_tests DatabaseTest.cpp)`
 - `target_link_libraries(database_tests PRIVATE database cppunit)`
@@ -179,6 +186,36 @@ Use CPPUnit's `TestFixture` / `TestSuite` pattern. Cover:
 7. **Multithreading**: concurrent reads, concurrent writes, mixed read/write load, verify no data corruption or deadlocks under heavy contention (use `std::thread` / `std::jthread`, run many iterations)
 
 Use temporary files (`std::filesystem::temp_directory_path()`) for test databases, clean up in `tearDown()`.
+
+## Sample CLI (`sample/main.cpp`)
+
+The `dbcli` binary demonstrates the full public API from the command line.
+
+```
+dbcli <database> <operation> [arguments...]
+```
+
+| Operation | Arguments | Effect |
+|-----------|-----------|--------|
+| `file add` | `<id> <name> <size> <ext>` | Insert a file record |
+| `file del` | `<id>` | Delete a file (cascades bindings) |
+| `file rename` | `<id> <new-name>` | Rename a file |
+| `file get` | `<id>` | Print one file record |
+| `file list` | `[--offset N] [--limit N]` | List all files, optionally paginated |
+| `file count` | | Print total file count |
+| `tag add` | `<name>` | Create a tag |
+| `tag del` | `<name>` | Delete a tag (cascades bindings) |
+| `tag list` | `[--offset N] [--limit N]` | List all tags |
+| `tag count` | | Print total tag count |
+| `bind` | `<file-id> <tag-name>` | Bind a tag to a file |
+| `unbind` | `<file-id> <tag-name>` | Remove a binding |
+| `file-tags` | `<file-id> [--offset N] [--limit N]` | List tags for a file |
+| `tag-files` | `<tag> [<tag>...] [--offset N] [--limit N]` | Files matching ALL given tags |
+
+Pagination flags (`--offset`, `--limit`) are accepted by any list operation.
+`tag-files` uses AND semantics: only files carrying every listed tag are returned.
+
+Exit codes: `0` success, `1` usage/argument error, `2` database error.
 
 ## Implementation notes
 
