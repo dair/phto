@@ -1,0 +1,2 @@
+add_executable(jpeg_validate main.cpp)
+target_link_libraries(jpeg_validate PRIVATE jpeg_validator)
