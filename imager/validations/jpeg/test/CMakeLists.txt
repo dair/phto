@@ -22,7 +22,7 @@ target_link_libraries(test_jpeg_validator PRIVATE jpeg_validator ${CPPUNIT_LIBRA
 
 # Expose the path to the bundled test JPEG so the test can load it at runtime.
 target_compile_definitions(test_jpeg_validator PRIVATE
-    "TEST_JPEG_PATH=\"${CMAKE_SOURCE_DIR}/libjpeg/src/testimg.jpg\""
+    "TEST_JPEG_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/../libjpeg/src/testimg.jpg\""
 )
 
 include(CTest)
