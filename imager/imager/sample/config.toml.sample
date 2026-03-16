@@ -1,0 +1,5 @@
+[storage]
+roots = ["/mnt/disk1/images", "/mnt/disk2/images-backup"]
+
+[database]
+path = "/var/lib/imager/imager.db"
