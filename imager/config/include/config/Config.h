@@ -5,17 +5,13 @@
 
 namespace config {
 
-struct StorageConfig {
-    std::vector<std::filesystem::path> roots; ///< At least one required
-};
-
-struct DatabaseConfig {
-    std::filesystem::path path;
+struct TargetConfig {
+    std::filesystem::path root;     ///< Storage root directory
+    std::filesystem::path database; ///< SQLite database file path
 };
 
 struct AppConfig {
-    StorageConfig  storage;
-    DatabaseConfig database;
+    std::vector<TargetConfig> targets; ///< At least one required
 };
 
 /// Parse config from a TOML file. Throws std::runtime_error on missing/invalid fields.

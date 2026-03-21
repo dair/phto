@@ -26,15 +26,14 @@ static std::string uniqueSuffix() {
         std::chrono::steady_clock::now().time_since_epoch().count());
 }
 
-/// Build a temporary AppConfig with one storage root and one db file.
+/// Build a temporary AppConfig with one target (root + database).
 static config::AppConfig makeTempConfig(const std::string& suffix = "") {
     std::string s = suffix.empty() ? uniqueSuffix() : suffix;
     fs::path base = fs::temp_directory_path() / ("imager_test_" + s);
     fs::create_directories(base / "storage");
 
     config::AppConfig cfg;
-    cfg.storage.roots.push_back(base / "storage");
-    cfg.database.path = base / "imager.db";
+    cfg.targets.push_back({base / "storage", base / "imager.db"});
     return cfg;
 }
 
@@ -109,8 +108,7 @@ public:
         std::string s = uniqueSuffix();
         m_base = fs::temp_directory_path() / ("imager_test_add_" + s);
         fs::create_directories(m_base / "storage");
-        m_cfg.storage.roots.push_back(m_base / "storage");
-        m_cfg.database.path = m_base / "imager.db";
+        m_cfg.targets.push_back({m_base / "storage", m_base / "imager.db"});
     }
 
     void tearDown() override {
@@ -186,8 +184,7 @@ public:
         std::string s = uniqueSuffix();
         m_base = fs::temp_directory_path() / ("imager_test_q_" + s);
         fs::create_directories(m_base / "storage");
-        m_cfg.storage.roots.push_back(m_base / "storage");
-        m_cfg.database.path = m_base / "imager.db";
+        m_cfg.targets.push_back({m_base / "storage", m_base / "imager.db"});
     }
 
     void tearDown() override { fs::remove_all(m_base); }
@@ -256,8 +253,7 @@ public:
         std::string s = uniqueSuffix();
         m_base = fs::temp_directory_path() / ("imager_test_tag_" + s);
         fs::create_directories(m_base / "storage");
-        m_cfg.storage.roots.push_back(m_base / "storage");
-        m_cfg.database.path = m_base / "imager.db";
+        m_cfg.targets.push_back({m_base / "storage", m_base / "imager.db"});
     }
 
     void tearDown() override { fs::remove_all(m_base); }
@@ -330,8 +326,7 @@ public:
         std::string s = uniqueSuffix();
         m_base = fs::temp_directory_path() / ("imager_test_del_" + s);
         fs::create_directories(m_base / "storage");
-        m_cfg.storage.roots.push_back(m_base / "storage");
-        m_cfg.database.path = m_base / "imager.db";
+        m_cfg.targets.push_back({m_base / "storage", m_base / "imager.db"});
     }
 
     void tearDown() override { fs::remove_all(m_base); }
@@ -373,9 +368,8 @@ public:
         m_base = fs::temp_directory_path() / ("imager_test_mr_" + s);
         fs::create_directories(m_base / "root1");
         fs::create_directories(m_base / "root2");
-        m_cfg.storage.roots.push_back(m_base / "root1");
-        m_cfg.storage.roots.push_back(m_base / "root2");
-        m_cfg.database.path = m_base / "imager.db";
+        m_cfg.targets.push_back({m_base / "root1", m_base / "imager1.db"});
+        m_cfg.targets.push_back({m_base / "root2", m_base / "imager2.db"});
     }
 
     void tearDown() override { fs::remove_all(m_base); }
@@ -412,8 +406,7 @@ public:
         std::string s = uniqueSuffix();
         m_base = fs::temp_directory_path() / ("imager_test_conc_" + s);
         fs::create_directories(m_base / "storage");
-        m_cfg.storage.roots.push_back(m_base / "storage");
-        m_cfg.database.path = m_base / "imager.db";
+        m_cfg.targets.push_back({m_base / "storage", m_base / "imager.db"});
     }
 
     void tearDown() override { fs::remove_all(m_base); }

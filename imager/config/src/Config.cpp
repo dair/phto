@@ -17,29 +17,36 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
             + "': " + e.what());
     }
 
-    AppConfig cfg;
-
-    // [storage].roots — required, non-empty array of strings
-    auto* roots = tbl["storage"]["roots"].as_array();
-    if (!roots || roots->empty()) {
+    auto* targetsArr = tbl["targets"].as_array();
+    if (!targetsArr || targetsArr->empty()) {
         throw std::runtime_error(
-            "Config: [storage].roots must be a non-empty array of path strings");
-    }
-    for (const auto& el : *roots) {
-        const auto* sv = el.as_string();
-        if (!sv) {
-            throw std::runtime_error(
-                "Config: each entry in [storage].roots must be a string");
-        }
-        cfg.storage.roots.emplace_back(sv->get());
+            "Config: [[targets]] must be a non-empty array of tables");
     }
 
-    // [database].path — required string
-    auto dbPath = tbl["database"]["path"].value<std::string>();
-    if (!dbPath) {
-        throw std::runtime_error("Config: [database].path is required");
+    AppConfig cfg;
+    cfg.targets.reserve(targetsArr->size());
+
+    for (const auto& el : *targetsArr) {
+        const auto* t = el.as_table();
+        if (!t) {
+            throw std::runtime_error(
+                "Config: each entry in [[targets]] must be a table");
+        }
+
+        auto root = (*t)["root"].value<std::string>();
+        if (!root) {
+            throw std::runtime_error(
+                "Config: each [[targets]] entry must have a 'root' string");
+        }
+
+        auto database = (*t)["database"].value<std::string>();
+        if (!database) {
+            throw std::runtime_error(
+                "Config: each [[targets]] entry must have a 'database' string");
+        }
+
+        cfg.targets.push_back({*root, *database});
     }
-    cfg.database.path = *dbPath;
 
     return cfg;
 }

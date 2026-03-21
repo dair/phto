@@ -6,11 +6,13 @@ add_library(libimager
     src/JpegValidatorImpl.cpp
     src/PngValidatorImpl.cpp
     src/Imager.cpp
+    src/MultiDatabase.cpp
 )
 
 target_include_directories(libimager
     PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/coro"
 )
 
 target_link_libraries(libimager

@@ -1,0 +1,87 @@
+#pragma once
+
+#include "config/Config.h"
+#include "database/Database.h"
+#include "coro/Task.h"
+#include "coro/ThreadPool.h"
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace imager {
+
+/// Owns N db::Database instances (one per target) and fans out every write
+/// operation to all of them in parallel using coroutines.
+///
+/// All write operations are all-or-nothing: if any DB fails, compensation
+/// is applied to the already-succeeded DBs and the exception is rethrown.
+///
+/// All read operations go to m_dbs[0] (the first database).
+class MultiDatabase {
+public:
+    explicit MultiDatabase(const std::vector<config::TargetConfig>& targets);
+    ~MultiDatabase();
+
+    MultiDatabase(const MultiDatabase&)            = delete;
+    MultiDatabase& operator=(const MultiDatabase&) = delete;
+
+    // --- Write operations (all-or-nothing, parallel across all DBs) ---
+
+    void addFile(const std::string& id, const std::string& name,
+                 uint64_t size, const std::string& ext);
+
+    void deleteFile(const std::string& id);
+
+    void editFileName(const std::string& id, const std::string& newName);
+
+    void addTag(const std::string& name);
+
+    void deleteTag(const std::string& name);
+
+    void bindTag(const std::string& fileId, const std::string& tagName);
+
+    void unbindTag(const std::string& fileId, const std::string& tagName);
+
+    // --- Read operations (from first DB only) ---
+
+    std::optional<db::File> getFile(const std::string& id);
+    std::vector<db::File>   getAllFiles(std::optional<db::Pagination> page = std::nullopt);
+    bool                    fileExists(const std::string& id);
+    uint64_t                fileCount();
+
+    std::vector<std::string> getAllTags(std::optional<db::Pagination> page = std::nullopt);
+    bool                     tagExists(const std::string& name);
+    uint64_t                 tagCount();
+
+    std::vector<std::string> getTagsForFile(
+        const std::string&        fileId,
+        std::optional<db::Pagination> page = std::nullopt);
+
+    std::vector<db::File> getFilesByTags(
+        const std::vector<std::string>& tagNames,
+        std::optional<db::Pagination>   page = std::nullopt);
+
+private:
+    std::vector<std::unique_ptr<db::Database>> m_dbs;
+    coro::ThreadPool                           m_pool;
+
+    // --- Internal coroutine helpers ---
+
+    /// Dispatch op to all DBs in parallel. On any failure, apply compensate to
+    /// succeeded DBs (also in parallel), then rethrow the first exception.
+    template <typename Op, typename Compensate>
+    void parallelWriteAll(Op&& op, Compensate&& compensate);
+
+    /// Overload without compensation (for operations that are safe to leave
+    /// partially applied, or where compensation is handled by the caller).
+    template <typename Op>
+    void parallelWriteAll(Op&& op);
+
+    /// Build one Task<void> per DB that schedules onto the pool and runs op.
+    template <typename Op>
+    std::vector<coro::Task<void>> makeTasks(Op& op);
+};
+
+} // namespace imager

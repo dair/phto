@@ -1,7 +1,7 @@
 #include "imager/Imager.h"
 #include "imager/ImageValidator.h"
 
-#include "database/Database.h"
+#include "MultiDatabase.h"
 #include "Hasher.h"
 #include "FileStorage.h"
 #include "Validators.h"
@@ -20,16 +20,24 @@ namespace imager {
 // ---------------------------------------------------------------------------
 
 struct Imager::Impl {
-    db::Database                                          db;
+    MultiDatabase                                         dbs;
     FileStorage                                           storage;
     std::vector<std::unique_ptr<validation::IValidator>>  validators;
     std::mutex                                            writeMutex;
 
     explicit Impl(const config::AppConfig& cfg)
-        : db(cfg.database.path)
-        , storage(cfg.storage.roots)
+        : dbs(cfg.targets)
+        , storage(extractRoots(cfg.targets))
         , validators(createDefaultValidators())
     {}
+
+    static std::vector<std::filesystem::path> extractRoots(
+            const std::vector<config::TargetConfig>& targets) {
+        std::vector<std::filesystem::path> roots;
+        roots.reserve(targets.size());
+        for (const auto& t : targets) roots.push_back(t.root);
+        return roots;
+    }
 
     const validation::IValidator* findValidator(const std::string& ext) const {
         for (const auto& v : validators)
@@ -50,7 +58,6 @@ struct Imager::Impl {
         return ext;
     }
 
-    // Convert db::File + tags into ImageInfo
     static ImageInfo toImageInfo(const db::File& f,
                                   std::vector<std::string> tags = {}) {
         return ImageInfo{f.id, f.name, f.size, f.ext, std::move(tags)};
@@ -100,7 +107,7 @@ AddResult Imager::addImage(const uint8_t* data, size_t size,
 
     // 4. Duplicate check
     try {
-        if (m_impl->db.fileExists(id))
+        if (m_impl->dbs.fileExists(id))
             return {ErrorCode::DuplicateFile, "", "File already exists: " + id};
     } catch (const db::DatabaseException& e) {
         return {ErrorCode::DatabaseError, "", e.what()};
@@ -114,16 +121,13 @@ AddResult Imager::addImage(const uint8_t* data, size_t size,
                 std::string("Storage write failed: ") + e.what()};
     }
 
-    // 6. Insert into database
+    // 6. Insert into all databases (parallel)
     try {
-        m_impl->db.addFile(id, filename, size, ext);
+        m_impl->dbs.addFile(id, filename, size, ext);
     } catch (const db::DatabaseException& e) {
         if (e.code() == db::DatabaseErrorCode::ConstraintViolation) {
-            // Race: another thread added the same file concurrently.
-            // The file on disk is valid — do NOT clean it up.
             return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
         }
-        // Other DB error — roll back storage
         m_impl->storage.deleteFile(id, ext);
         return {ErrorCode::DatabaseError, "", e.what()};
     }
@@ -137,9 +141,9 @@ AddResult Imager::addImage(const uint8_t* data, size_t size,
 
 std::optional<ImageInfo> Imager::getImage(const std::string& id) {
     try {
-        auto f = m_impl->db.getFile(id);
+        auto f = m_impl->dbs.getFile(id);
         if (!f) return std::nullopt;
-        auto tags = m_impl->db.getTagsForFile(id);
+        auto tags = m_impl->dbs.getTagsForFile(id);
         return Impl::toImageInfo(*f, std::move(tags));
     } catch (const db::DatabaseException&) {
         return std::nullopt;
@@ -156,11 +160,11 @@ std::vector<ImageInfo> Imager::getImagesByTags(
 
     if (tags.empty()) return {};
     try {
-        auto files = m_impl->db.getFilesByTags(tags, db::Pagination{offset, limit});
+        auto files = m_impl->dbs.getFilesByTags(tags, db::Pagination{offset, limit});
         std::vector<ImageInfo> result;
         result.reserve(files.size());
         for (const auto& f : files) {
-            auto fileTags = m_impl->db.getTagsForFile(f.id);
+            auto fileTags = m_impl->dbs.getTagsForFile(f.id);
             result.push_back(Impl::toImageInfo(f, std::move(fileTags)));
         }
         return result;
@@ -178,7 +182,7 @@ ErrorCode Imager::deleteImage(const std::string& id) {
 
     std::optional<db::File> file;
     try {
-        file = m_impl->db.getFile(id);
+        file = m_impl->dbs.getFile(id);
     } catch (const db::DatabaseException&) {
         return ErrorCode::DatabaseError;
     }
@@ -188,7 +192,7 @@ ErrorCode Imager::deleteImage(const std::string& id) {
     const std::string ext = file->ext;
 
     try {
-        m_impl->db.deleteFile(id); // cascades file_tag rows
+        m_impl->dbs.deleteFile(id); // cascades file_tag rows, parallel across DBs
     } catch (const db::DatabaseException& e) {
         if (e.code() == db::DatabaseErrorCode::NotFound)
             return ErrorCode::FileNotFound;
@@ -205,20 +209,18 @@ ErrorCode Imager::deleteImage(const std::string& id) {
 
 ErrorCode Imager::tagImage(const std::string& id, const std::string& tag) {
     try {
-        m_impl->db.bindTag(id, tag);
+        m_impl->dbs.bindTag(id, tag);
         return ErrorCode::Ok;
     } catch (const db::DatabaseException& e) {
         if (e.code() == db::DatabaseErrorCode::NotFound)
             return ErrorCode::FileNotFound;
-        if (e.code() == db::DatabaseErrorCode::ConstraintViolation)
-            return ErrorCode::DatabaseError; // already tagged or bad ref
         return ErrorCode::DatabaseError;
     }
 }
 
 ErrorCode Imager::untagImage(const std::string& id, const std::string& tag) {
     try {
-        m_impl->db.unbindTag(id, tag);
+        m_impl->dbs.unbindTag(id, tag);
         return ErrorCode::Ok;
     } catch (const db::DatabaseException& e) {
         if (e.code() == db::DatabaseErrorCode::NotFound)
@@ -229,7 +231,7 @@ ErrorCode Imager::untagImage(const std::string& id, const std::string& tag) {
 
 std::vector<std::string> Imager::getImageTags(const std::string& id) {
     try {
-        return m_impl->db.getTagsForFile(id);
+        return m_impl->dbs.getTagsForFile(id);
     } catch (const db::DatabaseException&) {
         return {};
     }
@@ -242,7 +244,7 @@ std::vector<std::string> Imager::getImageTags(const std::string& id) {
 std::vector<uint8_t> Imager::getImageData(const std::string& id) {
     std::optional<db::File> file;
     try {
-        file = m_impl->db.getFile(id);
+        file = m_impl->dbs.getFile(id);
     } catch (const db::DatabaseException&) {
         return {};
     }
@@ -256,18 +258,18 @@ std::vector<uint8_t> Imager::getImageData(const std::string& id) {
 
 ErrorCode Imager::createTag(const std::string& name) {
     try {
-        m_impl->db.addTag(name);
+        m_impl->dbs.addTag(name);
         return ErrorCode::Ok;
     } catch (const db::DatabaseException& e) {
         if (e.code() == db::DatabaseErrorCode::ConstraintViolation)
-            return ErrorCode::DatabaseError; // already exists
+            return ErrorCode::DatabaseError;
         return ErrorCode::DatabaseError;
     }
 }
 
 ErrorCode Imager::deleteTag(const std::string& name) {
     try {
-        m_impl->db.deleteTag(name);
+        m_impl->dbs.deleteTag(name);
         return ErrorCode::Ok;
     } catch (const db::DatabaseException& e) {
         if (e.code() == db::DatabaseErrorCode::NotFound)
@@ -278,7 +280,7 @@ ErrorCode Imager::deleteTag(const std::string& name) {
 
 std::vector<std::string> Imager::listTags(uint32_t offset, uint32_t limit) {
     try {
-        return m_impl->db.getAllTags(db::Pagination{offset, limit});
+        return m_impl->dbs.getAllTags(db::Pagination{offset, limit});
     } catch (const db::DatabaseException&) {
         return {};
     }
@@ -290,11 +292,11 @@ std::vector<std::string> Imager::listTags(uint32_t offset, uint32_t limit) {
 
 std::vector<ImageInfo> Imager::listImages(uint32_t offset, uint32_t limit) {
     try {
-        auto files = m_impl->db.getAllFiles(db::Pagination{offset, limit});
+        auto files = m_impl->dbs.getAllFiles(db::Pagination{offset, limit});
         std::vector<ImageInfo> result;
         result.reserve(files.size());
         for (const auto& f : files) {
-            auto tags = m_impl->db.getTagsForFile(f.id);
+            auto tags = m_impl->dbs.getTagsForFile(f.id);
             result.push_back(Impl::toImageInfo(f, std::move(tags)));
         }
         return result;
@@ -305,7 +307,7 @@ std::vector<ImageInfo> Imager::listImages(uint32_t offset, uint32_t limit) {
 
 uint64_t Imager::imageCount() {
     try {
-        return m_impl->db.fileCount();
+        return m_impl->dbs.fileCount();
     } catch (const db::DatabaseException&) {
         return 0;
     }
