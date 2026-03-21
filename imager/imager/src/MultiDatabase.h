@@ -19,9 +19,13 @@ namespace imager {
 /// is applied to the already-succeeded DBs and the exception is rethrown.
 ///
 /// All read operations go to m_dbs[0] (the first database).
+///
+/// The thread pool is provided externally (owned by Imager::Impl) so that
+/// all components share a single pool rather than competing with separate ones.
 class MultiDatabase {
 public:
-    explicit MultiDatabase(const std::vector<config::TargetConfig>& targets);
+    explicit MultiDatabase(const std::vector<config::TargetConfig>& targets,
+                           coro::ThreadPool& pool);
     ~MultiDatabase();
 
     MultiDatabase(const MultiDatabase&)            = delete;
@@ -65,23 +69,13 @@ public:
 
 private:
     std::vector<std::unique_ptr<db::Database>> m_dbs;
-    coro::ThreadPool                           m_pool;
+    coro::ThreadPool&                          m_pool; // not owned — shared with Imager::Impl
 
-    // --- Internal coroutine helpers ---
-
-    /// Dispatch op to all DBs in parallel. On any failure, apply compensate to
-    /// succeeded DBs (also in parallel), then rethrow the first exception.
     template <typename Op, typename Compensate>
     void parallelWriteAll(Op&& op, Compensate&& compensate);
 
-    /// Overload without compensation (for operations that are safe to leave
-    /// partially applied, or where compensation is handled by the caller).
     template <typename Op>
     void parallelWriteAll(Op&& op);
-
-    /// Build one Task<void> per DB that schedules onto the pool and runs op.
-    template <typename Op>
-    std::vector<coro::Task<void>> makeTasks(Op& op);
 };
 
 } // namespace imager

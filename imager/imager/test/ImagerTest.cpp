@@ -117,8 +117,7 @@ public:
 
     void testAddJpeg() {
         Imager img(m_cfg);
-        auto jpeg = makeMinimalJpeg();
-        auto res = img.addImage(jpeg.data(), jpeg.size(), "photo.jpg");
+        auto res = img.addImage(Blob::fromVector(makeMinimalJpeg()), "photo.jpg");
         // May succeed or return BrokenFile if the hand-crafted JPEG is not
         // fully valid — both are acceptable; just not UnsupportedFormat.
         CPPUNIT_ASSERT(res.code != ErrorCode::UnsupportedFormat);
@@ -127,9 +126,8 @@ public:
 
     void testAddMp4() {
         Imager img(m_cfg);
-        auto mp4 = makeFakeMP4();
         // MP4 is accepted by extension only — no deep validation
-        auto res = img.addImage(mp4.data(), mp4.size(), "clip.mp4");
+        auto res = img.addImage(Blob::fromVector(makeFakeMP4()), "clip.mp4");
         CPPUNIT_ASSERT(res.code == ErrorCode::Ok || res.code == ErrorCode::StorageError);
         if (res.code == ErrorCode::Ok) {
             CPPUNIT_ASSERT(!res.id.empty());
@@ -139,26 +137,25 @@ public:
 
     void testUnsupportedFormat() {
         Imager img(m_cfg);
-        std::vector<uint8_t> data = {0x01, 0x02, 0x03};
-        auto res = img.addImage(data.data(), data.size(), "file.bmp");
+        auto res = img.addImage(Blob::fromVector({0x01, 0x02, 0x03}), "file.bmp");
         CPPUNIT_ASSERT_EQUAL(ErrorCode::UnsupportedFormat, res.code);
     }
 
     void testDuplicateDetection() {
         Imager img(m_cfg);
-        auto mp4 = makeFakeMP4();
-        auto r1 = img.addImage(mp4.data(), mp4.size(), "clip.mp4");
+        auto blob = Blob::fromVector(makeFakeMP4()); // same data for both adds
+        auto r1 = img.addImage(blob, "clip.mp4");
         if (r1.code != ErrorCode::Ok) return; // storage may fail in sandbox
 
-        auto r2 = img.addImage(mp4.data(), mp4.size(), "clip_copy.mp4");
+        auto r2 = img.addImage(blob, "clip_copy.mp4");
         CPPUNIT_ASSERT_EQUAL(ErrorCode::DuplicateFile, r2.code);
     }
 
     void testBrokenJpeg() {
         Imager img(m_cfg);
         // SOI marker but then garbage
-        std::vector<uint8_t> bad = {0xFF, 0xD8, 0x00, 0x00, 0x00, 0x00};
-        auto res = img.addImage(bad.data(), bad.size(), "bad.jpg");
+        auto res = img.addImage(Blob::fromVector({0xFF, 0xD8, 0x00, 0x00, 0x00, 0x00}),
+                                "bad.jpg");
         CPPUNIT_ASSERT_EQUAL(ErrorCode::BrokenFile, res.code);
     }
 };
@@ -206,8 +203,7 @@ public:
 
     void testAddAndQuery() {
         Imager img(m_cfg);
-        auto mp4 = makeFakeMP4();
-        auto r = img.addImage(mp4.data(), mp4.size(), "video.mp4");
+        auto r = img.addImage(Blob::fromVector(makeFakeMP4()), "video.mp4");
         if (r.code != ErrorCode::Ok) return; // skip if storage fails
 
         CPPUNIT_ASSERT_EQUAL(uint64_t(1), img.imageCount());
@@ -244,7 +240,7 @@ class TagTest : public CppUnit::TestFixture {
         auto mp4 = makeFakeMP4();
         // Vary content slightly to avoid dedup
         mp4.push_back(static_cast<uint8_t>(name.size()));
-        auto r = img.addImage(mp4.data(), mp4.size(), name + ".mp4");
+        auto r = img.addImage(Blob::fromVector(std::move(mp4)), name + ".mp4");
         if (r.code == ErrorCode::Ok) m_id = r.id;
     }
 
@@ -333,8 +329,7 @@ public:
 
     void testDeleteExisting() {
         Imager img(m_cfg);
-        auto mp4 = makeFakeMP4();
-        auto r = img.addImage(mp4.data(), mp4.size(), "del_test.mp4");
+        auto r = img.addImage(Blob::fromVector(makeFakeMP4()), "del_test.mp4");
         if (r.code != ErrorCode::Ok) return;
 
         CPPUNIT_ASSERT_EQUAL(uint64_t(1), img.imageCount());
@@ -376,8 +371,7 @@ public:
 
     void testFileWrittenToAllRoots() {
         Imager img(m_cfg);
-        auto mp4 = makeFakeMP4();
-        auto r = img.addImage(mp4.data(), mp4.size(), "multi.mp4");
+        auto r = img.addImage(Blob::fromVector(makeFakeMP4()), "multi.mp4");
         if (r.code != ErrorCode::Ok) return;
 
         // File should exist in both roots
@@ -426,7 +420,7 @@ public:
                     // Make each file unique
                     mp4.push_back(static_cast<uint8_t>(t));
                     mp4.push_back(static_cast<uint8_t>(i));
-                    auto r = img.addImage(mp4.data(), mp4.size(),
+                    auto r = img.addImage(Blob::fromVector(std::move(mp4)),
                                           "t" + std::to_string(t)
                                           + "_" + std::to_string(i) + ".mp4");
                     if (r.code == ErrorCode::Ok) ++successes;
