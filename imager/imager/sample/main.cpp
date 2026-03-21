@@ -114,11 +114,12 @@ int main(int argc, char* argv[]) {
             if (rest.empty()) { std::cerr << "add requires <file>\n"; return 1; }
             std::ifstream f(rest[0], std::ios::binary);
             if (!f) { std::cerr << "Cannot open: " << rest[0] << '\n'; return 1; }
-            std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)),
-                                       std::istreambuf_iterator<char>());
+            std::vector<uint8_t> raw((std::istreambuf_iterator<char>(f)),
+                                      std::istreambuf_iterator<char>());
             // Use only the filename component
             std::filesystem::path p(rest[0]);
-            auto result = img.addImage(data.data(), data.size(), p.filename().string());
+            auto result = img.addImage(Blob::fromVector(std::move(raw)),
+                                       p.filename().string());
             if (result.code == ErrorCode::Ok)
                 std::cout << "Added: " << result.id << '\n';
             else

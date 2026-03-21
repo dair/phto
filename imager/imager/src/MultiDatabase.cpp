@@ -3,17 +3,15 @@
 #include "coro/BlockOn.h"
 #include "coro/WhenAll.h"
 
-#include <algorithm>
-#include <thread>
-
 namespace imager {
 
 // ---------------------------------------------------------------------------
 // Constructor / destructor
 // ---------------------------------------------------------------------------
 
-MultiDatabase::MultiDatabase(const std::vector<config::TargetConfig>& targets)
-    : m_pool(std::max<size_t>(targets.size(), 2u))
+MultiDatabase::MultiDatabase(const std::vector<config::TargetConfig>& targets,
+                              coro::ThreadPool& pool)
+    : m_pool(pool)
 {
     m_dbs.reserve(targets.size());
     for (const auto& t : targets)
@@ -25,21 +23,6 @@ MultiDatabase::~MultiDatabase() = default;
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-template <typename Op>
-std::vector<coro::Task<void>> MultiDatabase::makeTasks(Op& op) {
-    std::vector<coro::Task<void>> tasks;
-    tasks.reserve(m_dbs.size());
-    for (auto& dbPtr : m_dbs) {
-        tasks.push_back(
-            [](coro::ThreadPool& pool, db::Database& db, Op& op_) -> coro::Task<void> {
-                co_await pool.schedule();
-                op_(db);
-            }(m_pool, *dbPtr, op)
-        );
-    }
-    return tasks;
-}
 
 template <typename Op, typename Compensate>
 void MultiDatabase::parallelWriteAll(Op&& op, Compensate&& compensate) {

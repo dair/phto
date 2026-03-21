@@ -6,7 +6,7 @@
 
 namespace imager {
 
-std::string computeSha256(const uint8_t* data, size_t size) {
+std::string computeSha256(const Blob& blob) {
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
     if (!ctx) throw std::runtime_error("EVP_MD_CTX_new failed");
 
@@ -15,10 +15,10 @@ std::string computeSha256(const uint8_t* data, size_t size) {
         throw std::runtime_error("EVP_DigestInit_ex failed");
     }
 
-    // Process in 64 KB chunks (matters for large files passed by pointer)
+    // Process in 64 KB chunks
     constexpr size_t CHUNK = 64u * 1024u;
-    const uint8_t* ptr     = data;
-    size_t remaining       = size;
+    const uint8_t* ptr     = blob.data();
+    size_t remaining       = blob.size();
     while (remaining > 0) {
         size_t n = (remaining < CHUNK) ? remaining : CHUNK;
         if (EVP_DigestUpdate(ctx, ptr, n) != 1) {

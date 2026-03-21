@@ -3,7 +3,6 @@
 #include "imager/Types.h"
 #include "config/Config.h"
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -22,10 +21,10 @@ public:
 
     // ---- Core operations ----
 
-    /// Add an image/video from raw data.
+    /// Add an image/video from a Blob.
     /// Validates format, computes SHA256, checks for duplicates,
-    /// writes to all storage roots synchronously, then inserts into DB.
-    AddResult addImage(const uint8_t* data, size_t size, const std::string& filename);
+    /// writes to all storage roots, then inserts into all DBs.
+    AddResult addImage(const Blob& blob, const std::string& filename);
 
     /// Get image metadata + tags by ID. Returns nullopt if not found.
     std::optional<ImageInfo> getImage(const std::string& id);
@@ -51,7 +50,7 @@ public:
     std::vector<std::string> getImageTags(const std::string& id);
 
     /// Get raw image data (reads from first available storage root).
-    std::vector<uint8_t> getImageData(const std::string& id);
+    Blob getImageData(const std::string& id);
 
     /// Create a new tag.
     ErrorCode createTag(const std::string& name);
