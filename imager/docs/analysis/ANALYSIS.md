@@ -1,93 +1,132 @@
-# Imager Phase 1 Review (per top-level `CLAUDE.md`)
+# Imager Development Analysis
 
 ## Scope
-This review compares the current codebase against the Phase 1 requirements in the top-level `CLAUDE.md`. It covers:
 
-- Core facade (`imager/`)
-- Config parsing (`config/`)
-- Database library (`database/`)
-- Validation libraries (`validations/jpeg`, `validations/png`)
-- Build system consistency
-- Tests (CPPUnit)
+This document compares the current implementation against the plan documents in `docs/plan/`:
 
-## High-level assessment
-The core Phase 1 functionality is largely implemented and aligned with the specification: config parsing via toml++, SQLite-backed database with thread safety, JPEG/PNG validation wrappers, SHA256 hashing, multi-root storage, and a facade with the required API. There are a few correctness and spec-compliance gaps that should be addressed, mainly around input validation, directory naming consistency, and subproject CMake version mismatches. Test coverage is strong for the database and acceptable for the facade; config parsing lacks tests.
+- `0001.INITIAL.md`
+- `0002.DATABASES.md`
+- `0003.PARALLELIZING.md`
 
-## Compliance vs. requirements
+It reflects the code currently present under `config/`, `database/`, `imager/`, and `validations/`, not the older Phase 1 analysis.
 
-### Config (TOML)
-Status: **Mostly compliant**
+## High-level status
 
-- `loadConfig` uses toml++ and enforces required `[storage].roots` and `[database].path`. Good.
-- Throws `std::runtime_error` on invalid/missing fields as specified.
-- No tests for config parsing (not required explicitly, but a gap for robustness).
+The codebase is no longer at the `0001` baseline. It has already implemented most of the structural changes proposed in `0002` and a meaningful subset of `0003`:
 
-### Database library
-Status: **Compliant**
+- Config has moved from `[storage]` + `[database]` to `[[targets]]`.
+- The facade uses `MultiDatabase` with one SQLite DB per target.
+- The facade includes a custom coroutine layer (`Task`, `ThreadPool`, `whenAll`, `blockOn`).
+- `Blob` has replaced raw `const uint8_t*` input for shared-ownership binary data.
+- `addImage`, multi-root file writes, multi-database writes, and tag enrichment for list/search paths are parallelized.
 
-- SQLite bundled and built from source with `SQLITE_THREADSAFE=1`.
-- Thread safety: `std::shared_mutex`, WAL mode, `busy_timeout=5000`.
-- Schema matches spec and foreign keys are enabled.
-- Uses prepared statements with bound parameters.
-- API covers required CRUD, associations, pagination, and recommended methods.
-- Tests include construction, CRUD, pagination, error paths, and multithreading.
+In short: development is materially ahead of `0001`, largely aligned with `0002`, and partially aligned with `0003`.
 
-### Validation libraries (JPEG/PNG)
-Status: **Mostly compliant**
+## Match To `0001.INITIAL.md`
 
-- Expose single functions `validateJpeg` / `validatePng` with `ValidationResult` enum.
-- Use libjpeg/libpng bundled sources and link static libs.
-- Tests exist and are wired with CTest.
-- PNG test follows "no pkg-config" requirement; JPEG test optionally uses pkg-config (not prohibited in JPEG CLAUDE, but inconsistent with PNG guidance).
+Status: **Implemented, but superseded in some areas**
 
-### Facade (`libimager`)
-Status: **Mostly compliant**
+Implemented from the initial plan:
 
-- `Imager` exposes required core operations plus additional APIs.
-- Implements validation, SHA256 hashing, duplicate detection, and DB insert.
-- Multi-root storage is synchronous with rollback on partial write.
-- Uses validators through a common `IValidator` interface as specified.
+- `libimager` facade exists with the expected core operations plus additional tag/list/count APIs.
+- SQLite-backed metadata storage exists and is covered by tests.
+- JPEG and PNG validation wrappers exist and are linked into the facade.
+- SHA-256 hashing exists via OpenSSL.
+- Redundant file storage across multiple roots exists.
+- Duplicate detection exists.
+- CPPUnit-based tests exist for the database, validators, and facade.
+- Top-level CMake uses C++23 and builds all major subprojects.
 
-## Gaps and issues
+Where the implementation has moved beyond `0001`:
 
-### 1) Null/size validation in `addImage` (correctness)
-`Imager::addImage` does not validate `data` for null when `size > 0`. For video extensions (which bypass validation), a null pointer will be passed into the hashing function and can cause undefined behavior. This violates robust handling for malformed inputs.
+- The original single database path model has been replaced by per-target databases.
+- The public `addImage` API no longer takes raw pointer + size; it takes `Blob`.
+- The facade now includes coroutine-based internal parallelism.
 
-Impact: potential crash or undefined behavior on invalid caller input.
+Remaining drift against `0001`:
 
-### 2) Empty storage roots can silently succeed (correctness)
-`FileStorage::writeFile` does nothing if `m_roots` is empty. `Imager::addImage` will then insert into the DB without storing any file content. The config loader enforces at least one root, but `Imager` can be constructed directly with an empty config.
+- `0001` and `docs/plan/README.md` still describe validation libraries under `validation/`, but the repository uses `validations/`.
+- `imager/imager/sample/config.toml.sample` still shows the old `[storage]` / `[database]` format, which no longer matches `config::loadConfig`.
+- The initial plan emphasized streaming from disk for very large files; current hashing is chunked internally but still operates on an in-memory `Blob`, so true end-to-end streaming ingestion is not implemented.
 
-Impact: data loss if `Imager` is constructed programmatically without validated config.
+## Match To `0002.DATABASES.md`
 
-### 3) Directory naming mismatch (`validation` vs `validations`) (spec compliance)
-Top-level `CLAUDE.md` specifies `validation/` as the directory name. The repo uses `validations/`, and CMake points there. This is a spec mismatch, even though the build works as written.
+Status: **Largely implemented**
 
-Impact: documentation drift and potential confusion for contributors.
+Implemented from `0002`:
 
-### 4) CMake minimum versions in validation subprojects (spec compliance)
-Top-level CLAUDE expects CMake ≥ 3.28 and references 4.2.3 compatibility. The JPEG and PNG validation subprojects declare lower minimums (`3.15` and `3.14...4.2`).
+- `config::AppConfig` now contains `std::vector<TargetConfig>` with `root` and `database`.
+- `config::loadConfig` requires non-empty `[[targets]]` and validates `root` / `database` string fields.
+- `MultiDatabase` exists and owns one `db::Database` per target.
+- Multi-database write operations are fanned out in parallel through coroutines.
+- Write paths include compensation logic for rollback on partial failure.
+- Read operations are intentionally served from the first database only.
+- Coroutine primitives exist in `imager/src/coro/`: `Task.h`, `ThreadPool.h`, `WhenAll.h`, `BlockOn.h`.
+- `Imager` constructs and shares a single thread pool across storage and database work.
 
-Impact: not a functional defect, but inconsistent with stated toolchain requirements.
+Notable details that match the plan well:
 
-### 5) Hashing is chunked but still requires full data in memory (design mismatch)
-The spec stresses streaming file hashing to avoid loading multi-GB files. The current API accepts an in-memory buffer and hashes it in chunks. This is reasonable for the API shape, but it does not satisfy the “never load entire file” intent when the data originates from disk.
+- `MultiDatabase::addFile`, `deleteFile`, `editFileName`, `addTag`, `deleteTag`, `bindTag`, and `unbindTag` all use all-or-nothing fan-out semantics.
+- `FileStorage` and `MultiDatabase` both use the same coroutine/thread-pool model, which is consistent with the direction of `0002`.
 
-Impact: API design does not support streaming from disk; large files must be fully loaded by the caller.
+Gaps or deviations from `0002`:
 
-### 6) N+1 query pattern in tag-based queries (performance risk)
-`Imager::getImagesByTags` fetches files by tags, then issues `getTagsForFile` per file. This scales poorly for large result sets.
+- The plan called for dedicated config parser tests for `[[targets]]`; there is no config test suite today.
+- `loadConfig` validates presence and shape, but does not detect duplicate roots/databases or perform stronger semantic validation.
+- The sample config file was not updated to the new format, which is a concrete documentation bug.
+- `MultiDatabase` assumes at least one target/database and reads from `m_dbs[0]`; the config parser enforces this, but direct programmatic construction with an empty target list would still be unsafe.
 
-Impact: performance degradation on tag-heavy queries; not explicitly forbidden but worth noting for large libraries.
+## Match To `0003.PARALLELIZING.md`
 
-## Notable alignments and strengths
+Status: **Partially implemented, core pieces present**
 
-- Storage sharding uses first two hex chars of SHA256 as required.
-- Validator adapters correctly translate `ValidationResult` into `validation::ValidationResult` with error messages.
-- Database error mapping for duplicate file insert uses constraint detection and avoids deleting already-written files (acceptable for same-content duplicates).
-- Tests cover multi-root storage, concurrency, deduplication, tag workflows, and DB multithreading.
+Implemented from `0003`:
 
-## Overall conclusion
-Phase 1 is largely complete and functionally aligned with the requirements in `CLAUDE.md`. The primary correctness risks are around missing input validation in `addImage` and the possibility of silent success with empty storage roots. The main spec-compliance issues are documentation and toolchain inconsistencies (directory naming and CMake minimums), plus a design mismatch with the “streaming hashing” intent.
+- `Blob` exists under `imager/include/imager/types/Blob.h` and is re-exported from `Types.h`.
+- `Imager::addImage` now takes `const Blob&`.
+- `Hasher` now hashes a `Blob`.
+- `FileStorage::readFile` returns `Blob`.
+- `Imager::getImageData` returns `Blob`.
+- Image validation and hashing run concurrently in `Imager::addImage`.
+- `FileStorage::writeFileAsync` writes to all roots in parallel and rolls back successful writes if any root fails.
+- `FileStorage::deleteFileAsync` deletes from all roots in parallel.
+- `listImages` and `getImagesByTags` parallelize per-file tag fetching through `Impl::enrichWithTags`.
 
-If these gaps are addressed, the implementation would be solidly compliant with the stated Phase 1 requirements.
+What appears intentionally not implemented yet from `0003`:
+
+- There is no broader public async facade; coroutine usage remains internal and is bridged back to synchronous APIs with `blockOn`.
+- `getImage` remains sequential, which matches the plan's guidance.
+- `getImageData` remains sequential, which also matches the plan's guidance.
+
+Remaining gaps or risks relative to `0003`:
+
+- `Blob::freeze()` is advisory only; there is no enforcement preventing writes after freezing.
+- `Blob::fromVector` still performs a copy from the input vector, so adoption is not zero-copy.
+- The coroutine helpers rely on the documented assumption that tasks suspend before completion; this matches current usage, but it is a fragile invariant for future contributors.
+- There is no dedicated test coverage focused on the coroutine primitives or parallel rollback paths under injected failures.
+
+## Current strengths
+
+- The current architecture is coherent: shared thread pool, shared `Blob` ownership model, parallel storage writes, and parallel database fan-out fit together cleanly.
+- Database functionality is well covered by tests, including multithreading.
+- The existing build in `imager/build` is green: `ctest` passes all four test targets (`DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `ImagerTests`).
+- The facade implementation is ahead of the planning docs rather than behind them.
+
+## Current issues and documentation drift
+
+Most important current mismatches between code and docs:
+
+1. `docs/analysis/ANALYSIS.md` was outdated and described the old single-database model.
+2. `imager/imager/sample/config.toml.sample` still uses the removed `[storage]` / `[database]` format.
+3. `docs/plan/README.md` and `0001.INITIAL.md` still refer to `validation/` while the repository layout is `validations/`.
+4. Config parsing has no dedicated tests despite being a key compatibility boundary.
+
+## Conclusion
+
+The current state of development is best described as:
+
+- `0001`: complete in substance, but no longer the active shape of the code.
+- `0002`: mostly implemented.
+- `0003`: partially implemented with the main architectural pieces already in place.
+
+The main remaining work is not the original Phase 1 feature set. It is cleanup and hardening around the newer architecture: updating stale docs/examples, adding config and coroutine-focused tests, and deciding whether the project really wants true streaming ingestion rather than an in-memory `Blob` pipeline.
