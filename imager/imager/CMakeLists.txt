@@ -12,13 +12,14 @@ add_library(libimager
 target_include_directories(libimager
     PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/coro"
 )
 
 target_link_libraries(libimager
     PUBLIC
+        blob_lib
         config_lib
     PRIVATE
+        coro_lib
         database
         jpeg_validator
         png_validation

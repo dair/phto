@@ -18,6 +18,8 @@ FetchContent_MakeAvailable(tomlplusplus)
 
 enable_testing()
 
+add_subdirectory(blob)
+add_subdirectory(coro)
 add_subdirectory(database)
 add_subdirectory(validations/jpeg)
 add_subdirectory(validations/png)
