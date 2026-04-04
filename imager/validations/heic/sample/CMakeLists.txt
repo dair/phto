@@ -1,0 +1,2 @@
+add_executable(heic_validate main.cpp)
+target_link_libraries(heic_validate PRIVATE heic_validator)

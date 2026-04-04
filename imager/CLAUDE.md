@@ -22,9 +22,10 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 ├── coro/          # Header-only coroutine primitives: Task<T>, ThreadPool, whenAll, blockOn (namespace coro)
 ├── config/        # TOML config parser (toml++ via FetchContent)
 ├── database/      # SQLite wrapper (bundled SQLite, has its own CLAUDE.md)
-├── validations/   # Format validators (bundled libjpeg/libpng, each has CLAUDE.md)
+├── validations/   # Format validators (bundled libjpeg/libpng, system libheif; each has CLAUDE.md)
 │   ├── jpeg/
-│   └── png/
+│   ├── png/
+│   └── heic/
 ├── imager/        # Facade library (libimager) — ties everything together
 │   ├── src/
 │   │   ├── MultiDatabase.cpp   # All-or-nothing parallel writes across per-target DBs
@@ -35,7 +36,7 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 │   └── test/
 ├── metrics/       # Lock-free monitoring: Histogram, Counter, Gauge, Timer (namespace metrics)
 └── docs/
-    ├── plan/      # Design documents (0001–0006)
+    ├── plan/      # Design documents (0001–0007)
     └── analysis/  # Implementation analysis
 ```
 
@@ -47,6 +48,7 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 | libjpeg | JPEG validation | Bundled in `validations/jpeg/libjpeg/src/` — DO NOT use system libjpeg |
 | libpng | PNG validation | Bundled in `validations/png/libpng/src/` — DO NOT use system libpng |
 | OpenSSL | SHA256 hashing | System — `find_package(OpenSSL REQUIRED)` |
+| libheif | HEIC/HEIF validation | System — `find_package(libheif REQUIRED)` |
 | toml++ | Config parsing | FetchContent from GitHub |
 | CPPUnit | Testing | System dependency |
 

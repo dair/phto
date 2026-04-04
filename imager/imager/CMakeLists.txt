@@ -5,6 +5,7 @@ add_library(libimager
     FileStorage.cpp
     JpegValidatorImpl.cpp
     PngValidatorImpl.cpp
+    HeicValidatorImpl.cpp
     Imager.cpp
     MultiDatabase.cpp
 )
@@ -24,6 +25,7 @@ target_link_libraries(libimager
         database
         jpeg_validator
         png_validation
+        heic_validator
         OpenSSL::Crypto
 )
 

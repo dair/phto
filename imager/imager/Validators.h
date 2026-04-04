@@ -7,15 +7,17 @@
 
 namespace imager {
 
-/// Factory: returns one IValidator per image format (JPEG, PNG).
-/// Implemented in JpegValidatorImpl.cpp and PngValidatorImpl.cpp.
+/// Factory: returns one IValidator per image format (JPEG, PNG, HEIC/HEIF).
+/// Implemented in JpegValidatorImpl.cpp, PngValidatorImpl.cpp, and HeicValidatorImpl.cpp.
 std::unique_ptr<validation::IValidator> createJpegValidator();
 std::unique_ptr<validation::IValidator> createPngValidator();
+std::unique_ptr<validation::IValidator> createHeicValidator();
 
 inline std::vector<std::unique_ptr<validation::IValidator>> createDefaultValidators() {
   std::vector<std::unique_ptr<validation::IValidator>> v;
   v.push_back(createJpegValidator());
   v.push_back(createPngValidator());
+  v.push_back(createHeicValidator());
   return v;
 }
 
