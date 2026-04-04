@@ -16,20 +16,43 @@ namespace coro {
 // co_await pool.schedule(). blockOn just starts the chain and waits.
 // ---------------------------------------------------------------------------
 
+// TerminalAwaiter signals 'sem' from within await_suspend.
+//
+// Why: when a co_await reaches its suspension point, the compiler writes the
+// "suspended here" state into the coroutine frame BEFORE calling await_suspend.
+// By releasing the semaphore from inside await_suspend, we guarantee that this
+// write has happened-before the calling thread wakes up and destroys the frame.
+// Releasing the semaphore from the coroutine body (after co_await task) would
+// leave a window where the compiler-generated frame write for the subsequent
+// final_suspend still races with the calling thread's frame destruction.
+struct TerminalAwaiter {
+  std::binary_semaphore& sem;
+
+  bool await_ready() noexcept {
+    return false;
+  }
+
+  void await_suspend(std::coroutine_handle<>) noexcept {
+    sem.release();
+  }
+
+  void await_resume() noexcept {}
+};
+
 template<typename T>
 T blockOn(ThreadPool& /*pool*/, Task<T> task) {
   std::binary_semaphore done{0};
   std::optional<T> result;
   std::exception_ptr error;
 
-  // Wrapper coroutine: runs the inner task, then signals the semaphore.
+  // Wrapper coroutine: runs the inner task, then signals via TerminalAwaiter.
   auto wrapper = [&]() -> Task<void> {
     try {
       result = co_await std::move(task);
     } catch (...) {
       error = std::current_exception();
     }
-    done.release();
+    co_await TerminalAwaiter{done};
   };
 
   auto w = wrapper();
@@ -56,7 +79,7 @@ inline void blockOn(ThreadPool& /*pool*/, Task<void> task) {
     } catch (...) {
       error = std::current_exception();
     }
-    done.release();
+    co_await TerminalAwaiter{done};
   };
 
   auto w = wrapper();

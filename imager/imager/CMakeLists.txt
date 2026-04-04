@@ -6,6 +6,8 @@ add_library(libimager
     JpegValidatorImpl.cpp
     PngValidatorImpl.cpp
     HeicValidatorImpl.cpp
+    NefValidatorImpl.cpp
+    MovValidatorImpl.cpp
     Imager.cpp
     MultiDatabase.cpp
 )
@@ -26,6 +28,8 @@ target_link_libraries(libimager
         jpeg_validator
         png_validation
         heic_validator
+        nef_validator
+        mov_validator
         OpenSSL::Crypto
 )
 

@@ -29,6 +29,11 @@ target_include_directories(imager_tests
     PRIVATE ${CPPUNIT_INCLUDE_DIRS}
 )
 
+target_compile_definitions(imager_tests PRIVATE
+    NEF_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../validations/nef/test/fixtures"
+    MOV_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../validations/mov/test/fixtures"
+)
+
 target_link_libraries(imager_tests
     PRIVATE
         libimager

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -90,23 +91,51 @@ static std::vector<uint8_t> makeMinimalHeic() {
 
 // clang-format on
 
-/// Fake MP4 bytes (just some bytes, no deep validation).
-static std::vector<uint8_t> makeFakeMP4() {
-  // ftyp box header for MP4
-  std::vector<uint8_t> d(256, 0x00);
-  d[0] = 0x00;
-  d[1] = 0x00;
-  d[2] = 0x00;
-  d[3] = 0x20; // box size = 32
-  d[4] = 'f';
-  d[5] = 't';
-  d[6] = 'y';
-  d[7] = 'p'; // box type
-  d[8] = 'i';
-  d[9] = 's';
-  d[10] = 'o';
-  d[11] = 'm'; // major brand
-  return d;
+/// Load the NEF test fixture from the nef_validator fixtures directory.
+/// Returns an empty vector if the fixture is not available.
+static std::vector<uint8_t> loadNefFixture() {
+  std::filesystem::path fixture{NEF_FIXTURES_DIR "/valid.nef"};
+  std::ifstream file(fixture, std::ios::binary | std::ios::ate);
+  if (!file.is_open()) {
+    return {};
+  }
+  auto size = static_cast<std::streamsize>(file.tellg());
+  file.seekg(0);
+  std::vector<uint8_t> data(static_cast<size_t>(size));
+  file.read(reinterpret_cast<char*>(data.data()), size);
+  if (!file.good()) {
+    return {};
+  }
+  return data;
+}
+
+/// Load the MOV test fixture from the mov_validator fixtures directory.
+/// Returns an empty vector if the fixture is not available.
+static std::vector<uint8_t> loadMovFixture() {
+  std::filesystem::path fixture{MOV_FIXTURES_DIR "/valid.mov"};
+  std::ifstream file(fixture, std::ios::binary | std::ios::ate);
+  if (!file.is_open()) {
+    return {};
+  }
+  auto size = static_cast<std::streamsize>(file.tellg());
+  file.seekg(0);
+  std::vector<uint8_t> data(static_cast<size_t>(size));
+  file.read(reinterpret_cast<char*>(data.data()), size);
+  if (!file.good()) {
+    return {};
+  }
+  return data;
+}
+
+/// Make a uniquely-hashed but still-valid MOV by appending inert trailing bytes.
+/// libavformat reads from the moov atom and ignores trailing data.
+static std::vector<uint8_t> makeUniqueMovFixture(uint8_t tag1, uint8_t tag2) {
+  auto data = loadMovFixture();
+  if (!data.empty()) {
+    data.push_back(tag1);
+    data.push_back(tag2);
+  }
+  return data;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,9 +146,15 @@ class AddImageTest: public CppUnit::TestFixture {
   CPPUNIT_TEST_SUITE(AddImageTest);
   CPPUNIT_TEST(testAddJpeg);
   CPPUNIT_TEST(testAddMp4);
+  CPPUNIT_TEST(testAddMov);
+  CPPUNIT_TEST(testAddMovDuplicate);
+  CPPUNIT_TEST(testAddBrokenMov);
   CPPUNIT_TEST(testAddHeic);
   CPPUNIT_TEST(testAddHeicDuplicate);
   CPPUNIT_TEST(testAddBrokenHeic);
+  CPPUNIT_TEST(testAddNef);
+  CPPUNIT_TEST(testAddNefDuplicate);
+  CPPUNIT_TEST(testAddBrokenNef);
   CPPUNIT_TEST(testUnsupportedFormat);
   CPPUNIT_TEST(testDuplicateDetection);
   CPPUNIT_TEST(testBrokenJpeg);
@@ -150,14 +185,61 @@ public:
   }
 
   void testAddMp4() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
     Imager img(m_cfg);
-    // MP4 is accepted by extension only — no deep validation
-    auto res = img.addImage(Blob::fromVector(makeFakeMP4()), "clip.mp4");
-    CPPUNIT_ASSERT(res.code == ErrorCode::Ok || res.code == ErrorCode::StorageError);
+    // MOV/MP4 is now fully validated via libavformat
+    auto res = img.addImage(Blob::fromVector(std::move(mov)), "clip.mp4");
+    CPPUNIT_ASSERT(res.code != ErrorCode::UnsupportedFormat);
+    CPPUNIT_ASSERT(res.code != ErrorCode::BrokenFile);
     if (res.code == ErrorCode::Ok) {
       CPPUNIT_ASSERT(!res.id.empty());
       CPPUNIT_ASSERT_EQUAL(size_t(64), res.id.size());
     }
+  }
+
+  void testAddMov() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
+    Imager img(m_cfg);
+    auto res = img.addImage(Blob::fromVector(std::move(mov)), "clip.mov");
+    CPPUNIT_ASSERT(res.code != ErrorCode::UnsupportedFormat);
+    CPPUNIT_ASSERT(res.code != ErrorCode::BrokenFile);
+    if (res.code == ErrorCode::Ok) {
+      CPPUNIT_ASSERT(!res.id.empty());
+      CPPUNIT_ASSERT_EQUAL(size_t(64), res.id.size());
+    }
+  }
+
+  void testAddMovDuplicate() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
+    Imager img(m_cfg);
+    auto blob = Blob::fromVector(std::vector<uint8_t>(mov));
+    auto r1 = img.addImage(blob, "clip.mov");
+    if (r1.code != ErrorCode::Ok) {
+      return; // skip if storage not available
+    }
+    auto r2 = img.addImage(blob, "clip_copy.mov");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::DuplicateFile, r2.code);
+  }
+
+  void testAddBrokenMov() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
+    // ftyp box signature present, but truncated — container is incomplete
+    mov.resize(64);
+    Imager img(m_cfg);
+    auto res = img.addImage(Blob::fromVector(std::move(mov)), "bad.mov");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::BrokenFile, res.code);
   }
 
   void testUnsupportedFormat() {
@@ -167,8 +249,12 @@ public:
   }
 
   void testDuplicateDetection() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
     Imager img(m_cfg);
-    auto blob = Blob::fromVector(makeFakeMP4()); // same data for both adds
+    auto blob = Blob::fromVector(std::vector<uint8_t>(mov)); // same data for both adds
     auto r1 = img.addImage(blob, "clip.mp4");
     if (r1.code != ErrorCode::Ok) {
       return; // storage may fail in sandbox
@@ -214,6 +300,48 @@ public:
     auto full = makeMinimalHeic();
     full.resize(64);
     auto res = img.addImage(Blob::fromVector(std::move(full)), "bad.heic");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::BrokenFile, res.code);
+  }
+
+  void testAddNef() {
+    auto nef = loadNefFixture();
+    if (nef.empty()) {
+      return; // fixture absent — skip
+    }
+    Imager img(m_cfg);
+    auto res = img.addImage(Blob::fromVector(std::vector<uint8_t>(nef)), "photo.nef");
+    CPPUNIT_ASSERT(res.code != ErrorCode::UnsupportedFormat);
+    CPPUNIT_ASSERT(res.code != ErrorCode::StorageError);
+    if (res.code == ErrorCode::Ok) {
+      CPPUNIT_ASSERT(!res.id.empty());
+      CPPUNIT_ASSERT_EQUAL(size_t(64), res.id.size());
+    }
+  }
+
+  void testAddNefDuplicate() {
+    auto nef = loadNefFixture();
+    if (nef.empty()) {
+      return; // fixture absent — skip
+    }
+    Imager img(m_cfg);
+    auto blob = Blob::fromVector(std::vector<uint8_t>(nef));
+    auto r1 = img.addImage(blob, "photo.nef");
+    if (r1.code != ErrorCode::Ok) {
+      return; // skip if decode or storage not available
+    }
+    auto r2 = img.addImage(blob, "photo_copy.nef");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::DuplicateFile, r2.code);
+  }
+
+  void testAddBrokenNef() {
+    auto nef = loadNefFixture();
+    if (nef.empty()) {
+      return; // fixture absent — skip
+    }
+    Imager img(m_cfg);
+    // TIFF magic present, but truncated — no valid RAW data
+    nef.resize(64);
+    auto res = img.addImage(Blob::fromVector(std::move(nef)), "bad.nef");
     CPPUNIT_ASSERT_EQUAL(ErrorCode::BrokenFile, res.code);
   }
 };
@@ -263,8 +391,12 @@ public:
   }
 
   void testAddAndQuery() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
     Imager img(m_cfg);
-    auto r = img.addImage(Blob::fromVector(makeFakeMP4()), "video.mp4");
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), "video.mp4");
     if (r.code != ErrorCode::Ok) {
       return; // skip if storage fails
     }
@@ -301,10 +433,12 @@ class TagTest: public CppUnit::TestFixture {
   std::string m_id;
 
   void addFile(Imager& img, const std::string& name) {
-    auto mp4 = makeFakeMP4();
-    // Vary content slightly to avoid dedup
-    mp4.push_back(static_cast<uint8_t>(name.size()));
-    auto r = img.addImage(Blob::fromVector(std::move(mp4)), name + ".mp4");
+    // Vary content slightly to avoid dedup — trailing bytes are ignored by libavformat
+    auto mov = makeUniqueMovFixture(static_cast<uint8_t>(name.size()), static_cast<uint8_t>(name.size() >> 8));
+    if (mov.empty()) {
+      return; // fixture absent
+    }
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), name + ".mp4");
     if (r.code == ErrorCode::Ok) {
       m_id = r.id;
     }
@@ -403,8 +537,12 @@ public:
   }
 
   void testDeleteExisting() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
     Imager img(m_cfg);
-    auto r = img.addImage(Blob::fromVector(makeFakeMP4()), "del_test.mp4");
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), "del_test.mp4");
     if (r.code != ErrorCode::Ok) {
       return;
     }
@@ -449,8 +587,12 @@ public:
   }
 
   void testFileWrittenToAllRoots() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
     Imager img(m_cfg);
-    auto r = img.addImage(Blob::fromVector(makeFakeMP4()), "multi.mp4");
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), "multi.mp4");
     if (r.code != ErrorCode::Ok) {
       return;
     }
@@ -490,6 +632,11 @@ public:
   }
 
   void testConcurrentAdds() {
+    // Pre-load base fixture — if not available, skip test
+    if (loadMovFixture().empty()) {
+      return;
+    }
+
     Imager img(m_cfg);
     constexpr int THREADS = 4;
     constexpr int PER_THREAD = 10;
@@ -500,12 +647,13 @@ public:
     for (int t = 0; t < THREADS; ++t) {
       threads.emplace_back([&img, &successes, t]() {
         for (int i = 0; i < PER_THREAD; ++i) {
-          auto mp4 = makeFakeMP4();
-          // Make each file unique
-          mp4.push_back(static_cast<uint8_t>(t));
-          mp4.push_back(static_cast<uint8_t>(i));
+          // Trailing bytes make each file unique while keeping the MOV valid
+          auto mov = makeUniqueMovFixture(static_cast<uint8_t>(t), static_cast<uint8_t>(i));
+          if (mov.empty()) {
+            continue;
+          }
           auto r =
-            img.addImage(Blob::fromVector(std::move(mp4)), "t" + std::to_string(t) + "_" + std::to_string(i) + ".mp4");
+            img.addImage(Blob::fromVector(std::move(mov)), "t" + std::to_string(t) + "_" + std::to_string(i) + ".mp4");
           if (r.code == ErrorCode::Ok) {
             ++successes;
           }

@@ -69,8 +69,8 @@ struct Imager::Impl {
     return nullptr;
   }
 
-  static bool isVideoExtension(const std::string& ext) {
-    return ext == ".mp4" || ext == ".mov";
+  static bool isVideoExtension(const std::string& /* ext */) {
+    return false; // All previously extension-only formats now have validators
   }
 
   static std::string lowercaseExt(const std::string& filename) {
