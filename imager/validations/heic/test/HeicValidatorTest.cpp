@@ -6,6 +6,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 #include "heic_validator.h"
@@ -65,6 +67,7 @@ class HeicValidatorTest: public CppUnit::TestFixture {
   CPPUNIT_TEST(testTruncatedBody);
   CPPUNIT_TEST(testCorruptedData);
   CPPUNIT_TEST(testValidHeic);
+  CPPUNIT_TEST(testValidHeicFromFile);
   CPPUNIT_TEST_SUITE_END();
 
 public:
@@ -134,6 +137,24 @@ public:
       return; // no AV1 decoder — skip
     }
     CPPUNIT_ASSERT_EQUAL(VALID, validateHeic(VALID_HEIC_DATA, VALID_HEIC_SIZE));
+  }
+
+  void testValidHeicFromFile() {
+    std::filesystem::path fixture{HEIC_FIXTURES_DIR "/valid.heic"};
+    std::ifstream file(fixture, std::ios::binary | std::ios::ate);
+    CPPUNIT_ASSERT_MESSAGE("fixture file not found: " + fixture.string(), file.is_open());
+
+    auto size = static_cast<std::streamsize>(file.tellg());
+    file.seekg(0);
+    std::vector<uint8_t> data(static_cast<size_t>(size));
+    file.read(reinterpret_cast<char*>(data.data()), size);
+    CPPUNIT_ASSERT(file.good());
+
+    ValidationResult result = validateHeic(data.data(), data.size());
+    // File must at minimum have a valid ISOBMFF container.
+    // Full decode (VALID) requires the appropriate codec decoder.
+    CPPUNIT_ASSERT_MESSAGE("expected VALID or INVALID (not WRONG) for real HEIC fixture",
+                           result != WRONG);
   }
 };
 
