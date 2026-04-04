@@ -40,3 +40,5 @@ build*/
 /clang-tidy-fixes.patch
 # vim older versions
 *~
+
+resume.sh

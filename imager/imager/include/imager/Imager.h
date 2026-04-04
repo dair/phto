@@ -26,6 +26,12 @@ public:
     /// writes to all storage roots, then inserts into all DBs.
     AddResult addImage(const Blob& blob, const std::string& filename);
 
+    /// Validate format and compute SHA256 without writing to storage or DB.
+    /// Performs extension check, validation, hashing, and duplicate detection.
+    /// Returns Ok (with hash id) if valid and not a duplicate, DuplicateFile if
+    /// already stored, or an error code if the file is broken/unsupported.
+    AddResult validateOnly(const Blob& blob, const std::string& filename);
+
     /// Get image metadata + tags by ID. Returns nullopt if not found.
     std::optional<ImageInfo> getImage(const std::string& id);
 

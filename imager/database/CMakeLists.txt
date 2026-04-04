@@ -5,8 +5,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Build bundled SQLite
-add_subdirectory(sqlite)
+find_package(SQLite3 REQUIRED)
 
 # Database library
 add_library(database src/Database.cpp)
@@ -17,7 +16,7 @@ target_include_directories(database
 )
 
 target_link_libraries(database
-    PRIVATE sqlite3_lib
+    PRIVATE SQLite::SQLite3
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")

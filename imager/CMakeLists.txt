@@ -4,7 +4,6 @@ project(Imager LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(OpenSSL REQUIRED)
 
@@ -18,6 +17,7 @@ FetchContent_MakeAvailable(tomlplusplus)
 
 enable_testing()
 
+add_subdirectory(metrics)
 add_subdirectory(blob)
 add_subdirectory(coro)
 add_subdirectory(database)
@@ -25,3 +25,4 @@ add_subdirectory(validations/jpeg)
 add_subdirectory(validations/png)
 add_subdirectory(config)
 add_subdirectory(imager)
+add_subdirectory(imagestore)

@@ -3,6 +3,8 @@
 #include "coro/BlockOn.h"
 #include "coro/WhenAll.h"
 
+#include <metrics/Metrics.h>
+
 #include <fstream>
 #include <stdexcept>
 #include <system_error>
@@ -28,6 +30,7 @@ coro::Task<void> FileStorage::writeToRoot(std::filesystem::path root,
                                            std::string id, std::string ext,
                                            Blob blob) {
     co_await m_pool.schedule();
+    metrics::Timer t(metrics::Metrics::get().storage_write_root);
     std::filesystem::path path = filePath(root, id, ext);
     std::filesystem::create_directories(path.parent_path());
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
@@ -37,6 +40,7 @@ coro::Task<void> FileStorage::writeToRoot(std::filesystem::path root,
               static_cast<std::streamsize>(blob.size()));
     if (!out)
         throw std::runtime_error("Write failed: " + path.string());
+    metrics::Metrics::get().storage_bytes_written.add(blob.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -147,12 +151,14 @@ Blob FileStorage::readFile(const std::string& id, const std::string& ext) {
         }
 
         // Allocate, fill directly, freeze — zero extra copy
+        metrics::Timer t(metrics::Metrics::get().storage_read_duration);
         Blob blob(fileSize);
         in.read(reinterpret_cast<char*>(blob.writableData()),
                 static_cast<std::streamsize>(fileSize));
         if (!in) continue; // read error — try next root
 
         blob.freeze();
+        metrics::Metrics::get().storage_bytes_read.add(fileSize);
         return blob;
     }
     return {}; // not found

@@ -2,7 +2,10 @@
  * imager_cli — command-line demo for libimager
  *
  * Usage:
- *   imager_cli <config.toml> <command> [args...]
+ *   imager_cli [--metrics] <config.toml> <command> [args...]
+ *
+ * Options:
+ *   --metrics    Print collected metrics to stderr on exit
  *
  * Commands:
  *   add    <file>                  Add an image/video file
@@ -18,6 +21,9 @@
 
 #include "imager/Imager.h"
 #include "config/Config.h"
+
+#include <metrics/Metrics.h>
+#include <metrics/Snapshot.h>
 
 #include <cstdlib>
 #include <fstream>
@@ -89,15 +95,32 @@ static const char* errName(ErrorCode c) {
 // ---------------------------------------------------------------------------
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cerr << "Usage: imager_cli <config.toml> <command> [args...]\n"
+    // Strip optional --metrics flag before positional args
+    bool showMetrics = false;
+    std::vector<std::string> args(argv + 1, argv + argc);
+    for (auto it = args.begin(); it != args.end(); ) {
+        if (*it == "--metrics") { showMetrics = true; it = args.erase(it); }
+        else ++it;
+    }
+
+    // Print metrics to stderr on scope exit (covers all return paths)
+    struct MetricsGuard {
+        bool enabled;
+        ~MetricsGuard() {
+            if (enabled)
+                std::cerr << '\n' << metrics::format(metrics::Metrics::get().snapshot());
+        }
+    } metricsGuard{showMetrics};
+
+    if (args.size() < 2) {
+        std::cerr << "Usage: imager_cli [--metrics] <config.toml> <command> [args...]\n"
                      "Commands: add get list delete tag untag tags search count\n";
         return 1;
     }
 
-    const std::string configPath = argv[1];
-    const std::string cmd        = argv[2];
-    std::vector<std::string> rest(argv + 3, argv + argc);
+    const std::string configPath = args[0];
+    const std::string cmd        = args[1];
+    std::vector<std::string> rest(args.begin() + 2, args.end());
 
     config::AppConfig cfg;
     try {

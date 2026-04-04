@@ -9,6 +9,8 @@
 #include "coro/ThreadPool.h"
 #include "coro/WhenAll.h"
 
+#include <metrics/Metrics.h>
+
 #include <algorithm>
 #include <cctype>
 #include <mutex>
@@ -128,6 +130,8 @@ Imager::~Imager() = default;
 // ---------------------------------------------------------------------------
 
 AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
+    metrics::Timer total(metrics::Metrics::get().addimage_total);
+
     // 1. Extract & lowercase extension
     std::string ext = Impl::lowercaseExt(filename);
     if (ext.empty())
@@ -143,8 +147,10 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     if (!validator) {
         // Video: just hash, no validation needed — skip coroutine overhead
         try {
+            metrics::Timer t(metrics::Metrics::get().hash);
             id = computeSha256(blob);
         } catch (const std::exception& e) {
+            metrics::Metrics::get().images_failed.add(1);
             return {ErrorCode::StorageError, "", std::string("Hashing failed: ") + e.what()};
         }
     } else {
@@ -152,6 +158,121 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
         validation::ValidationResult valResult;
         try {
             // Outer task runs validate + hash as two concurrent void-tasks
+            auto [vr, hid] = coro::blockOn(m_impl->pool, [](
+                    coro::ThreadPool& p,
+                    const validation::IValidator* v,
+                    Blob b) -> coro::Task<std::pair<validation::ValidationResult,
+                                                    std::string>> {
+                validation::ValidationResult vRes;
+                std::string hId;
+
+                std::vector<coro::Task<void>> tasks;
+
+                tasks.push_back([](coro::ThreadPool& p2,
+                                   const validation::IValidator* v2, Blob b2,
+                                   validation::ValidationResult& out)
+                        -> coro::Task<void> {
+                    co_await p2.schedule();
+                    metrics::Timer t(metrics::Metrics::get().validate);
+                    out = v2->validate(b2.data(), b2.size());
+                }(p, v, b, vRes));
+
+                tasks.push_back([](coro::ThreadPool& p2, Blob b2,
+                                   std::string& out)
+                        -> coro::Task<void> {
+                    co_await p2.schedule();
+                    metrics::Timer t(metrics::Metrics::get().hash);
+                    out = computeSha256(b2);
+                }(p, b, hId));
+
+                co_await coro::whenAll(std::move(tasks));
+                co_return std::make_pair(vRes, std::move(hId));
+            }(m_impl->pool, validator, blob));
+
+            valResult = vr;
+            id        = std::move(hid);
+        } catch (const std::exception& e) {
+            metrics::Metrics::get().images_failed.add(1);
+            return {ErrorCode::StorageError, "",
+                    std::string("Validation/hashing failed: ") + e.what()};
+        }
+
+        if (!valResult.valid) {
+            metrics::Metrics::get().images_failed.add(1);
+            return {ErrorCode::BrokenFile, "", valResult.errorMessage};
+        }
+    }
+
+    // Measure mutex wait time separately from the lock guard
+    {
+        metrics::Timer t(metrics::Metrics::get().mutex_wait);
+        m_impl->writeMutex.lock();
+    }
+    std::lock_guard<std::mutex> lock(m_impl->writeMutex, std::adopt_lock);
+
+    // 4. Duplicate check
+    try {
+        metrics::Timer t(metrics::Metrics::get().dedup_check);
+        if (m_impl->dbs.fileExists(id))
+            return {ErrorCode::DuplicateFile, "", "File already exists: " + id};
+    } catch (const db::DatabaseException& e) {
+        metrics::Metrics::get().images_failed.add(1);
+        return {ErrorCode::DatabaseError, "", e.what()};
+    }
+
+    // 5. Write to all storage roots in parallel
+    try {
+        metrics::Timer t(metrics::Metrics::get().storage_write);
+        coro::blockOn(m_impl->pool, m_impl->storage.writeFileAsync(id, ext, blob));
+    } catch (const std::exception& e) {
+        metrics::Metrics::get().images_failed.add(1);
+        return {ErrorCode::StorageError, "",
+                std::string("Storage write failed: ") + e.what()};
+    }
+
+    // 6. Insert into all databases in parallel
+    try {
+        metrics::Timer t(metrics::Metrics::get().db_insert);
+        m_impl->dbs.addFile(id, filename, blob.size(), ext);
+    } catch (const db::DatabaseException& e) {
+        if (e.code() == db::DatabaseErrorCode::ConstraintViolation)
+            return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
+        // Roll back storage
+        coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(id, ext));
+        metrics::Metrics::get().images_failed.add(1);
+        return {ErrorCode::DatabaseError, "", e.what()};
+    }
+
+    metrics::Metrics::get().images_added.add(1);
+    return {ErrorCode::Ok, id, ""};
+}
+
+// ---------------------------------------------------------------------------
+// validateOnly
+// ---------------------------------------------------------------------------
+
+AddResult Imager::validateOnly(const Blob& blob, const std::string& filename) {
+    // 1. Extract & lowercase extension
+    std::string ext = Impl::lowercaseExt(filename);
+    if (ext.empty())
+        return {ErrorCode::UnsupportedFormat, "", "Filename has no extension"};
+
+    const auto* validator = m_impl->findValidator(ext);
+    if (!validator && !Impl::isVideoExtension(ext))
+        return {ErrorCode::UnsupportedFormat, "", "Unsupported format: " + ext};
+
+    // 2+3. Hash (and validate for images) — parallel when validator present
+    std::string id;
+
+    if (!validator) {
+        try {
+            id = computeSha256(blob);
+        } catch (const std::exception& e) {
+            return {ErrorCode::StorageError, "", std::string("Hashing failed: ") + e.what()};
+        }
+    } else {
+        validation::ValidationResult valResult;
+        try {
             auto [vr, hid] = coro::blockOn(m_impl->pool, [](
                     coro::ThreadPool& p,
                     const validation::IValidator* v,
@@ -192,32 +313,11 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
             return {ErrorCode::BrokenFile, "", valResult.errorMessage};
     }
 
-    std::lock_guard<std::mutex> lock(m_impl->writeMutex);
-
-    // 4. Duplicate check
+    // 4. Duplicate check (read-only — no mutex needed)
     try {
         if (m_impl->dbs.fileExists(id))
-            return {ErrorCode::DuplicateFile, "", "File already exists: " + id};
+            return {ErrorCode::DuplicateFile, id, "File already exists: " + id};
     } catch (const db::DatabaseException& e) {
-        return {ErrorCode::DatabaseError, "", e.what()};
-    }
-
-    // 5. Write to all storage roots in parallel
-    try {
-        coro::blockOn(m_impl->pool, m_impl->storage.writeFileAsync(id, ext, blob));
-    } catch (const std::exception& e) {
-        return {ErrorCode::StorageError, "",
-                std::string("Storage write failed: ") + e.what()};
-    }
-
-    // 6. Insert into all databases in parallel
-    try {
-        m_impl->dbs.addFile(id, filename, blob.size(), ext);
-    } catch (const db::DatabaseException& e) {
-        if (e.code() == db::DatabaseErrorCode::ConstraintViolation)
-            return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
-        // Roll back storage
-        coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(id, ext));
         return {ErrorCode::DatabaseError, "", e.what()};
     }
 

@@ -5,6 +5,10 @@
 #include <memory>
 #include <vector>
 
+#ifdef IMAGER_METRICS_ENABLED
+#include <metrics/Metrics.h>
+#endif
+
 namespace blob {
 
 /// Shared-ownership binary buffer.
@@ -27,8 +31,27 @@ public:
     /// Allocate a writable buffer of the given size.
     /// Fill via writableData(), then call freeze() before sharing.
     explicit Blob(size_t size)
-        : m_data(size > 0 ? std::shared_ptr<uint8_t[]>(new uint8_t[size]) : nullptr)
-        , m_size(size) {}
+        : m_data(size > 0
+            ? std::shared_ptr<uint8_t[]>(new uint8_t[size],
+                [size](uint8_t* p) noexcept {
+#ifdef IMAGER_METRICS_ENABLED
+                    auto& m = metrics::Metrics::get();
+                    m.blobs_alive.decrement();
+                    m.blob_bytes_alive.add(-static_cast<int64_t>(size));
+#endif
+                    delete[] p;
+                })
+            : nullptr)
+        , m_size(size)
+    {
+#ifdef IMAGER_METRICS_ENABLED
+        if (size > 0) {
+            auto& m = metrics::Metrics::get();
+            m.blobs_alive.increment();
+            m.blob_bytes_alive.add(static_cast<int64_t>(size));
+        }
+#endif
+    }
 
     /// Adopt ownership of an existing shared_ptr (already frozen).
     Blob(std::shared_ptr<uint8_t[]> data, size_t size)
@@ -40,7 +63,13 @@ public:
         if (n == 0) return {};
         auto* raw = new uint8_t[n];
         std::memcpy(raw, vec.data(), n);
-        return Blob(std::shared_ptr<uint8_t[]>(raw), n);
+        // Use the size-tracking constructor path by going through Blob(size)
+        // then replacing the data pointer.
+        Blob b(n);
+        std::memcpy(b.writableData(), raw, n);
+        delete[] raw;
+        b.freeze();
+        return b;
     }
 
     /// Read-only pointer to the data. Valid in any state.

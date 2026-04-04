@@ -18,6 +18,7 @@ target_link_libraries(libimager
     PUBLIC
         blob_lib
         config_lib
+        metrics_lib
     PRIVATE
         coro_lib
         database

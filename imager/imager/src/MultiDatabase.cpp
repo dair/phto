@@ -3,6 +3,8 @@
 #include "coro/BlockOn.h"
 #include "coro/WhenAll.h"
 
+#include <metrics/Metrics.h>
+
 namespace imager {
 
 // ---------------------------------------------------------------------------
@@ -41,6 +43,7 @@ void MultiDatabase::parallelWriteAll(Op&& op, Compensate&& compensate) {
                    Op& op_, uint8_t& ok, std::exception_ptr& err) -> coro::Task<void> {
                     co_await pool.schedule();
                     try {
+                        metrics::Timer t(metrics::Metrics::get().db_insert_single);
                         op_(db);
                         ok = 1;
                     } catch (...) {
