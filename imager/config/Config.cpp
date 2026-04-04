@@ -1,4 +1,4 @@
-#include "config/Config.h"
+#include "Config.h"
 
 #include <stdexcept>
 #include <string>

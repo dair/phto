@@ -17,7 +17,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  std::vector<uint8_t> data(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+  std::vector<uint8_t> data{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 
   ValidationResult result = validatePng(data.data(), data.size());
 

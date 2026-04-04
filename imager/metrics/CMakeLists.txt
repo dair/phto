@@ -1,16 +1,16 @@
 option(IMAGER_METRICS_ENABLED "Enable built-in metrics collection" ON)
 
 add_library(metrics_lib STATIC
-    src/Histogram.cpp
-    src/Counter.cpp
-    src/Gauge.cpp
-    src/Timer.cpp
-    src/Snapshot.cpp
-    src/Metrics.cpp
+    Histogram.cpp
+    Counter.cpp
+    Gauge.cpp
+    Timer.cpp
+    Snapshot.cpp
+    Metrics.cpp
 )
 
 target_include_directories(metrics_lib PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
 if(IMAGER_METRICS_ENABLED)

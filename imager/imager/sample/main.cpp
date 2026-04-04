@@ -166,7 +166,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "Cannot open: " << rest[0] << '\n';
         return 1;
       }
-      std::vector<uint8_t> raw(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+      std::vector<uint8_t> raw{std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
       // Use only the filename component
       std::filesystem::path p(rest[0]);
       auto result = img.addImage(Blob::fromVector(std::move(raw)), p.filename().string());

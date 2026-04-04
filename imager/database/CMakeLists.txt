@@ -8,11 +8,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(SQLite3 REQUIRED)
 
 # Database library
-add_library(database src/Database.cpp)
+add_library(database Database.cpp)
 
 target_include_directories(database
     PUBLIC
-        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
 target_link_libraries(database

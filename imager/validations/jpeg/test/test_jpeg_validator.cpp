@@ -56,7 +56,7 @@ public:
     // libjpeg cannot decode all scan lines and emits a fatal warning.
     std::ifstream file(TEST_JPEG_PATH, std::ios::binary);
     CPPUNIT_ASSERT_MESSAGE("Could not open test JPEG file", file.is_open());
-    std::vector<unsigned char> data(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    std::vector<unsigned char> data{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 
     CPPUNIT_ASSERT(data.size() > 64);
     data.resize(data.size() / 2); // discard back half, including EOI
@@ -69,7 +69,7 @@ public:
   void testValidJpeg() {
     std::ifstream file(TEST_JPEG_PATH, std::ios::binary);
     CPPUNIT_ASSERT_MESSAGE("Could not open test JPEG file", file.is_open());
-    const std::vector<unsigned char> data(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    const std::vector<unsigned char> data{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 
     CPPUNIT_ASSERT(!data.empty());
     CPPUNIT_ASSERT_EQUAL(VALID, validateJpeg(data.data(), data.size()));
