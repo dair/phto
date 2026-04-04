@@ -1,9 +1,9 @@
 #pragma once
 
-#include "imager/ImageValidator.h"
-
 #include <memory>
 #include <vector>
+
+#include "imager/ImageValidator.h"
 
 namespace imager {
 
@@ -13,10 +13,10 @@ std::unique_ptr<validation::IValidator> createJpegValidator();
 std::unique_ptr<validation::IValidator> createPngValidator();
 
 inline std::vector<std::unique_ptr<validation::IValidator>> createDefaultValidators() {
-    std::vector<std::unique_ptr<validation::IValidator>> v;
-    v.push_back(createJpegValidator());
-    v.push_back(createPngValidator());
-    return v;
+  std::vector<std::unique_ptr<validation::IValidator>> v;
+  v.push_back(createJpegValidator());
+  v.push_back(createPngValidator());
+  return v;
 }
 
 } // namespace imager

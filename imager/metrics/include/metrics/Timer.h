@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Histogram.h"
-
 #include <chrono>
+
+#include "Histogram.h"
 
 namespace metrics {
 
@@ -15,20 +15,20 @@ namespace metrics {
 ///   }  // duration recorded here
 class Timer {
 public:
-    explicit Timer(Histogram& target) noexcept;
-    ~Timer();
+  explicit Timer(Histogram& target) noexcept;
+  ~Timer();
 
-    Timer(const Timer&)            = delete;
-    Timer& operator=(const Timer&) = delete;
+  Timer(const Timer&) = delete;
+  Timer& operator=(const Timer&) = delete;
 
-    /// Stop and record immediately. Subsequent calls to stop() or ~Timer() are no-ops.
-    std::chrono::nanoseconds stop() noexcept;
+  /// Stop and record immediately. Subsequent calls to stop() or ~Timer() are no-ops.
+  std::chrono::nanoseconds stop() noexcept;
 
 private:
-    std::chrono::nanoseconds record() noexcept;
+  std::chrono::nanoseconds record() noexcept;
 
-    Histogram*                            m_target;
-    std::chrono::steady_clock::time_point m_start;
+  Histogram* m_target;
+  std::chrono::steady_clock::time_point m_start;
 };
 
 } // namespace metrics

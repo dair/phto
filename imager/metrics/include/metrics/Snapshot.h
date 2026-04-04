@@ -1,12 +1,12 @@
 #pragma once
 
-#include "Histogram.h"
-#include "Counter.h"
-#include "Gauge.h"
-
 #include <cstdint>
 #include <string>
 #include <vector>
+
+#include "Counter.h"
+#include "Gauge.h"
+#include "Histogram.h"
 
 namespace metrics {
 
@@ -15,21 +15,21 @@ namespace metrics {
 // ---------------------------------------------------------------------------
 
 struct CounterSnapshot {
-    std::string name;
-    uint64_t    value{0};
+  std::string name;
+  uint64_t value{0};
 };
 
 struct GaugeSnapshot {
-    std::string name;
-    int64_t     value{0};
+  std::string name;
+  int64_t value{0};
 };
 
 // Histogram::Snapshot is defined in Histogram.h
 
 struct FullSnapshot {
-    std::vector<Histogram::Snapshot> histograms;
-    std::vector<CounterSnapshot>     counters;
-    std::vector<GaugeSnapshot>       gauges;
+  std::vector<Histogram::Snapshot> histograms;
+  std::vector<CounterSnapshot> counters;
+  std::vector<GaugeSnapshot> gauges;
 };
 
 // ---------------------------------------------------------------------------

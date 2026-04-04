@@ -3,5 +3,7 @@
 #include <blob/Blob.h>
 
 namespace imager {
-    using blob::Blob;
+
+using blob::Blob;
+
 } // namespace imager

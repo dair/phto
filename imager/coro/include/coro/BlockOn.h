@@ -1,11 +1,11 @@
 #pragma once
 
-#include "Task.h"
-#include "ThreadPool.h"
-
 #include <exception>
 #include <optional>
 #include <semaphore>
+
+#include "Task.h"
+#include "ThreadPool.h"
 
 namespace coro {
 
@@ -16,53 +16,57 @@ namespace coro {
 // co_await pool.schedule(). blockOn just starts the chain and waits.
 // ---------------------------------------------------------------------------
 
-template <typename T>
+template<typename T>
 T blockOn(ThreadPool& /*pool*/, Task<T> task) {
-    std::binary_semaphore done{0};
-    std::optional<T>      result;
-    std::exception_ptr    error;
+  std::binary_semaphore done{0};
+  std::optional<T> result;
+  std::exception_ptr error;
 
-    // Wrapper coroutine: runs the inner task, then signals the semaphore.
-    auto wrapper = [&]() -> Task<void> {
-        try {
-            result = co_await std::move(task);
-        } catch (...) {
-            error = std::current_exception();
-        }
-        done.release();
-    };
+  // Wrapper coroutine: runs the inner task, then signals the semaphore.
+  auto wrapper = [&]() -> Task<void> {
+    try {
+      result = co_await std::move(task);
+    } catch (...) {
+      error = std::current_exception();
+    }
+    done.release();
+  };
 
-    auto w = wrapper();
-    // runSync() starts the wrapper. Via symmetric transfer it dives into the
-    // inner task chain until the first real suspension (co_await pool.schedule()).
-    // At that point resume() returns and pool threads take over.
-    w.runSync();
+  auto w = wrapper();
+  // runSync() starts the wrapper. Via symmetric transfer it dives into the
+  // inner task chain until the first real suspension (co_await pool.schedule()).
+  // At that point resume() returns and pool threads take over.
+  w.runSync();
 
-    done.acquire();
+  done.acquire();
 
-    if (error) std::rethrow_exception(error);
-    return std::move(*result);
+  if (error) {
+    std::rethrow_exception(error);
+  }
+  return std::move(*result);
 }
 
 inline void blockOn(ThreadPool& /*pool*/, Task<void> task) {
-    std::binary_semaphore done{0};
-    std::exception_ptr    error;
+  std::binary_semaphore done{0};
+  std::exception_ptr error;
 
-    auto wrapper = [&]() -> Task<void> {
-        try {
-            co_await std::move(task);
-        } catch (...) {
-            error = std::current_exception();
-        }
-        done.release();
-    };
+  auto wrapper = [&]() -> Task<void> {
+    try {
+      co_await std::move(task);
+    } catch (...) {
+      error = std::current_exception();
+    }
+    done.release();
+  };
 
-    auto w = wrapper();
-    w.runSync();
+  auto w = wrapper();
+  w.runSync();
 
-    done.acquire();
+  done.acquire();
 
-    if (error) std::rethrow_exception(error);
+  if (error) {
+    std::rethrow_exception(error);
+  }
 }
 
 } // namespace coro

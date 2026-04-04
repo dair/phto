@@ -5,21 +5,23 @@
 
 namespace {
 
-class JpegValidator final : public validation::IValidator {
+class JpegValidator final: public validation::IValidator {
 public:
-    bool supportsExtension(const std::string& ext) const override {
-        return ext == ".jpg" || ext == ".jpeg";
-    }
+  bool supportsExtension(const std::string& ext) const override {
+    return ext == ".jpg" || ext == ".jpeg";
+  }
 
-    validation::ValidationResult validate(const uint8_t* data,
-                                          size_t          size) const override {
-        switch (validateJpeg(data, size)) {
-            case VALID:   return {true,  ""};
-            case INVALID: return {false, "JPEG data is corrupted or incomplete"};
-            case WRONG:   return {false, "Data is not a JPEG file"};
-        }
-        return {false, "Unknown validation result"};
+  validation::ValidationResult validate(const uint8_t* data, size_t size) const override {
+    switch (validateJpeg(data, size)) {
+      case VALID:
+        return {true, ""};
+      case INVALID:
+        return {false, "JPEG data is corrupted or incomplete"};
+      case WRONG:
+        return {false, "Data is not a JPEG file"};
     }
+    return {false, "Unknown validation result"};
+  }
 };
 
 } // namespace
@@ -27,7 +29,7 @@ public:
 namespace imager {
 
 std::unique_ptr<validation::IValidator> createJpegValidator() {
-    return std::make_unique<JpegValidator>();
+  return std::make_unique<JpegValidator>();
 }
 
 } // namespace imager
