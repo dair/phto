@@ -112,16 +112,14 @@ coro::Task<void> FileStorage::deleteFileAsync(const std::string& id, const std::
 // relocateFileAsync — atomic rename (or copy+delete) across all roots
 // ---------------------------------------------------------------------------
 
-coro::Task<void> FileStorage::relocateFileAsync(const std::string& oldId,
-                                                const std::string& newId,
-                                                const std::string& ext) {
+coro::Task<void> FileStorage::relocateFileAsync(
+  const std::string& oldId, const std::string& newId, const std::string& ext
+) {
   std::vector<coro::Task<void>> tasks;
   tasks.reserve(m_roots.size());
   for (const auto& root : m_roots) {
     tasks.push_back(
-      [](coro::ThreadPool& pool,
-         std::filesystem::path oldPath,
-         std::filesystem::path newPath) -> coro::Task<void> {
+      [](coro::ThreadPool& pool, std::filesystem::path oldPath, std::filesystem::path newPath) -> coro::Task<void> {
         co_await pool.schedule();
         if (!std::filesystem::exists(oldPath)) {
           co_return; // nothing to relocate on this root
@@ -132,8 +130,7 @@ coro::Task<void> FileStorage::relocateFileAsync(const std::string& oldId,
         std::filesystem::rename(oldPath, newPath, ec);
         if (ec) {
           // Cross-device or other rename failure: fallback to copy + delete
-          std::filesystem::copy_file(oldPath, newPath,
-                                     std::filesystem::copy_options::overwrite_existing, ec);
+          std::filesystem::copy_file(oldPath, newPath, std::filesystem::copy_options::overwrite_existing, ec);
           if (ec) {
             throw std::runtime_error("relocate copy failed: " + ec.message());
           }

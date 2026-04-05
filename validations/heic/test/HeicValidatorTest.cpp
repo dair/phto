@@ -153,8 +153,7 @@ public:
     ValidationResult result = validateHeic(data.data(), data.size());
     // File must at minimum have a valid ISOBMFF container.
     // Full decode (VALID) requires the appropriate codec decoder.
-    CPPUNIT_ASSERT_MESSAGE("expected VALID or INVALID (not WRONG) for real HEIC fixture",
-                           result != WRONG);
+    CPPUNIT_ASSERT_MESSAGE("expected VALID or INVALID (not WRONG) for real HEIC fixture", result != WRONG);
   }
 };
 

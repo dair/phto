@@ -45,8 +45,7 @@ public:
   /// Used when an orphan sidecar's parent is discovered (Scenario B resolution).
   /// Uses std::filesystem::rename (atomic on same filesystem); falls back to
   /// copy+delete if rename fails (e.g., cross-device).
-  coro::Task<void> relocateFileAsync(const std::string& oldId, const std::string& newId,
-                                     const std::string& ext);
+  coro::Task<void> relocateFileAsync(const std::string& oldId, const std::string& newId, const std::string& ext);
 
 private:
   std::vector<std::filesystem::path> m_roots;

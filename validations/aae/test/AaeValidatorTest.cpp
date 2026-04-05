@@ -45,7 +45,7 @@ static const char MALFORMED_AAE[] =
   "<dict>\n"
   "    <key>broken</key>\n"
   "    <string>unclosed</string>\n";
-  // Intentionally missing </dict> and </plist>
+// Intentionally missing </dict> and </plist>
 
 } // namespace
 

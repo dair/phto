@@ -6,9 +6,9 @@
 namespace {
 
 // Search for a substring within the first `limit` bytes of `haystack`.
-static bool containsWithinLimit(const char* haystack, size_t haystackLen,
-                                const char* needle, size_t needleLen,
-                                size_t limit) {
+static bool containsWithinLimit(
+  const char* haystack, size_t haystackLen, const char* needle, size_t needleLen, size_t limit
+) {
   if (haystackLen < needleLen) {
     return false;
   }

@@ -48,25 +48,23 @@ public:
 
   // --- Original name tracking ---
 
-  void addOriginalName(const std::string& sourceDir, const std::string& baseName,
-                       const std::string& fileId);
+  void addOriginalName(const std::string& sourceDir, const std::string& baseName, const std::string& fileId);
 
-  std::vector<db::File> getFilesBySourceAndBaseName(const std::string& sourceDir,
-                                                    const std::string& baseName);
+  std::vector<db::File> getFilesBySourceAndBaseName(const std::string& sourceDir, const std::string& baseName);
 
   // --- Companion (sidecar) tracking ---
 
-  void addCompanion(const std::string& fileId,
-                    const std::optional<std::string>& parentId,
-                    const std::string& storageId);
+  void addCompanion(
+    const std::string& fileId, const std::optional<std::string>& parentId, const std::string& storageId
+  );
 
   std::optional<db::Database::CompanionInfo> getCompanion(const std::string& fileId);
 
   std::vector<db::Database::CompanionInfo> getOrphanCompanionsBySourceAndBaseName(
-      const std::string& sourceDir, const std::string& baseName);
+    const std::string& sourceDir, const std::string& baseName
+  );
 
-  void updateCompanionParent(const std::string& fileId, const std::string& parentId,
-                             const std::string& storageId);
+  void updateCompanionParent(const std::string& fileId, const std::string& parentId, const std::string& storageId);
 
   std::vector<db::Database::CompanionInfo> getCompanionsForParent(const std::string& parentId);
 

@@ -680,7 +680,9 @@ static Blob makeAaeBlob(const std::string& key = "adjustmentFormatVersion") {
     " \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
     "<plist version=\"1.0\">\n"
     "<dict>\n"
-    "    <key>" + key + "</key>\n"
+    "    <key>" +
+    key +
+    "</key>\n"
     "    <integer>1</integer>\n"
     "</dict>\n"
     "</plist>\n";

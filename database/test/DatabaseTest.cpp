@@ -668,8 +668,8 @@ public:
     m_path = tempDbPath("companion");
     m_db = std::make_unique<Database>(m_path);
     m_db->addFile("parent_hash", "IMG_0001.jpg", 100, ".jpg");
-    m_db->addFile("aae_hash",    "IMG_0001.aae",  50, ".aae");
-    m_db->addFile("orphan_hash", "IMG_0002.aae",  50, ".aae");
+    m_db->addFile("aae_hash", "IMG_0001.aae", 50, ".aae");
+    m_db->addFile("orphan_hash", "IMG_0002.aae", 50, ".aae");
     m_db->addOriginalName("vacation", "img_0001", "parent_hash");
     m_db->addOriginalName("vacation", "img_0001", "aae_hash");
     m_db->addOriginalName("vacation", "img_0002", "orphan_hash");
@@ -686,7 +686,7 @@ public:
     CPPUNIT_ASSERT_NO_THROW(m_db->addCompanion("aae_hash", std::string("parent_hash"), "parent_hash"));
     auto comp = m_db->getCompanion("aae_hash");
     CPPUNIT_ASSERT(comp.has_value());
-    CPPUNIT_ASSERT_EQUAL(std::string("aae_hash"),    comp->fileId);
+    CPPUNIT_ASSERT_EQUAL(std::string("aae_hash"), comp->fileId);
     CPPUNIT_ASSERT(comp->parentId.has_value());
     CPPUNIT_ASSERT_EQUAL(std::string("parent_hash"), *comp->parentId);
     CPPUNIT_ASSERT_EQUAL(std::string("parent_hash"), comp->storageId);

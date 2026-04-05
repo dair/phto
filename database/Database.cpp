@@ -414,8 +414,7 @@ std::vector<std::string> Database::getTagsForFile(const std::string& fileId, std
 // Original name operations
 // ---------------------------------------------------------------------------
 
-void Database::addOriginalName(const std::string& sourceDir, const std::string& baseName,
-                               const std::string& fileId) {
+void Database::addOriginalName(const std::string& sourceDir, const std::string& baseName, const std::string& fileId) {
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_INSERT_ORIGINAL_NAME);
   sqlite3_bind_text(stmt.get(), 1, sourceDir.c_str(), -1, SQLITE_STATIC);
@@ -424,8 +423,7 @@ void Database::addOriginalName(const std::string& sourceDir, const std::string& 
   m_impl->mustDone(stmt.get(), DatabaseErrorCode::QueryFailed, "addOriginalName failed");
 }
 
-std::vector<File> Database::getFilesBySourceAndBaseName(const std::string& sourceDir,
-                                                        const std::string& baseName) {
+std::vector<File> Database::getFilesBySourceAndBaseName(const std::string& sourceDir, const std::string& baseName) {
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_SELECT_FILES_BY_SOURCE_BASENAME);
   sqlite3_bind_text(stmt.get(), 1, sourceDir.c_str(), -1, SQLITE_STATIC);
@@ -441,9 +439,9 @@ std::vector<File> Database::getFilesBySourceAndBaseName(const std::string& sourc
 // Companion (sidecar) operations
 // ---------------------------------------------------------------------------
 
-void Database::addCompanion(const std::string& fileId,
-                            const std::optional<std::string>& parentId,
-                            const std::string& storageId) {
+void Database::addCompanion(
+  const std::string& fileId, const std::optional<std::string>& parentId, const std::string& storageId
+) {
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_INSERT_COMPANION);
   sqlite3_bind_text(stmt.get(), 1, fileId.c_str(), -1, SQLITE_STATIC);
@@ -453,7 +451,11 @@ void Database::addCompanion(const std::string& fileId,
     sqlite3_bind_null(stmt.get(), 2);
   }
   sqlite3_bind_text(stmt.get(), 3, storageId.c_str(), -1, SQLITE_STATIC);
-  m_impl->mustDone(stmt.get(), DatabaseErrorCode::ConstraintViolation, "addCompanion: companion already exists for file '" + fileId + "'");
+  m_impl->mustDone(
+    stmt.get(),
+    DatabaseErrorCode::ConstraintViolation,
+    "addCompanion: companion already exists for file '" + fileId + "'"
+  );
 }
 
 std::optional<Database::CompanionInfo> Database::getCompanion(const std::string& fileId) {
@@ -473,7 +475,8 @@ std::optional<Database::CompanionInfo> Database::getCompanion(const std::string&
 }
 
 std::vector<Database::CompanionInfo> Database::getOrphanCompanionsBySourceAndBaseName(
-    const std::string& sourceDir, const std::string& baseName) {
+  const std::string& sourceDir, const std::string& baseName
+) {
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_SELECT_ORPHAN_COMPANIONS_BY_SOURCE_BASENAME);
   sqlite3_bind_text(stmt.get(), 1, sourceDir.c_str(), -1, SQLITE_STATIC);
@@ -489,8 +492,9 @@ std::vector<Database::CompanionInfo> Database::getOrphanCompanionsBySourceAndBas
   return result;
 }
 
-void Database::updateCompanionParent(const std::string& fileId, const std::string& parentId,
-                                     const std::string& storageId) {
+void Database::updateCompanionParent(
+  const std::string& fileId, const std::string& parentId, const std::string& storageId
+) {
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_UPDATE_COMPANION_PARENT);
   sqlite3_bind_text(stmt.get(), 1, parentId.c_str(), -1, SQLITE_STATIC);

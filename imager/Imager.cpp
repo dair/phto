@@ -116,8 +116,7 @@ struct Imager::Impl {
 
   /// Returns true if the extension is a still-image type (preferred over video for AAE pairing).
   static bool isImageExtension(const std::string& ext) {
-    return ext == ".jpg" || ext == ".jpeg" || ext == ".heic" || ext == ".heif" ||
-           ext == ".nef"  || ext == ".png";
+    return ext == ".jpg" || ext == ".jpeg" || ext == ".heic" || ext == ".heif" || ext == ".nef" || ext == ".png";
   }
 
   static ImageInfo toImageInfo(const db::File& f, std::vector<std::string> tags = {}) {
@@ -309,8 +308,7 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
       } else {
         // Still ambiguous — reject
         metrics::Metrics::get().images_failed.add(1);
-        return {ErrorCode::StorageError, "",
-                "Ambiguous sidecar: multiple parent files match for '" + bareName + "'"};
+        return {ErrorCode::StorageError, "", "Ambiguous sidecar: multiple parent files match for '" + bareName + "'"};
       }
     }
 
@@ -343,7 +341,9 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
       m_impl->dbs.addOriginalName(sourceDir, baseName, id);
     } catch (const db::DatabaseException& e) {
       // Best effort rollback
-      try { m_impl->dbs.deleteFile(id); } catch (...) {}
+      try {
+        m_impl->dbs.deleteFile(id);
+      } catch (...) {}
       coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
       metrics::Metrics::get().images_failed.add(1);
       return {ErrorCode::DatabaseError, "", e.what()};
@@ -353,7 +353,9 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     try {
       m_impl->dbs.addCompanion(id, parentId, storageId);
     } catch (const db::DatabaseException& e) {
-      try { m_impl->dbs.deleteFile(id); } catch (...) {}
+      try {
+        m_impl->dbs.deleteFile(id);
+      } catch (...) {}
       coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
       metrics::Metrics::get().images_failed.add(1);
       return {ErrorCode::DatabaseError, "", e.what()};
@@ -408,8 +410,7 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
       }
       // Relocate sidecar file on disk: old storage path -> new storage path
       try {
-        coro::blockOn(m_impl->pool,
-                      m_impl->storage.relocateFileAsync(orphan.storageId, id, sidecarFile->ext));
+        coro::blockOn(m_impl->pool, m_impl->storage.relocateFileAsync(orphan.storageId, id, sidecarFile->ext));
       } catch (const std::exception&) {
         continue; // Best-effort relocation; don't fail parent add
       }
