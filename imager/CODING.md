@@ -125,6 +125,22 @@ Every source file closes its namespace with a comment: `} // namespace foo`
 
 Anonymous namespaces (`namespace { ... }`) are preferred over `static` for file-local helpers in `.cpp` files.
 
+## Code/header separation
+
+The header file should contain as little code as possible.
+
+The Template code is of course in the header file.
+
+The non-template code is allowed in the header file exclusively if it's inline function or the code of the function can fit in one line.
+
+Otherwise the source code should be placed in the appropriate .cpp file.
+
+## File names and rules
+
+One header fils should contain only one class definition. Nested classes are allowed in the header file of its parent.
+
+Enum classes should be placed in their own header files unless it's the very specific enum adjacent to the only class/function it's being used in/by.
+
 ## Naming
 
 | Entity | Convention | Example |
@@ -213,6 +229,11 @@ Coroutine infrastructure (`coro::Task<T>`, `coro::ThreadPool`, `coro::whenAll`, 
 
 Every coroutine that runs on the thread pool must `co_await pool.schedule()` as its first suspension point. This ensures the coroutine is running on a worker thread before doing any I/O or heavy computation, and satisfies the scheduling invariant required by `whenAll`.
 
+## Singletons
+
+There should be NO singletons in the library.
+
+
 ## Validation interface
 
 New format validators implement `validation::IValidator` and register in `imager/Validators.h`:
@@ -256,4 +277,4 @@ cmake --preset default && cmake --build --preset default
 ctest --preset default
 ```
 
-Artifacts go to `/tmp/imager-build`. The compiler is Clang (`clang++`). Warnings are errors in CI; locally the build uses `-Wall -Wextra -Wpedantic` on all first-party targets.
+Artifacts go to `/tmp/imager-build`. The compiler is Clang (`clang++`). Warnings are errors; locally the build uses `-Wall -Wextra -Wpedantic -Werror` on all first-party targets.

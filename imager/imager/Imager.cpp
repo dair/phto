@@ -85,6 +85,41 @@ struct Imager::Impl {
     return ext;
   }
 
+  /// Split a path-bearing filename into (sourceDir, bareName).
+  /// e.g. "vacation/IMG_1234.JPG" -> ("vacation", "IMG_1234.JPG")
+  ///      "IMG_1234.JPG"          -> ("",          "IMG_1234.JPG")
+  ///      "/photos/IMG.JPG"       -> ("/photos",   "IMG.JPG")
+  static std::pair<std::string, std::string> splitFilename(const std::string& filename) {
+    auto sep = filename.rfind('/');
+    if (sep == std::string::npos) {
+      return {"", filename};
+    }
+    return {filename.substr(0, sep), filename.substr(sep + 1)};
+  }
+
+  /// Extract the base name (lowercased filename without extension) from a bare name.
+  /// e.g. "IMG_1234.JPG" -> "img_1234"
+  static std::string extractBaseName(const std::string& bareName) {
+    auto dot = bareName.rfind('.');
+    std::string base = (dot != std::string::npos) ? bareName.substr(0, dot) : bareName;
+    for (auto& c : base) {
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return base;
+  }
+
+  /// Returns true if the given extension is a sidecar type.
+  static bool isSidecarExtension(const std::string& ext) {
+    return ext == ".aae";
+    // Future: ".xmp" (Adobe sidecar) could be added here
+  }
+
+  /// Returns true if the extension is a still-image type (preferred over video for AAE pairing).
+  static bool isImageExtension(const std::string& ext) {
+    return ext == ".jpg" || ext == ".jpeg" || ext == ".heic" || ext == ".heif" ||
+           ext == ".nef"  || ext == ".png";
+  }
+
   static ImageInfo toImageInfo(const db::File& f, std::vector<std::string> tags = {}) {
     return ImageInfo{f.id, f.name, f.size, f.ext, std::move(tags)};
   }
@@ -140,8 +175,9 @@ Imager::~Imager() = default;
 AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
   metrics::Timer total(metrics::Metrics::get().addimage_total);
 
-  // 1. Extract & lowercase extension
-  std::string ext = Impl::lowercaseExt(filename);
+  // 1. Split filename into (sourceDir, bareName) and extract extension
+  auto [sourceDir, bareName] = Impl::splitFilename(filename);
+  std::string ext = Impl::lowercaseExt(bareName);
   if (ext.empty()) {
     return {ErrorCode::UnsupportedFormat, "", "Filename has no extension"};
   }
@@ -151,11 +187,10 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     return {ErrorCode::UnsupportedFormat, "", "Unsupported format: " + ext};
   }
 
-  // 2+3. Hash (and validate for images) — parallel when validator present
+  // 2+3. Hash (and validate) — parallel when validator present
   std::string id;
 
   if (!validator) {
-    // Video: just hash, no validation needed — skip coroutine overhead
     try {
       metrics::Timer t(metrics::Metrics::get().hash);
       id = computeSha256(blob);
@@ -164,10 +199,8 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
       return {ErrorCode::StorageError, "", std::string("Hashing failed: ") + e.what()};
     }
   } else {
-    // Image: validate and hash in parallel
     validation::ValidationResult valResult;
     try {
-      // Outer task runs validate + hash as two concurrent void-tasks
       auto [vr, hid] = coro::blockOn(
         m_impl->pool,
         [](
@@ -230,6 +263,108 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     return {ErrorCode::DatabaseError, "", e.what()};
   }
 
+  // ---- Sidecar path -------------------------------------------------------
+  if (Impl::isSidecarExtension(ext)) {
+    const std::string baseName = Impl::extractBaseName(bareName);
+
+    // Look up parent candidate(s) via original_name table
+    std::vector<db::File> parents;
+    try {
+      parents = m_impl->dbs.getFilesBySourceAndBaseName(sourceDir, baseName);
+    } catch (const db::DatabaseException& e) {
+      metrics::Metrics::get().images_failed.add(1);
+      return {ErrorCode::DatabaseError, "", e.what()};
+    }
+
+    // Filter out other sidecars from parent candidates
+    std::vector<db::File> nonSidecarParents;
+    for (const auto& p : parents) {
+      if (!Impl::isSidecarExtension(p.ext)) {
+        nonSidecarParents.push_back(p);
+      }
+    }
+
+    std::string storageId;
+    std::optional<std::string> parentId;
+
+    if (nonSidecarParents.empty()) {
+      // Scenario B: orphan — store with own hash
+      storageId = id;
+      parentId = std::nullopt;
+    } else if (nonSidecarParents.size() == 1) {
+      // Scenario A: exactly one parent
+      storageId = nonSidecarParents[0].id;
+      parentId = nonSidecarParents[0].id;
+    } else {
+      // Multiple candidates — try to disambiguate: prefer image over video
+      std::vector<db::File> imageParents;
+      for (const auto& p : nonSidecarParents) {
+        if (Impl::isImageExtension(p.ext)) {
+          imageParents.push_back(p);
+        }
+      }
+      if (imageParents.size() == 1) {
+        storageId = imageParents[0].id;
+        parentId = imageParents[0].id;
+      } else {
+        // Still ambiguous — reject
+        metrics::Metrics::get().images_failed.add(1);
+        return {ErrorCode::StorageError, "",
+                "Ambiguous sidecar: multiple parent files match for '" + bareName + "'"};
+      }
+    }
+
+    // 5. Write sidecar to storage using storageId as the filename prefix
+    try {
+      metrics::Timer t(metrics::Metrics::get().storage_write);
+      coro::blockOn(m_impl->pool, m_impl->storage.writeFileAsync(storageId, ext, blob));
+    } catch (const std::exception& e) {
+      metrics::Metrics::get().images_failed.add(1);
+      return {ErrorCode::StorageError, "", std::string("Storage write failed: ") + e.what()};
+    }
+
+    // 6. Insert file record (bare name only, not full path)
+    try {
+      metrics::Timer t(metrics::Metrics::get().db_insert);
+      m_impl->dbs.addFile(id, bareName, blob.size(), ext);
+    } catch (const db::DatabaseException& e) {
+      if (e.code() == db::DatabaseErrorCode::ConstraintViolation) {
+        // Clean up storage — already written with storageId
+        coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
+        return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
+      }
+      coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
+      metrics::Metrics::get().images_failed.add(1);
+      return {ErrorCode::DatabaseError, "", e.what()};
+    }
+
+    // 7. Insert original_name entry
+    try {
+      m_impl->dbs.addOriginalName(sourceDir, baseName, id);
+    } catch (const db::DatabaseException& e) {
+      // Best effort rollback
+      try { m_impl->dbs.deleteFile(id); } catch (...) {}
+      coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
+      metrics::Metrics::get().images_failed.add(1);
+      return {ErrorCode::DatabaseError, "", e.what()};
+    }
+
+    // 8. Insert file_companion entry
+    try {
+      m_impl->dbs.addCompanion(id, parentId, storageId);
+    } catch (const db::DatabaseException& e) {
+      try { m_impl->dbs.deleteFile(id); } catch (...) {}
+      coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
+      metrics::Metrics::get().images_failed.add(1);
+      return {ErrorCode::DatabaseError, "", e.what()};
+    }
+
+    metrics::Metrics::get().images_added.add(1);
+    return {ErrorCode::Ok, id, ""};
+  }
+
+  // ---- Non-sidecar path ---------------------------------------------------
+
   // 5. Write to all storage roots in parallel
   try {
     metrics::Timer t(metrics::Metrics::get().storage_write);
@@ -239,10 +374,10 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     return {ErrorCode::StorageError, "", std::string("Storage write failed: ") + e.what()};
   }
 
-  // 6. Insert into all databases in parallel
+  // 6. Insert into all databases in parallel (store bare name)
   try {
     metrics::Timer t(metrics::Metrics::get().db_insert);
-    m_impl->dbs.addFile(id, filename, blob.size(), ext);
+    m_impl->dbs.addFile(id, bareName, blob.size(), ext);
   } catch (const db::DatabaseException& e) {
     if (e.code() == db::DatabaseErrorCode::ConstraintViolation) {
       return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
@@ -251,6 +386,42 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(id, ext));
     metrics::Metrics::get().images_failed.add(1);
     return {ErrorCode::DatabaseError, "", e.what()};
+  }
+
+  // 7. Insert original_name entry so sidecars can find this file as a parent
+  const std::string baseName = Impl::extractBaseName(bareName);
+  try {
+    m_impl->dbs.addOriginalName(sourceDir, baseName, id);
+  } catch (const db::DatabaseException&) {
+    // Non-fatal: original_name uses INSERT OR IGNORE, but if something else
+    // goes wrong, don't fail the whole addImage — the file is already stored.
+  }
+
+  // 8. Resolve orphan sidecars that were waiting for this parent
+  try {
+    auto orphans = m_impl->dbs.getOrphanCompanionsBySourceAndBaseName(sourceDir, baseName);
+    for (const auto& orphan : orphans) {
+      // Get the sidecar's extension from the file record
+      auto sidecarFile = m_impl->dbs.getFile(orphan.fileId);
+      if (!sidecarFile) {
+        continue;
+      }
+      // Relocate sidecar file on disk: old storage path -> new storage path
+      try {
+        coro::blockOn(m_impl->pool,
+                      m_impl->storage.relocateFileAsync(orphan.storageId, id, sidecarFile->ext));
+      } catch (const std::exception&) {
+        continue; // Best-effort relocation; don't fail parent add
+      }
+      // Update companion record to point to this parent
+      try {
+        m_impl->dbs.updateCompanionParent(orphan.fileId, id, id);
+      } catch (const db::DatabaseException&) {
+        // Best-effort
+      }
+    }
+  } catch (const db::DatabaseException&) {
+    // Best-effort orphan resolution; don't fail parent add
   }
 
   metrics::Metrics::get().images_added.add(1);
@@ -390,6 +561,28 @@ ErrorCode Imager::deleteImage(const std::string& id) {
 
   const std::string ext = file->ext;
 
+  // Cascade: collect all sidecars of this parent before deleting
+  std::vector<db::Database::CompanionInfo> companions;
+  try {
+    companions = m_impl->dbs.getCompanionsForParent(id);
+  } catch (const db::DatabaseException&) {
+    // Best-effort; proceed with deletion
+  }
+
+  // Delete each sidecar's DB record (cascades file_companion, original_name)
+  // and its storage file (using storage_id to find the correct disk path)
+  for (const auto& comp : companions) {
+    auto sidecarFile = m_impl->dbs.getFile(comp.fileId);
+    if (sidecarFile) {
+      try {
+        m_impl->dbs.deleteFile(comp.fileId);
+      } catch (const db::DatabaseException&) {
+        // Best-effort
+      }
+      coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(comp.storageId, sidecarFile->ext));
+    }
+  }
+
   try {
     m_impl->dbs.deleteFile(id);
   } catch (const db::DatabaseException& e) {
@@ -454,7 +647,20 @@ Blob Imager::getImageData(const std::string& id) {
   if (!file) {
     return {};
   }
-  return m_impl->storage.readFile(id, file->ext);
+
+  // For sidecar files, use storage_id (which may differ from file id)
+  // to compute the correct disk path.
+  std::string storageId = id;
+  try {
+    auto companion = m_impl->dbs.getCompanion(id);
+    if (companion) {
+      storageId = companion->storageId;
+    }
+  } catch (const db::DatabaseException&) {
+    // Fall back to own id
+  }
+
+  return m_impl->storage.readFile(storageId, file->ext);
 }
 
 // ---------------------------------------------------------------------------

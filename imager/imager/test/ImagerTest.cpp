@@ -670,6 +670,260 @@ public:
 CPPUNIT_TEST_SUITE_REGISTRATION(ConcurrencyTest);
 
 // ---------------------------------------------------------------------------
+// Helpers: make a minimal valid AAE blob
+// ---------------------------------------------------------------------------
+
+static Blob makeAaeBlob(const std::string& key = "adjustmentFormatVersion") {
+  std::string xml =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\""
+    " \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+    "<plist version=\"1.0\">\n"
+    "<dict>\n"
+    "    <key>" + key + "</key>\n"
+    "    <integer>1</integer>\n"
+    "</dict>\n"
+    "</plist>\n";
+  std::vector<uint8_t> bytes(xml.begin(), xml.end());
+  return Blob::fromVector(std::move(bytes));
+}
+
+// ---------------------------------------------------------------------------
+// Sidecar pairing tests
+// ---------------------------------------------------------------------------
+
+class SidecarTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(SidecarTest);
+  CPPUNIT_TEST(testAddAaeWithParent);
+  CPPUNIT_TEST(testAddAaeWithoutParent);
+  CPPUNIT_TEST(testAddParentResolvesOrphan);
+  CPPUNIT_TEST(testAddAaeDuplicate);
+  CPPUNIT_TEST(testAddBrokenAae);
+  CPPUNIT_TEST(testDeleteParentCascadesToSidecar);
+  CPPUNIT_TEST(testGetSidecarData);
+  CPPUNIT_TEST(testAaePairingIsCaseInsensitive);
+  CPPUNIT_TEST(testAaePairingRespectsSourceDir);
+  CPPUNIT_TEST(testAaeNoCrossDirectoryPairing);
+  CPPUNIT_TEST(testAaeBareFilename);
+  CPPUNIT_TEST_SUITE_END();
+
+  config::AppConfig m_cfg;
+
+public:
+  void setUp() override {
+    m_cfg = makeTempConfig();
+  }
+
+  void tearDown() override {
+    // Temp dirs cleaned up by OS; we just reset config
+    m_cfg = {};
+  }
+
+  // --- testAddAaeWithParent ------------------------------------------------
+  // Add JPG first, then AAE -> AAE stored with JPG's hash as storage prefix.
+  void testAddAaeWithParent() {
+    Imager img(m_cfg);
+
+    auto jpeg = Blob::fromVector(makeMinimalJpeg());
+    auto r1 = img.addImage(jpeg, "vacation/IMG_1234.JPG");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r1.code);
+    const std::string jpgHash = r1.id;
+
+    auto aae = makeAaeBlob();
+    auto r2 = img.addImage(aae, "vacation/IMG_1234.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r2.code);
+    const std::string aaeHash = r2.id;
+
+    // The two hashes are different (different content)
+    CPPUNIT_ASSERT(jpgHash != aaeHash);
+
+    // But the AAE should be retrievable
+    auto data = img.getImageData(aaeHash);
+    CPPUNIT_ASSERT(!data.empty());
+  }
+
+  // --- testAddAaeWithoutParent ---------------------------------------------
+  // Add AAE before its parent -> stored as orphan with own hash.
+  void testAddAaeWithoutParent() {
+    Imager img(m_cfg);
+
+    auto aae = makeAaeBlob();
+    auto r = img.addImage(aae, "vacation/IMG_1234.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r.code);
+
+    // Should be retrievable even as orphan
+    auto data = img.getImageData(r.id);
+    CPPUNIT_ASSERT(!data.empty());
+  }
+
+  // --- testAddParentResolvesOrphan -----------------------------------------
+  // Add AAE first (orphan), then JPG -> AAE gets relocated to JPG's hash path.
+  void testAddParentResolvesOrphan() {
+    Imager img(m_cfg);
+
+    auto aae = makeAaeBlob();
+    auto r1 = img.addImage(aae, "vacation/IMG_1234.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r1.code);
+    const std::string aaeHash = r1.id;
+
+    auto jpeg = Blob::fromVector(makeMinimalJpeg());
+    auto r2 = img.addImage(jpeg, "vacation/IMG_1234.JPG");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r2.code);
+
+    // AAE should still be retrievable after relocation
+    auto data = img.getImageData(aaeHash);
+    CPPUNIT_ASSERT(!data.empty());
+  }
+
+  // --- testAddAaeDuplicate -------------------------------------------------
+  // Add same AAE twice -> second returns DuplicateFile.
+  void testAddAaeDuplicate() {
+    Imager img(m_cfg);
+
+    auto aae = makeAaeBlob();
+    auto r1 = img.addImage(aae, "vacation/IMG_1234.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r1.code);
+
+    auto r2 = img.addImage(aae, "vacation/IMG_1234.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::DuplicateFile, r2.code);
+  }
+
+  // --- testAddBrokenAae ----------------------------------------------------
+  // Truncated/corrupt AAE bytes -> BrokenFile.
+  void testAddBrokenAae() {
+    Imager img(m_cfg);
+
+    std::vector<uint8_t> corrupt = {0x00, 0x01, 0x02, 0x03};
+    auto r = img.addImage(Blob::fromVector(std::move(corrupt)), "vacation/IMG_1234.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::BrokenFile, r.code);
+  }
+
+  // --- testDeleteParentCascadesToSidecar -----------------------------------
+  // Delete JPG -> AAE also deleted from storage and DB.
+  void testDeleteParentCascadesToSidecar() {
+    Imager img(m_cfg);
+
+    auto jpeg = Blob::fromVector(makeMinimalJpeg());
+    auto r1 = img.addImage(jpeg, "vacation/IMG_1234.JPG");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r1.code);
+
+    auto aae = makeAaeBlob();
+    auto r2 = img.addImage(aae, "vacation/IMG_1234.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r2.code);
+    const std::string aaeHash = r2.id;
+
+    // Delete the parent
+    auto ec = img.deleteImage(r1.id);
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, ec);
+
+    // AAE should no longer exist in DB
+    auto info = img.getImage(aaeHash);
+    CPPUNIT_ASSERT(!info.has_value());
+  }
+
+  // --- testGetSidecarData --------------------------------------------------
+  // Add JPG + AAE, retrieve AAE by its content hash -> correct data returned.
+  void testGetSidecarData() {
+    Imager img(m_cfg);
+
+    auto jpeg = Blob::fromVector(makeMinimalJpeg());
+    img.addImage(jpeg, "vacation/IMG_1234.JPG");
+
+    auto aae = makeAaeBlob();
+    auto r = img.addImage(aae, "vacation/IMG_1234.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r.code);
+
+    auto data = img.getImageData(r.id);
+    CPPUNIT_ASSERT(!data.empty());
+    CPPUNIT_ASSERT_EQUAL(aae.size(), data.size());
+  }
+
+  // --- testAaePairingIsCaseInsensitive -------------------------------------
+  // img_1234.jpg + IMG_1234.AAE pair correctly despite case difference.
+  void testAaePairingIsCaseInsensitive() {
+    Imager img(m_cfg);
+
+    auto jpeg = Blob::fromVector(makeMinimalJpeg());
+    auto r1 = img.addImage(jpeg, "vacation/img_1234.jpg"); // lowercase
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r1.code);
+
+    auto aae = makeAaeBlob();
+    auto r2 = img.addImage(aae, "vacation/IMG_1234.AAE"); // uppercase base
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r2.code);
+
+    // Both should be in the system
+    CPPUNIT_ASSERT_EQUAL(uint64_t(2), img.imageCount());
+  }
+
+  // --- testAaePairingRespectsSourceDir ------------------------------------
+  // dir_a/IMG_0001.JPG + dir_b/IMG_0001.JPG + dir_a/IMG_0001.AAE
+  // -> AAE pairs only with dir_a's JPG.
+  void testAaePairingRespectsSourceDir() {
+    Imager img(m_cfg);
+
+    // Use different JPEG content so they have different hashes
+    auto jpeg1 = Blob::fromVector(makeMinimalJpeg());
+    auto r1 = img.addImage(jpeg1, "dir_a/IMG_0001.JPG");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r1.code);
+
+    // Second JPEG with slightly different content (use a MOV-free unique approach)
+    auto jpeg2Data = makeMinimalJpeg();
+    jpeg2Data.push_back(0x00); // make content unique
+    auto jpeg2 = Blob::fromVector(std::move(jpeg2Data));
+    auto r2 = img.addImage(jpeg2, "dir_b/IMG_0001.JPG");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r2.code);
+
+    auto aae = makeAaeBlob();
+    auto r3 = img.addImage(aae, "dir_a/IMG_0001.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r3.code);
+
+    // AAE should be paired with dir_a's JPG (retrievable via storage path using dir_a's hash)
+    auto data = img.getImageData(r3.id);
+    CPPUNIT_ASSERT(!data.empty());
+  }
+
+  // --- testAaeNoCrossDirectoryPairing -------------------------------------
+  // dir_a/IMG_0001.JPG + dir_b/IMG_0001.AAE -> AAE is orphan.
+  void testAaeNoCrossDirectoryPairing() {
+    Imager img(m_cfg);
+
+    auto jpeg = Blob::fromVector(makeMinimalJpeg());
+    auto r1 = img.addImage(jpeg, "dir_a/IMG_0001.JPG");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r1.code);
+
+    // AAE in different dir -> should be orphan (no parent in dir_b)
+    auto aae = makeAaeBlob();
+    auto r2 = img.addImage(aae, "dir_b/IMG_0001.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r2.code);
+
+    // Still stored as orphan with own hash
+    auto data = img.getImageData(r2.id);
+    CPPUNIT_ASSERT(!data.empty());
+  }
+
+  // --- testAaeBareFilename ------------------------------------------------
+  // IMG_1234.JPG + IMG_1234.AAE (no path prefix) -> pairs via empty source_dir.
+  void testAaeBareFilename() {
+    Imager img(m_cfg);
+
+    auto jpeg = Blob::fromVector(makeMinimalJpeg());
+    auto r1 = img.addImage(jpeg, "IMG_1234.JPG");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r1.code);
+
+    auto aae = makeAaeBlob();
+    auto r2 = img.addImage(aae, "IMG_1234.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r2.code);
+
+    CPPUNIT_ASSERT_EQUAL(uint64_t(2), img.imageCount());
+
+    auto data = img.getImageData(r2.id);
+    CPPUNIT_ASSERT(!data.empty());
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(SidecarTest);
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 

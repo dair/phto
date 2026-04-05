@@ -574,6 +574,182 @@ public:
 CPPUNIT_TEST_SUITE_REGISTRATION(MultithreadTest);
 
 // ============================================================================
+// OriginalName tests
+// ============================================================================
+class OriginalNameTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(OriginalNameTest);
+  CPPUNIT_TEST(testAddOriginalName);
+  CPPUNIT_TEST(testGetFilesBySourceAndBaseName);
+  CPPUNIT_TEST(testSameBaseNameDifferentDirs);
+  CPPUNIT_TEST(testDeleteFileCascadesOriginalName);
+  CPPUNIT_TEST_SUITE_END();
+
+  fs::path m_path;
+  std::unique_ptr<Database> m_db;
+
+public:
+  void setUp() override {
+    m_path = tempDbPath("origname");
+    m_db = std::make_unique<Database>(m_path);
+    // Seed a couple of files
+    m_db->addFile("hash1", "IMG_0001.jpg", 100, ".jpg");
+    m_db->addFile("hash2", "IMG_0001.mov", 200, ".mov");
+    m_db->addFile("hash3", "IMG_0001.jpg", 100, ".jpg"); // different dir
+  }
+
+  void tearDown() override {
+    m_db.reset();
+    fs::remove(m_path);
+    fs::remove(fs::path(m_path).replace_extension(".db-wal"));
+    fs::remove(fs::path(m_path).replace_extension(".db-shm"));
+  }
+
+  void testAddOriginalName() {
+    CPPUNIT_ASSERT_NO_THROW(m_db->addOriginalName("camera_a", "img_0001", "hash1"));
+    CPPUNIT_ASSERT_NO_THROW(m_db->addOriginalName("camera_a", "img_0001", "hash2"));
+  }
+
+  void testGetFilesBySourceAndBaseName() {
+    m_db->addOriginalName("camera_a", "img_0001", "hash1");
+    m_db->addOriginalName("camera_a", "img_0001", "hash2");
+    m_db->addOriginalName("camera_b", "img_0001", "hash3");
+
+    auto files_a = m_db->getFilesBySourceAndBaseName("camera_a", "img_0001");
+    CPPUNIT_ASSERT_EQUAL(size_t(2), files_a.size());
+
+    auto files_b = m_db->getFilesBySourceAndBaseName("camera_b", "img_0001");
+    CPPUNIT_ASSERT_EQUAL(size_t(1), files_b.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("hash3"), files_b[0].id);
+  }
+
+  void testSameBaseNameDifferentDirs() {
+    m_db->addOriginalName("dir_a", "img_0001", "hash1");
+    m_db->addOriginalName("dir_b", "img_0001", "hash3");
+
+    // Lookup in dir_a should not return dir_b's file
+    auto files = m_db->getFilesBySourceAndBaseName("dir_a", "img_0001");
+    CPPUNIT_ASSERT_EQUAL(size_t(1), files.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("hash1"), files[0].id);
+
+    auto other = m_db->getFilesBySourceAndBaseName("dir_b", "img_0001");
+    CPPUNIT_ASSERT_EQUAL(size_t(1), other.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("hash3"), other[0].id);
+  }
+
+  void testDeleteFileCascadesOriginalName() {
+    m_db->addOriginalName("camera_a", "img_0001", "hash1");
+    m_db->deleteFile("hash1");
+
+    auto files = m_db->getFilesBySourceAndBaseName("camera_a", "img_0001");
+    CPPUNIT_ASSERT(files.empty());
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(OriginalNameTest);
+
+// ============================================================================
+// Companion (sidecar) tests
+// ============================================================================
+class CompanionTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(CompanionTest);
+  CPPUNIT_TEST(testAddCompanion);
+  CPPUNIT_TEST(testAddCompanionOrphan);
+  CPPUNIT_TEST(testGetOrphanCompanions);
+  CPPUNIT_TEST(testUpdateCompanionParent);
+  CPPUNIT_TEST(testDeleteParentCascadesCompanion);
+  CPPUNIT_TEST(testGetCompanionsForParent);
+  CPPUNIT_TEST_SUITE_END();
+
+  fs::path m_path;
+  std::unique_ptr<Database> m_db;
+
+public:
+  void setUp() override {
+    m_path = tempDbPath("companion");
+    m_db = std::make_unique<Database>(m_path);
+    m_db->addFile("parent_hash", "IMG_0001.jpg", 100, ".jpg");
+    m_db->addFile("aae_hash",    "IMG_0001.aae",  50, ".aae");
+    m_db->addFile("orphan_hash", "IMG_0002.aae",  50, ".aae");
+    m_db->addOriginalName("vacation", "img_0001", "parent_hash");
+    m_db->addOriginalName("vacation", "img_0001", "aae_hash");
+    m_db->addOriginalName("vacation", "img_0002", "orphan_hash");
+  }
+
+  void tearDown() override {
+    m_db.reset();
+    fs::remove(m_path);
+    fs::remove(fs::path(m_path).replace_extension(".db-wal"));
+    fs::remove(fs::path(m_path).replace_extension(".db-shm"));
+  }
+
+  void testAddCompanion() {
+    CPPUNIT_ASSERT_NO_THROW(m_db->addCompanion("aae_hash", std::string("parent_hash"), "parent_hash"));
+    auto comp = m_db->getCompanion("aae_hash");
+    CPPUNIT_ASSERT(comp.has_value());
+    CPPUNIT_ASSERT_EQUAL(std::string("aae_hash"),    comp->fileId);
+    CPPUNIT_ASSERT(comp->parentId.has_value());
+    CPPUNIT_ASSERT_EQUAL(std::string("parent_hash"), *comp->parentId);
+    CPPUNIT_ASSERT_EQUAL(std::string("parent_hash"), comp->storageId);
+  }
+
+  void testAddCompanionOrphan() {
+    CPPUNIT_ASSERT_NO_THROW(m_db->addCompanion("orphan_hash", std::nullopt, "orphan_hash"));
+    auto comp = m_db->getCompanion("orphan_hash");
+    CPPUNIT_ASSERT(comp.has_value());
+    CPPUNIT_ASSERT(!comp->parentId.has_value());
+    CPPUNIT_ASSERT_EQUAL(std::string("orphan_hash"), comp->storageId);
+  }
+
+  void testGetOrphanCompanions() {
+    m_db->addCompanion("orphan_hash", std::nullopt, "orphan_hash");
+
+    auto orphans = m_db->getOrphanCompanionsBySourceAndBaseName("vacation", "img_0002");
+    CPPUNIT_ASSERT_EQUAL(size_t(1), orphans.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("orphan_hash"), orphans[0].fileId);
+
+    // Non-orphan should not appear
+    m_db->addCompanion("aae_hash", std::string("parent_hash"), "parent_hash");
+    auto notOrphan = m_db->getOrphanCompanionsBySourceAndBaseName("vacation", "img_0001");
+    CPPUNIT_ASSERT(notOrphan.empty());
+  }
+
+  void testUpdateCompanionParent() {
+    m_db->addCompanion("orphan_hash", std::nullopt, "orphan_hash");
+
+    // Simulate parent arriving
+    m_db->addFile("parent2", "IMG_0002.jpg", 100, ".jpg");
+    m_db->updateCompanionParent("orphan_hash", "parent2", "parent2");
+
+    auto comp = m_db->getCompanion("orphan_hash");
+    CPPUNIT_ASSERT(comp.has_value());
+    CPPUNIT_ASSERT(comp->parentId.has_value());
+    CPPUNIT_ASSERT_EQUAL(std::string("parent2"), *comp->parentId);
+    CPPUNIT_ASSERT_EQUAL(std::string("parent2"), comp->storageId);
+  }
+
+  void testDeleteParentCascadesCompanion() {
+    m_db->addCompanion("aae_hash", std::string("parent_hash"), "parent_hash");
+
+    // Deleting parent should SET NULL parent_id in companion (ON DELETE SET NULL)
+    m_db->deleteFile("parent_hash");
+
+    auto comp = m_db->getCompanion("aae_hash");
+    CPPUNIT_ASSERT(comp.has_value());
+    CPPUNIT_ASSERT(!comp->parentId.has_value()); // SET NULL
+  }
+
+  void testGetCompanionsForParent() {
+    m_db->addCompanion("aae_hash", std::string("parent_hash"), "parent_hash");
+
+    auto companions = m_db->getCompanionsForParent("parent_hash");
+    CPPUNIT_ASSERT_EQUAL(size_t(1), companions.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("aae_hash"), companions[0].fileId);
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(CompanionTest);
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {

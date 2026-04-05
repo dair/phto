@@ -26,7 +26,9 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 │   ├── jpeg/
 │   ├── png/
 │   ├── heic/
-│   └── mov/
+│   ├── nef/
+│   ├── mov/
+│   └── aae/     # Apple Adjustment Expression sidecar files
 ├── imager/        # Facade library (libimager) — ties everything together
 │   ├── src/
 │   │   ├── MultiDatabase.cpp   # All-or-nothing parallel writes across per-target DBs
@@ -50,6 +52,7 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 | libpng | PNG validation | Bundled in `validations/png/libpng/src/` — DO NOT use system libpng |
 | OpenSSL | SHA256 hashing | System — `find_package(OpenSSL REQUIRED)` |
 | libheif | HEIC/HEIF validation | System — `find_package(libheif REQUIRED)` |
+| *(none)* | AAE validation | Pure C++ — no external dependency |
 | libavformat | MOV/MP4 container demuxing | System — `pkg_check_modules(LibAvFormat REQUIRED libavformat)` |
 | libavcodec | Video codec trial decode | System — `pkg_check_modules(LibAvCodec REQUIRED libavcodec)` |
 | libavutil | FFmpeg memory/error utilities | System — `pkg_check_modules(LibAvUtil REQUIRED libavutil)` |
@@ -81,7 +84,8 @@ Config is read once at startup (no hot reload).
 - **Coroutine parallelism**: single shared `ThreadPool` used by `MultiDatabase`, `FileStorage`, and `Imager` for concurrent I/O
 - **Blob ownership**: `blob::Blob` provides shared-ownership binary buffers safe to pass into coroutines
 - **File identity**: SHA256 hex string (64 chars), stored sharded by first 2 hex chars (`<root>/a1/a1b2c3...f4.jpg`)
-- **Validation**: JPEG/PNG validated via bundled libs; HEIC via system libheif; MOV/MP4 via system libavformat+libavcodec (container parse + trial decode)
+- **Validation**: JPEG/PNG validated via bundled libs; HEIC via system libheif; MOV/MP4 via system libavformat+libavcodec (container parse + trial decode); NEF via system LibRaw; AAE via lightweight XML/plist structure scan (no external library)
+- **Sidecar files**: AAE files are stored using their parent's content hash as the filename prefix (not their own hash), preserving the pairing relationship. Orphan AAEs (added before parent) are relocated when the parent arrives. Sidecars are cascade-deleted when their parent is deleted.
 - **Metrics**: always-on lock-free instrumentation (histograms, counters, gauges) for pipeline bottleneck analysis
 
 ## Testing

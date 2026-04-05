@@ -216,6 +216,48 @@ void MultiDatabase::unbindTag(const std::string& fileId, const std::string& tagN
 }
 
 // ---------------------------------------------------------------------------
+// Original name operations
+// ---------------------------------------------------------------------------
+
+void MultiDatabase::addOriginalName(const std::string& sourceDir, const std::string& baseName,
+                                    const std::string& fileId) {
+  parallelWriteAll([&](db::Database& db) { db.addOriginalName(sourceDir, baseName, fileId); });
+}
+
+std::vector<db::File> MultiDatabase::getFilesBySourceAndBaseName(const std::string& sourceDir,
+                                                                  const std::string& baseName) {
+  return m_dbs[0]->getFilesBySourceAndBaseName(sourceDir, baseName);
+}
+
+// ---------------------------------------------------------------------------
+// Companion (sidecar) operations
+// ---------------------------------------------------------------------------
+
+void MultiDatabase::addCompanion(const std::string& fileId,
+                                  const std::optional<std::string>& parentId,
+                                  const std::string& storageId) {
+  parallelWriteAll([&](db::Database& db) { db.addCompanion(fileId, parentId, storageId); });
+}
+
+std::optional<db::Database::CompanionInfo> MultiDatabase::getCompanion(const std::string& fileId) {
+  return m_dbs[0]->getCompanion(fileId);
+}
+
+std::vector<db::Database::CompanionInfo> MultiDatabase::getOrphanCompanionsBySourceAndBaseName(
+    const std::string& sourceDir, const std::string& baseName) {
+  return m_dbs[0]->getOrphanCompanionsBySourceAndBaseName(sourceDir, baseName);
+}
+
+void MultiDatabase::updateCompanionParent(const std::string& fileId, const std::string& parentId,
+                                          const std::string& storageId) {
+  parallelWriteAll([&](db::Database& db) { db.updateCompanionParent(fileId, parentId, storageId); });
+}
+
+std::vector<db::Database::CompanionInfo> MultiDatabase::getCompanionsForParent(const std::string& parentId) {
+  return m_dbs[0]->getCompanionsForParent(parentId);
+}
+
+// ---------------------------------------------------------------------------
 // Read operations (first DB only)
 // ---------------------------------------------------------------------------
 

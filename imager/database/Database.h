@@ -89,6 +89,46 @@ public:
   /// Return total number of files stored.
   uint64_t fileCount();
 
+  // ---- Original name tracking -----------------------------------------
+
+  /// Record that file @p fileId was originally at (@p sourceDir, @p baseName).
+  /// All files (not just sidecars) are recorded here for efficient parent lookup.
+  void addOriginalName(const std::string& sourceDir, const std::string& baseName,
+                       const std::string& fileId);
+
+  /// Find all files with a given (@p sourceDir, @p baseName) pairing key.
+  /// Used to find parent candidates for a sidecar.
+  std::vector<File> getFilesBySourceAndBaseName(const std::string& sourceDir,
+                                                const std::string& baseName);
+
+  // ---- Companion (sidecar) tracking ------------------------------------
+
+  struct CompanionInfo {
+    std::string fileId;
+    std::optional<std::string> parentId; ///< nullopt if orphan
+    std::string storageId;
+  };
+
+  /// Record a sidecar relationship. @p parentId may be nullopt for orphans.
+  void addCompanion(const std::string& fileId,
+                    const std::optional<std::string>& parentId,
+                    const std::string& storageId);
+
+  /// Get the companion record for a sidecar file. Returns nullopt for normal files.
+  std::optional<CompanionInfo> getCompanion(const std::string& fileId);
+
+  /// Find orphan sidecars matching a (@p sourceDir, @p baseName) pairing key.
+  /// Used when a parent arrives and needs to resolve its orphan sidecars.
+  std::vector<CompanionInfo> getOrphanCompanionsBySourceAndBaseName(
+      const std::string& sourceDir, const std::string& baseName);
+
+  /// Update a companion's parent and storage ID (used during orphan resolution).
+  void updateCompanionParent(const std::string& fileId, const std::string& parentId,
+                             const std::string& storageId);
+
+  /// Get all companions of a parent file.
+  std::vector<CompanionInfo> getCompanionsForParent(const std::string& parentId);
+
   // ---- Tag operations -------------------------------------------------
 
   /// Create a new tag.  Throws ConstraintViolation if name exists.

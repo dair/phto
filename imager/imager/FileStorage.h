@@ -41,6 +41,13 @@ public:
   /// Delete from all roots in parallel (best-effort).
   coro::Task<void> deleteFileAsync(const std::string& id, const std::string& ext);
 
+  /// Move a file from one id-based path to another across all storage roots.
+  /// Used when an orphan sidecar's parent is discovered (Scenario B resolution).
+  /// Uses std::filesystem::rename (atomic on same filesystem); falls back to
+  /// copy+delete if rename fails (e.g., cross-device).
+  coro::Task<void> relocateFileAsync(const std::string& oldId, const std::string& newId,
+                                     const std::string& ext);
+
 private:
   std::vector<std::filesystem::path> m_roots;
   coro::ThreadPool& m_pool;

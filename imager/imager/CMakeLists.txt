@@ -8,6 +8,7 @@ add_library(libimager
     HeicValidatorImpl.cpp
     NefValidatorImpl.cpp
     MovValidatorImpl.cpp
+    AaeValidatorImpl.cpp
     Imager.cpp
     MultiDatabase.cpp
 )
@@ -30,6 +31,7 @@ target_link_libraries(libimager
         heic_validator
         nef_validator
         mov_validator
+        aae_validator
         OpenSSL::Crypto
 )
 

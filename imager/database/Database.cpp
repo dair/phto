@@ -67,6 +67,19 @@ static constexpr std::string_view SQL_CREATE_SCHEMA = R"(
         tag_name TEXT NOT NULL REFERENCES tag(name) ON DELETE CASCADE,
         PRIMARY KEY (file_id, tag_name)
     );
+    CREATE TABLE IF NOT EXISTS original_name (
+        source_dir TEXT NOT NULL,
+        base_name  TEXT NOT NULL,
+        file_id    TEXT NOT NULL REFERENCES file(id) ON DELETE CASCADE,
+        PRIMARY KEY (source_dir, base_name, file_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_original_name_pairing
+        ON original_name(source_dir, base_name);
+    CREATE TABLE IF NOT EXISTS file_companion (
+        file_id    TEXT PRIMARY KEY NOT NULL REFERENCES file(id) ON DELETE CASCADE,
+        parent_id  TEXT REFERENCES file(id) ON DELETE SET NULL,
+        storage_id TEXT NOT NULL
+    );
 )";
 
 static constexpr std::string_view SQL_INSERT_FILE = "INSERT INTO file (id, name, size, ext) VALUES (?, ?, ?, ?)";
@@ -92,6 +105,31 @@ static constexpr std::string_view SQL_SELECT_TAGS_FOR_FILE =
   "SELECT tag_name FROM file_tag WHERE file_id = ? ORDER BY tag_name";
 static constexpr std::string_view SQL_SELECT_TAGS_FOR_FILE_PAGE =
   "SELECT tag_name FROM file_tag WHERE file_id = ? ORDER BY tag_name LIMIT ? OFFSET ?";
+
+// original_name
+static constexpr std::string_view SQL_INSERT_ORIGINAL_NAME =
+  "INSERT OR IGNORE INTO original_name (source_dir, base_name, file_id) VALUES (?, ?, ?)";
+static constexpr std::string_view SQL_SELECT_FILES_BY_SOURCE_BASENAME =
+  "SELECT f.id, f.name, f.size, f.ext "
+  "FROM file f "
+  "JOIN original_name on_ ON on_.file_id = f.id "
+  "WHERE on_.source_dir = ? AND on_.base_name = ?";
+
+// file_companion
+static constexpr std::string_view SQL_INSERT_COMPANION =
+  "INSERT INTO file_companion (file_id, parent_id, storage_id) VALUES (?, ?, ?)";
+static constexpr std::string_view SQL_SELECT_COMPANION =
+  "SELECT file_id, parent_id, storage_id FROM file_companion WHERE file_id = ?";
+static constexpr std::string_view SQL_SELECT_ORPHAN_COMPANIONS_BY_SOURCE_BASENAME =
+  "SELECT fc.file_id, fc.parent_id, fc.storage_id "
+  "FROM file_companion fc "
+  "JOIN original_name on_ ON on_.file_id = fc.file_id "
+  "WHERE fc.parent_id IS NULL "
+  "AND on_.source_dir = ? AND on_.base_name = ?";
+static constexpr std::string_view SQL_UPDATE_COMPANION_PARENT =
+  "UPDATE file_companion SET parent_id = ?, storage_id = ? WHERE file_id = ?";
+static constexpr std::string_view SQL_SELECT_COMPANIONS_FOR_PARENT =
+  "SELECT file_id, parent_id, storage_id FROM file_companion WHERE parent_id = ?";
 
 // ---------------------------------------------------------------------------
 // Impl
@@ -368,6 +406,115 @@ std::vector<std::string> Database::getTagsForFile(const std::string& fileId, std
   std::vector<std::string> result;
   while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
     result.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0)));
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Original name operations
+// ---------------------------------------------------------------------------
+
+void Database::addOriginalName(const std::string& sourceDir, const std::string& baseName,
+                               const std::string& fileId) {
+  std::unique_lock lock(m_impl->mutex);
+  auto stmt = m_impl->prepare(SQL_INSERT_ORIGINAL_NAME);
+  sqlite3_bind_text(stmt.get(), 1, sourceDir.c_str(), -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt.get(), 2, baseName.c_str(), -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt.get(), 3, fileId.c_str(), -1, SQLITE_STATIC);
+  m_impl->mustDone(stmt.get(), DatabaseErrorCode::QueryFailed, "addOriginalName failed");
+}
+
+std::vector<File> Database::getFilesBySourceAndBaseName(const std::string& sourceDir,
+                                                        const std::string& baseName) {
+  std::shared_lock lock(m_impl->mutex);
+  auto stmt = m_impl->prepare(SQL_SELECT_FILES_BY_SOURCE_BASENAME);
+  sqlite3_bind_text(stmt.get(), 1, sourceDir.c_str(), -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt.get(), 2, baseName.c_str(), -1, SQLITE_STATIC);
+  std::vector<File> result;
+  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    result.push_back(rowToFile(stmt.get()));
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Companion (sidecar) operations
+// ---------------------------------------------------------------------------
+
+void Database::addCompanion(const std::string& fileId,
+                            const std::optional<std::string>& parentId,
+                            const std::string& storageId) {
+  std::unique_lock lock(m_impl->mutex);
+  auto stmt = m_impl->prepare(SQL_INSERT_COMPANION);
+  sqlite3_bind_text(stmt.get(), 1, fileId.c_str(), -1, SQLITE_STATIC);
+  if (parentId) {
+    sqlite3_bind_text(stmt.get(), 2, parentId->c_str(), -1, SQLITE_STATIC);
+  } else {
+    sqlite3_bind_null(stmt.get(), 2);
+  }
+  sqlite3_bind_text(stmt.get(), 3, storageId.c_str(), -1, SQLITE_STATIC);
+  m_impl->mustDone(stmt.get(), DatabaseErrorCode::ConstraintViolation, "addCompanion: companion already exists for file '" + fileId + "'");
+}
+
+std::optional<Database::CompanionInfo> Database::getCompanion(const std::string& fileId) {
+  std::shared_lock lock(m_impl->mutex);
+  auto stmt = m_impl->prepare(SQL_SELECT_COMPANION);
+  sqlite3_bind_text(stmt.get(), 1, fileId.c_str(), -1, SQLITE_STATIC);
+  if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+    return std::nullopt;
+  }
+  CompanionInfo info;
+  info.fileId = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0));
+  if (sqlite3_column_type(stmt.get(), 1) != SQLITE_NULL) {
+    info.parentId = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 1));
+  }
+  info.storageId = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 2));
+  return info;
+}
+
+std::vector<Database::CompanionInfo> Database::getOrphanCompanionsBySourceAndBaseName(
+    const std::string& sourceDir, const std::string& baseName) {
+  std::shared_lock lock(m_impl->mutex);
+  auto stmt = m_impl->prepare(SQL_SELECT_ORPHAN_COMPANIONS_BY_SOURCE_BASENAME);
+  sqlite3_bind_text(stmt.get(), 1, sourceDir.c_str(), -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt.get(), 2, baseName.c_str(), -1, SQLITE_STATIC);
+  std::vector<CompanionInfo> result;
+  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    CompanionInfo info;
+    info.fileId = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0));
+    // parent_id is NULL for orphans, so skip column 1
+    info.storageId = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 2));
+    result.push_back(std::move(info));
+  }
+  return result;
+}
+
+void Database::updateCompanionParent(const std::string& fileId, const std::string& parentId,
+                                     const std::string& storageId) {
+  std::unique_lock lock(m_impl->mutex);
+  auto stmt = m_impl->prepare(SQL_UPDATE_COMPANION_PARENT);
+  sqlite3_bind_text(stmt.get(), 1, parentId.c_str(), -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt.get(), 2, storageId.c_str(), -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt.get(), 3, fileId.c_str(), -1, SQLITE_STATIC);
+  m_impl->mustDone(stmt.get(), DatabaseErrorCode::QueryFailed, "updateCompanionParent failed");
+  if (sqlite3_changes(m_impl->db.get()) == 0) {
+    throw DatabaseException(DatabaseErrorCode::NotFound, "Companion not found for file: " + fileId);
+  }
+}
+
+std::vector<Database::CompanionInfo> Database::getCompanionsForParent(const std::string& parentId) {
+  std::shared_lock lock(m_impl->mutex);
+  auto stmt = m_impl->prepare(SQL_SELECT_COMPANIONS_FOR_PARENT);
+  sqlite3_bind_text(stmt.get(), 1, parentId.c_str(), -1, SQLITE_STATIC);
+  std::vector<CompanionInfo> result;
+  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    CompanionInfo info;
+    info.fileId = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0));
+    if (sqlite3_column_type(stmt.get(), 1) != SQLITE_NULL) {
+      info.parentId = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 1));
+    }
+    info.storageId = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 2));
+    result.push_back(std::move(info));
   }
   return result;
 }
