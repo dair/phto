@@ -19,8 +19,7 @@ ValidationResult validateJpeg(const void* data, size_t dataSize);
 ## Build System
 
 - **CMake 4.2.3**, C++23 standard, **clang** as the primary compiler
-- `libjpeg/` — contains the bundled LibJPEG dependency; its own `CMakeLists.txt` must live here and it is built separately
-- `libjpeg/src/` — **strictly read-only**, never modify these files
+- libjpeg is resolved via `find_package(JPEG REQUIRED)` against the system installation
 - The library must produce a `.h` header suitable for inclusion by external consumers
 - Tests live in `test/` and link against **CPPUNIT** (provided externally)
 
@@ -42,7 +41,7 @@ ctest --test-dir build --output-on-failure
 
 ## Architecture
 
-- The top-level `CMakeLists.txt` should `add_subdirectory(libjpeg)` and `add_subdirectory(test)`.
-- `libjpeg/CMakeLists.txt` compiles the LibJPEG sources from `libjpeg/src/` into a static library target (e.g. `jpeg_static`) with a well-defined include path.
-- The validation library target links against that static library and exposes its public header.
+- The top-level `CMakeLists.txt` calls `find_package(JPEG REQUIRED)` and `add_subdirectory(test)`.
+- The validation library target links against `JPEG::JPEG` and exposes its public header.
 - The `test/` target links against the validation library and the system-provided CPPUNIT.
+- A test JPEG fixture (`testimg.jpg`) lives in `test/` for use by the test suite.

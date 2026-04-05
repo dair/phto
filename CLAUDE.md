@@ -21,8 +21,8 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 ├── blob/          # Header-only shared-ownership binary buffer (namespace blob)
 ├── coro/          # Header-only coroutine primitives: Task<T>, ThreadPool, whenAll, blockOn (namespace coro)
 ├── config/        # TOML config parser (toml++ via FetchContent)
-├── database/      # SQLite wrapper (bundled SQLite, has its own CLAUDE.md)
-├── validations/   # Format validators (bundled libjpeg/libpng, system libheif/libav*; each has CLAUDE.md)
+├── database/      # SQLite wrapper (system SQLite via find_package, has its own CLAUDE.md)
+├── validations/   # Format validators (system libjpeg/libpng/libheif/libav*; each has CLAUDE.md)
 │   ├── jpeg/
 │   ├── png/
 │   ├── heic/
@@ -47,9 +47,9 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 
 | Library | Purpose | Integration |
 |---------|---------|-------------|
-| SQLite | Metadata DB | Bundled in `database/sqlite/src/` — DO NOT use system SQLite |
-| libjpeg | JPEG validation | Bundled in `validations/jpeg/libjpeg/src/` — DO NOT use system libjpeg |
-| libpng | PNG validation | Bundled in `validations/png/libpng/src/` — DO NOT use system libpng |
+| SQLite | Metadata DB | System — `find_package(SQLite3 REQUIRED)` |
+| libjpeg | JPEG validation | System — `find_package(JPEG REQUIRED)` |
+| libpng | PNG validation | System — `find_package(PNG REQUIRED)` |
 | OpenSSL | SHA256 hashing | System — `find_package(OpenSSL REQUIRED)` |
 | libheif | HEIC/HEIF validation | System — `find_package(libheif REQUIRED)` |
 | *(none)* | AAE validation | Pure C++ — no external dependency |
@@ -84,7 +84,7 @@ Config is read once at startup (no hot reload).
 - **Coroutine parallelism**: single shared `ThreadPool` used by `MultiDatabase`, `FileStorage`, and `Imager` for concurrent I/O
 - **Blob ownership**: `blob::Blob` provides shared-ownership binary buffers safe to pass into coroutines
 - **File identity**: SHA256 hex string (64 chars), stored sharded by first 2 hex chars (`<root>/a1/a1b2c3...f4.jpg`)
-- **Validation**: JPEG/PNG validated via bundled libs; HEIC via system libheif; MOV/MP4 via system libavformat+libavcodec (container parse + trial decode); NEF via system LibRaw; AAE via lightweight XML/plist structure scan (no external library)
+- **Validation**: JPEG/PNG validated via system libjpeg/libpng; HEIC via system libheif; MOV/MP4 via system libavformat+libavcodec (container parse + trial decode); NEF via system LibRaw; AAE via lightweight XML/plist structure scan (no external library)
 - **Sidecar files**: AAE files are stored using their parent's content hash as the filename prefix (not their own hash), preserving the pairing relationship. Orphan AAEs (added before parent) are relocated when the parent arrives. Sidecars are cascade-deleted when their parent is deleted.
 - **Metrics**: always-on lock-free instrumentation (histograms, counters, gauges) for pipeline bottleneck analysis
 
@@ -111,7 +111,6 @@ Implementation status is tracked in **[docs/analysis/ANALYSIS.md](docs/analysis/
 ## Key conventions
 
 - Namespaces match directory: `blob::`, `coro::`, `config::`, `db::`, `imager::`, `metrics::`, `validation::`
-- Bundled library sources are readonly — never modify files under `sqlite/src/`, `libjpeg/src/`, `libpng/src/`
 - All SQL uses prepared statements with bound parameters (no string interpolation)
 - RAII for all resources (file handles, SQLite connections, OpenSSL contexts)
 - Public API is synchronous; coroutines are internal, bridged via `coro::blockOn`

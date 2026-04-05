@@ -1,11 +1,10 @@
 #include "jpeg_validator.h"
 
 #include <csetjmp>
+#include <cstdio>
 
 extern "C" {
-#include <stdio.h>
-
-#include "jpeglib.h"
+#include <jpeglib.h>
 }
 
 namespace {

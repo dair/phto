@@ -19,10 +19,9 @@ ValidationResult validatePng(const void* data, size_t dataSize);
 ## Build System
 
 - **CMake 4.2.3**, C++23 standard, **clang** as the primary compiler
-- `libpng/` — contains the bundled LibPNG dependency; 
-- `libpng/src/` — **strictly read-only**, never modify these files; use libpng/src/CMakeLists.txt to build the LibPNG library
+- libpng is resolved via `find_package(PNG REQUIRED)` against the system installation
 - The library must produce a `.h` header suitable for inclusion by external consumers
-- Tests live in `test/` and link against **CPPUNIT** (provided externally; locate with `find_library`/`find_path`, **not** `pkg-config` which is unavailable)
+- Tests live in `test/` and link against **CPPUNIT** (provided externally; locate with `find_library`/`find_path`)
 
 ## Typical Build & Test Workflow
 
@@ -42,11 +41,10 @@ ctest --test-dir build --output-on-failure
 
 ## Architecture
 
-- The top-level `CMakeLists.txt` should `add_subdirectory(libpng)`, `add_subdirectory(sample)`, and `add_subdirectory(test)`.
-- `libpng/src/CMakeLists.txt` compiles the LibPNG sources from `libpng/src/` into a static library target (e.g. `png_static`) with a well-defined include path.
-- The validation library target links against that static library and exposes its public header.
+- The top-level `CMakeLists.txt` calls `find_package(PNG REQUIRED)`, `add_subdirectory(sample)`, and `add_subdirectory(test)`.
+- The validation library target links against `PNG::PNG` and exposes its public header.
 - The `sample/` target is a command-line utility (`png_validate`) that links against the validation library.
-- The `test/` target links against the validation library and the system-provided CPPUNIT.
+- The `test/` target links against the validation library and the system-provided CPPUNIT. The test target also links `PNG::PNG` directly since it uses the libpng write API to generate test fixtures.
 
 ## Sample utility (`sample/`)
 

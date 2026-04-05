@@ -8,7 +8,7 @@ A C++23 SQLite-backed database library for an image processor. Single public cla
 
 - **Language**: C++23, targeting Clang
 - **Build system**: CMake 4.2.3
-- **Dependencies**: SQLite (bundled in `sqlite/src/`), C++ Standard Library + STL, CPPUnit (external, for tests)
+- **Dependencies**: SQLite (system — `find_package(SQLite3 REQUIRED)`), C++ Standard Library + STL, CPPUnit (external, for tests)
 - **No other libraries** unless explicitly discussed first
 
 ## Directory structure
@@ -18,35 +18,15 @@ database/
 ├── CLAUDE.md
 ├── README.md
 ├── CMakeLists.txt              # Top-level: builds library, sample, and tests
-├── include/
-│   └── database/
-│       └── Database.h          # Public header
-├── src/
-│   └── Database.cpp            # Implementation
+├── Database.h                  # Public header
+├── Database.cpp                # Implementation
 ├── sample/
 │   ├── CMakeLists.txt          # Builds dbcli executable
 │   └── main.cpp                # CLI sample application
-├── sqlite/
-│   ├── CMakeLists.txt          # Builds SQLite as a static library
-│   └── src/                    # READONLY — do not modify anything here
-│       ├── src/                # C sources (main.c, sqlite.h.in, etc.)
-│       └── main.mk             # Amalgamation build rules
 └── test/
     ├── CMakeLists.txt          # Test executable, links CPPUnit
     └── DatabaseTest.cpp        # CPPUnit test suite
 ```
-
-## SQLite build (`sqlite/CMakeLists.txt`)
-
-The bundled SQLite is a **full source tree**, not the amalgamation. The CMakeLists.txt in `sqlite/` must:
-
-1. Generate the amalgamation (`sqlite3.c` and `sqlite3.h`) using the source tree's `main.mk` / `mksqlite3c.tcl`, **or** compile the individual source files directly.
-2. Produce a static library target (e.g., `sqlite3_lib`).
-3. Export an interface include path so consumers can `#include <sqlite3.h>` (or `#include "sqlite3.h"`).
-4. Compile with `-DSQLITE_THREADSAFE=1` (the default, but be explicit) to support multi-threaded usage.
-5. **Never modify files under `sqlite/src/`**.
-
-Simplest approach: use the Tcl-based amalgamation generator (`tool/mksqlite3c.tcl` if present), or as a fallback, glob all `.c` files under `sqlite/src/src/` excluding `test*`, `tclsqlite*`, and `shell.c.in`, and compile them together. Prefer the amalgamation route if feasible.
 
 ## Schema
 
@@ -159,9 +139,9 @@ public:
 - `cmake_minimum_required(VERSION 3.28)` (CMake 4.2.3 compatible)
 - `project(DatabaseLib LANGUAGES C CXX)`
 - `set(CMAKE_CXX_STANDARD 23)`, `set(CMAKE_CXX_STANDARD_REQUIRED ON)`
-- `add_subdirectory(sqlite)` — builds the SQLite static library
-- `add_library(database src/Database.cpp)` with public include dir `include/`
-- `target_link_libraries(database PRIVATE sqlite3_lib)`
+- `find_package(SQLite3 REQUIRED)`
+- `add_library(database Database.cpp)` with public include dir `..` (parent of database/)
+- `target_link_libraries(database PRIVATE SQLite::SQLite3)`
 - `add_subdirectory(test)`
 
 **`sample/CMakeLists.txt`**:

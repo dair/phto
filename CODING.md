@@ -255,12 +255,15 @@ Each validator gets its own translation unit to prevent collisions between ident
 
 ## Bundled vs system libraries
 
+All dependencies use system installations. No bundled library source trees exist in this project.
+
 | Integration | When to use | Example |
 |-------------|-------------|---------|
-| Bundled (static, readonly `src/`) | Simple self-contained libraries with no plugin system | `sqlite`, `libjpeg`, `libpng` |
-| System (`find_package`) | Libraries with external plugin ecosystems, or with licensing concerns | OpenSSL, `libheif` |
+| System (`find_package`) | Preferred for all dependencies | OpenSSL, `libheif`, `libjpeg`, `libpng`, `sqlite3` |
+| System (`pkg_check_modules`) | When no CMake find module exists | `libavformat`, `libavcodec`, `libavutil` |
+| FetchContent | Header-only or tightly version-pinned libraries | `toml++` |
 
-Never modify files under bundled library source directories (`database/sqlite/src/`, `validations/jpeg/libjpeg/src/`, `validations/png/libpng/src/`). Never use `find_package` for a library that is bundled; never bundle a library that is declared as a system dependency.
+Never introduce a bundled library source tree without explicit discussion.
 
 ## Testing
 
