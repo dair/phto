@@ -22,10 +22,11 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 ├── coro/          # Header-only coroutine primitives: Task<T>, ThreadPool, whenAll, blockOn (namespace coro)
 ├── config/        # TOML config parser (toml++ via FetchContent)
 ├── database/      # SQLite wrapper (bundled SQLite, has its own CLAUDE.md)
-├── validations/   # Format validators (bundled libjpeg/libpng, system libheif; each has CLAUDE.md)
+├── validations/   # Format validators (bundled libjpeg/libpng, system libheif/libav*; each has CLAUDE.md)
 │   ├── jpeg/
 │   ├── png/
-│   └── heic/
+│   ├── heic/
+│   └── mov/
 ├── imager/        # Facade library (libimager) — ties everything together
 │   ├── src/
 │   │   ├── MultiDatabase.cpp   # All-or-nothing parallel writes across per-target DBs
@@ -49,6 +50,9 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 | libpng | PNG validation | Bundled in `validations/png/libpng/src/` — DO NOT use system libpng |
 | OpenSSL | SHA256 hashing | System — `find_package(OpenSSL REQUIRED)` |
 | libheif | HEIC/HEIF validation | System — `find_package(libheif REQUIRED)` |
+| libavformat | MOV/MP4 container demuxing | System — `pkg_check_modules(LibAvFormat REQUIRED libavformat)` |
+| libavcodec | Video codec trial decode | System — `pkg_check_modules(LibAvCodec REQUIRED libavcodec)` |
+| libavutil | FFmpeg memory/error utilities | System — `pkg_check_modules(LibAvUtil REQUIRED libavutil)` |
 | toml++ | Config parsing | FetchContent from GitHub |
 | CPPUnit | Testing | System dependency |
 
@@ -77,12 +81,12 @@ Config is read once at startup (no hot reload).
 - **Coroutine parallelism**: single shared `ThreadPool` used by `MultiDatabase`, `FileStorage`, and `Imager` for concurrent I/O
 - **Blob ownership**: `blob::Blob` provides shared-ownership binary buffers safe to pass into coroutines
 - **File identity**: SHA256 hex string (64 chars), stored sharded by first 2 hex chars (`<root>/a1/a1b2c3...f4.jpg`)
-- **Validation**: JPEG/PNG validated via bundled libs; videos (MP4/MOV) accepted by extension only
+- **Validation**: JPEG/PNG validated via bundled libs; HEIC via system libheif; MOV/MP4 via system libavformat+libavcodec (container parse + trial decode)
 - **Metrics**: always-on lock-free instrumentation (histograms, counters, gauges) for pipeline bottleneck analysis
 
 ## Testing
 
-CPPUnit-based. Four test suites: `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `ImagerTests`.
+CPPUnit-based. Test suites: `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `ImagerTests`, `mov_validator_tests`.
 
 Use temporary directories for test databases and file storage; clean up in `tearDown()`.
 
