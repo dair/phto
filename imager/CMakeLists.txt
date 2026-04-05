@@ -1,32 +1,43 @@
 cmake_minimum_required(VERSION 3.28)
-project(Imager LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-find_package(OpenSSL REQUIRED)
-
-include(FetchContent)
-FetchContent_Declare(
-    tomlplusplus
-    GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
-    GIT_TAG v3.4.0
+add_library(libimager
+    Hasher.cpp
+    FileStorage.cpp
+    JpegValidatorImpl.cpp
+    PngValidatorImpl.cpp
+    HeicValidatorImpl.cpp
+    NefValidatorImpl.cpp
+    MovValidatorImpl.cpp
+    AaeValidatorImpl.cpp
+    Imager.cpp
+    MultiDatabase.cpp
 )
-FetchContent_MakeAvailable(tomlplusplus)
 
-enable_testing()
+target_include_directories(libimager
+    PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+)
 
-add_subdirectory(metrics)
-add_subdirectory(blob)
-add_subdirectory(coro)
-add_subdirectory(database)
-add_subdirectory(validations/jpeg)
-add_subdirectory(validations/png)
-add_subdirectory(validations/heic)
-add_subdirectory(validations/nef)
-add_subdirectory(validations/mov)
-add_subdirectory(validations/aae)
-add_subdirectory(config)
-add_subdirectory(imager)
-add_subdirectory(imagestore)
+target_link_libraries(libimager
+    PUBLIC
+        blob_lib
+        config_lib
+        metrics_lib
+    PRIVATE
+        coro_lib
+        database
+        jpeg_validator
+        png_validation
+        heic_validator
+        nef_validator
+        mov_validator
+        aae_validator
+        OpenSSL::Crypto
+)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(libimager PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_subdirectory(sample)
+add_subdirectory(test)
