@@ -5,8 +5,10 @@
 #include <string>
 #include <vector>
 
-#include "config/Config.h"
-#include "imager/Types.h"
+#include <metrics/Metrics.h>
+
+#include <config/Config.h>
+#include <imager/Types.h>
 
 namespace imager {
 
@@ -18,6 +20,8 @@ public:
 
   Imager(const Imager&) = delete;
   Imager& operator=(const Imager&) = delete;
+  Imager(Imager&&) = delete;
+  Imager& operator=(Imager&&) = delete;
 
   // ---- Core operations ----
 
@@ -71,6 +75,9 @@ public:
 
   /// Get total image count.
   uint64_t imageCount();
+
+  /// Access the metrics instance owned by this Imager.
+  const metrics::Metrics& metrics() const noexcept;
 
 private:
   struct Impl;

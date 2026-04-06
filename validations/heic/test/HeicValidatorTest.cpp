@@ -10,7 +10,7 @@
 #include <fstream>
 #include <vector>
 
-#include "heic_validator.h"
+#include <validations/heic/heic_validator.h>
 
 // ---------------------------------------------------------------------------
 // Minimal valid HEIF/AV1 (AVIF) file — 4x4 solid-gray image, 273 bytes.

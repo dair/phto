@@ -10,7 +10,7 @@ enable_testing()
 find_package(JPEG REQUIRED)
 
 add_library(jpeg_validator STATIC jpeg_validator.cpp)
-target_include_directories(jpeg_validator PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(jpeg_validator PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 target_link_libraries(jpeg_validator PRIVATE JPEG::JPEG)
 
 add_subdirectory(sample)

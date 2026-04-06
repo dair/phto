@@ -3,7 +3,7 @@
 #include <iterator>
 #include <vector>
 
-#include "heic_validator.h"
+#include <validations/heic/heic_validator.h>
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {

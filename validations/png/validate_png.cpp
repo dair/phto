@@ -24,6 +24,19 @@ void pngReadCallback(png_structp png_ptr, png_bytep out, png_size_t count) {
   s->pos += count;
 }
 
+struct PngReadGuard {
+  png_structp png_ptr{nullptr};
+  png_infop info_ptr{nullptr};
+  PngReadGuard() = default;
+  ~PngReadGuard() {
+    if (png_ptr) {
+      png_destroy_read_struct(&png_ptr, info_ptr ? &info_ptr : nullptr, nullptr);
+    }
+  }
+  PngReadGuard(const PngReadGuard&) = delete;
+  PngReadGuard& operator=(const PngReadGuard&) = delete;
+};
+
 } // namespace
 
 ValidationResult validatePng(const void* data, size_t dataSize) {
@@ -33,36 +46,34 @@ ValidationResult validatePng(const void* data, size_t dataSize) {
     return WRONG;
   }
 
-  png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-  if (!png_ptr) {
+  PngReadGuard guard;
+  guard.png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+  if (!guard.png_ptr) {
     return INVALID;
   }
 
-  png_infop info_ptr = png_create_info_struct(png_ptr);
-  if (!info_ptr) {
-    png_destroy_read_struct(&png_ptr, nullptr, nullptr);
+  guard.info_ptr = png_create_info_struct(guard.png_ptr);
+  if (!guard.info_ptr) {
     return INVALID;
   }
 
   PngReadState state{static_cast<const uint8_t*>(data), dataSize, 0};
 
-  if (setjmp(png_jmpbuf(png_ptr))) {
-    png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+  if (setjmp(png_jmpbuf(guard.png_ptr))) {
     return INVALID;
   }
 
-  png_set_read_fn(png_ptr, &state, pngReadCallback);
-  png_read_info(png_ptr, info_ptr);
+  png_set_read_fn(guard.png_ptr, &state, pngReadCallback);
+  png_read_info(guard.png_ptr, guard.info_ptr);
 
-  uint32_t height = png_get_image_height(png_ptr, info_ptr);
-  size_t rowbytes = png_get_rowbytes(png_ptr, info_ptr);
+  uint32_t height = png_get_image_height(guard.png_ptr, guard.info_ptr);
+  size_t rowbytes = png_get_rowbytes(guard.png_ptr, guard.info_ptr);
 
   std::vector<uint8_t> row(rowbytes);
   for (uint32_t y = 0; y < height; ++y) {
-    png_read_row(png_ptr, row.data(), nullptr);
+    png_read_row(guard.png_ptr, row.data(), nullptr);
   }
 
-  png_read_end(png_ptr, info_ptr);
-  png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+  png_read_end(guard.png_ptr, guard.info_ptr);
   return VALID;
 }

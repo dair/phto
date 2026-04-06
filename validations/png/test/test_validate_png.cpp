@@ -11,7 +11,7 @@
 #include <cstring>
 #include <vector>
 
-#include "validate_png.h"
+#include <validations/png/validate_png.h>
 
 // ---------------------------------------------------------------------------
 // Helper: write a minimal 1x1 grayscale PNG into a memory buffer

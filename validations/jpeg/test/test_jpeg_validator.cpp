@@ -7,7 +7,7 @@
 #include <fstream>
 #include <vector>
 
-#include "jpeg_validator.h"
+#include <validations/jpeg/jpeg_validator.h>
 
 class JpegValidatorTest: public CppUnit::TestFixture {
   CPPUNIT_TEST_SUITE(JpegValidatorTest);

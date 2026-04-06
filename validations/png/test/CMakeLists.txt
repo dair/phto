@@ -2,7 +2,8 @@ find_path(CPPUNIT_INCLUDE_DIR cppunit/TestCase.h)
 find_library(CPPUNIT_LIBRARY NAMES cppunit)
 
 if(NOT CPPUNIT_INCLUDE_DIR OR NOT CPPUNIT_LIBRARY)
-    message(FATAL_ERROR "CppUnit not found. Install it (e.g. apt install libcppunit-dev).")
+    message(STATUS "CppUnit not found — skipping test_validate_png")
+    return()
 endif()
 
 find_package(PNG REQUIRED)

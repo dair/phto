@@ -9,7 +9,7 @@ enable_testing()
 find_package(libheif REQUIRED)
 
 add_library(heic_validator STATIC heic_validator.cpp)
-target_include_directories(heic_validator PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(heic_validator PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 target_link_libraries(heic_validator PRIVATE heif)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")

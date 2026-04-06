@@ -10,7 +10,7 @@ namespace metrics {
 ///
 /// Usage:
 ///   {
-///       metrics::Timer t(metrics::Metrics::get().hash);
+///       metrics::Timer t(m_metrics.hash);
 ///       // ... work ...
 ///   }  // duration recorded here
 class Timer {

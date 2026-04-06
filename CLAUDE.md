@@ -21,7 +21,7 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 ├── blob/          # Header-only shared-ownership binary buffer (namespace blob)
 ├── coro/          # Header-only coroutine primitives: Task<T>, ThreadPool, whenAll, blockOn (namespace coro)
 ├── config/        # TOML config parser (toml++ via FetchContent)
-├── database/      # SQLite wrapper (system SQLite via find_package, has its own CLAUDE.md)
+├── database/      # SQLite wrapper (system SQLite via find_package — intentional system dep)
 ├── validations/   # Format validators (system libjpeg/libpng/libheif/libav*; each has CLAUDE.md)
 │   ├── jpeg/
 │   ├── png/
@@ -30,12 +30,11 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 │   ├── mov/
 │   └── aae/     # Apple Adjustment Expression sidecar files
 ├── imager/        # Facade library (libimager) — ties everything together
-│   ├── src/
-│   │   ├── MultiDatabase.cpp   # All-or-nothing parallel writes across per-target DBs
-│   │   ├── FileStorage.cpp     # Multi-root parallel file I/O with rollback
-│   │   ├── Imager.cpp          # Facade: parallel validate+hash, async storage, async DB
-│   │   └── Hasher.cpp          # SHA256 via OpenSSL
-│   ├── sample/                 # CLI demo
+│   ├── MultiDatabase.cpp   # All-or-nothing parallel writes across per-target DBs
+│   ├── FileStorage.cpp     # Multi-root parallel file I/O with rollback
+│   ├── Imager.cpp          # Facade: parallel validate+hash, async storage, async DB
+│   ├── Hasher.cpp          # SHA256 via OpenSSL
+│   ├── sample/             # CLI demo
 │   └── test/
 ├── metrics/       # Lock-free monitoring: Histogram, Counter, Gauge, Timer (namespace metrics)
 └── docs/
@@ -47,7 +46,7 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 
 | Library | Purpose | Integration |
 |---------|---------|-------------|
-| SQLite | Metadata DB | System — `find_package(SQLite3 REQUIRED)` |
+| SQLite | Metadata DB | System — `find_package(SQLite3 REQUIRED)` (**intentional**: no bundled copy) |
 | libjpeg | JPEG validation | System — `find_package(JPEG REQUIRED)` |
 | libpng | PNG validation | System — `find_package(PNG REQUIRED)` |
 | OpenSSL | SHA256 hashing | System — `find_package(OpenSSL REQUIRED)` |

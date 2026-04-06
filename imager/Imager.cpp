@@ -1,5 +1,9 @@
 #include "imager/Imager.h"
 
+#include <coro/BlockOn.h>
+#include <coro/ThreadPool.h>
+#include <coro/WhenAll.h>
+#include <imager/ImageValidator.h>
 #include <metrics/Metrics.h>
 
 #include <algorithm>
@@ -14,10 +18,6 @@
 #include "Hasher.h"
 #include "MultiDatabase.h"
 #include "Validators.h"
-#include "coro/BlockOn.h"
-#include "coro/ThreadPool.h"
-#include "coro/WhenAll.h"
-#include "imager/ImageValidator.h"
 
 namespace imager {
 
@@ -39,6 +39,7 @@ static size_t defaultPoolSize(size_t numTargets) {
 // ---------------------------------------------------------------------------
 
 struct Imager::Impl {
+  metrics::Metrics metrics;  // declared first — dbs and storage hold a reference to it
   coro::ThreadPool pool;
   MultiDatabase dbs;
   FileStorage storage;
@@ -46,9 +47,10 @@ struct Imager::Impl {
   std::mutex writeMutex;
 
   explicit Impl(const config::AppConfig& cfg)
-    : pool(defaultPoolSize(cfg.targets.size())),
-      dbs(cfg.targets, pool),
-      storage(extractRoots(cfg.targets), pool),
+    : metrics(),
+      pool(defaultPoolSize(cfg.targets.size())),
+      dbs(cfg.targets, pool, metrics),
+      storage(extractRoots(cfg.targets), pool, metrics),
       validators(createDefaultValidators()) {}
 
   static std::vector<std::filesystem::path> extractRoots(const std::vector<config::TargetConfig>& targets) {
@@ -172,7 +174,7 @@ Imager::~Imager() = default;
 // ---------------------------------------------------------------------------
 
 AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
-  metrics::Timer total(metrics::Metrics::get().addimage_total);
+  metrics::Timer total(m_impl->metrics.addimage_total);
 
   // 1. Split filename into (sourceDir, bareName) and extract extension
   auto [sourceDir, bareName] = Impl::splitFilename(filename);
@@ -191,10 +193,10 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
 
   if (!validator) {
     try {
-      metrics::Timer t(metrics::Metrics::get().hash);
+      metrics::Timer t(m_impl->metrics.hash);
       id = computeSha256(blob);
     } catch (const std::exception& e) {
-      metrics::Metrics::get().images_failed.add(1);
+      m_impl->metrics.images_failed.add(1);
       return {ErrorCode::StorageError, "", std::string("Hashing failed: ") + e.what()};
     }
   } else {
@@ -203,7 +205,7 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
       auto [vr, hid] = coro::blockOn(
         m_impl->pool,
         [](
-          coro::ThreadPool& p, const validation::IValidator* v, Blob b
+          coro::ThreadPool& p, const validation::IValidator* v, Blob b, metrics::Metrics& m
         ) -> coro::Task<std::pair<validation::ValidationResult, std::string>> {
           validation::ValidationResult vRes;
           std::string hId;
@@ -212,53 +214,54 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
 
           tasks.push_back(
             [](
-              coro::ThreadPool& p2, const validation::IValidator* v2, Blob b2, validation::ValidationResult& out
+              coro::ThreadPool& p2, const validation::IValidator* v2, Blob b2, validation::ValidationResult& out,
+              metrics::Metrics& m2
             ) -> coro::Task<void> {
               co_await p2.schedule();
-              metrics::Timer t(metrics::Metrics::get().validate);
+              metrics::Timer t(m2.validate);
               out = v2->validate(b2.data(), b2.size());
-            }(p, v, b, vRes)
+            }(p, v, b, vRes, m)
           );
 
-          tasks.push_back([](coro::ThreadPool& p2, Blob b2, std::string& out) -> coro::Task<void> {
+          tasks.push_back([](coro::ThreadPool& p2, Blob b2, std::string& out, metrics::Metrics& m2) -> coro::Task<void> {
             co_await p2.schedule();
-            metrics::Timer t(metrics::Metrics::get().hash);
+            metrics::Timer t(m2.hash);
             out = computeSha256(b2);
-          }(p, b, hId));
+          }(p, b, hId, m));
 
           co_await coro::whenAll(std::move(tasks));
           co_return std::make_pair(vRes, std::move(hId));
-        }(m_impl->pool, validator, blob)
+        }(m_impl->pool, validator, blob, m_impl->metrics)
       );
 
       valResult = vr;
       id = std::move(hid);
     } catch (const std::exception& e) {
-      metrics::Metrics::get().images_failed.add(1);
+      m_impl->metrics.images_failed.add(1);
       return {ErrorCode::StorageError, "", std::string("Validation/hashing failed: ") + e.what()};
     }
 
     if (!valResult.valid) {
-      metrics::Metrics::get().images_failed.add(1);
+      m_impl->metrics.images_failed.add(1);
       return {ErrorCode::BrokenFile, "", valResult.errorMessage};
     }
   }
 
   // Measure mutex wait time separately from the lock guard
   {
-    metrics::Timer t(metrics::Metrics::get().mutex_wait);
+    metrics::Timer t(m_impl->metrics.mutex_wait);
     m_impl->writeMutex.lock();
   }
   std::lock_guard<std::mutex> lock(m_impl->writeMutex, std::adopt_lock);
 
   // 4. Duplicate check
   try {
-    metrics::Timer t(metrics::Metrics::get().dedup_check);
+    metrics::Timer t(m_impl->metrics.dedup_check);
     if (m_impl->dbs.fileExists(id)) {
       return {ErrorCode::DuplicateFile, "", "File already exists: " + id};
     }
   } catch (const db::DatabaseException& e) {
-    metrics::Metrics::get().images_failed.add(1);
+    m_impl->metrics.images_failed.add(1);
     return {ErrorCode::DatabaseError, "", e.what()};
   }
 
@@ -271,7 +274,7 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     try {
       parents = m_impl->dbs.getFilesBySourceAndBaseName(sourceDir, baseName);
     } catch (const db::DatabaseException& e) {
-      metrics::Metrics::get().images_failed.add(1);
+      m_impl->metrics.images_failed.add(1);
       return {ErrorCode::DatabaseError, "", e.what()};
     }
 
@@ -307,23 +310,23 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
         parentId = imageParents[0].id;
       } else {
         // Still ambiguous — reject
-        metrics::Metrics::get().images_failed.add(1);
+        m_impl->metrics.images_failed.add(1);
         return {ErrorCode::StorageError, "", "Ambiguous sidecar: multiple parent files match for '" + bareName + "'"};
       }
     }
 
     // 5. Write sidecar to storage using storageId as the filename prefix
     try {
-      metrics::Timer t(metrics::Metrics::get().storage_write);
+      metrics::Timer t(m_impl->metrics.storage_write);
       coro::blockOn(m_impl->pool, m_impl->storage.writeFileAsync(storageId, ext, blob));
     } catch (const std::exception& e) {
-      metrics::Metrics::get().images_failed.add(1);
+      m_impl->metrics.images_failed.add(1);
       return {ErrorCode::StorageError, "", std::string("Storage write failed: ") + e.what()};
     }
 
     // 6. Insert file record (bare name only, not full path)
     try {
-      metrics::Timer t(metrics::Metrics::get().db_insert);
+      metrics::Timer t(m_impl->metrics.db_insert);
       m_impl->dbs.addFile(id, bareName, blob.size(), ext);
     } catch (const db::DatabaseException& e) {
       if (e.code() == db::DatabaseErrorCode::ConstraintViolation) {
@@ -332,7 +335,7 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
         return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
       }
       coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
-      metrics::Metrics::get().images_failed.add(1);
+      m_impl->metrics.images_failed.add(1);
       return {ErrorCode::DatabaseError, "", e.what()};
     }
 
@@ -345,7 +348,7 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
         m_impl->dbs.deleteFile(id);
       } catch (...) {}
       coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
-      metrics::Metrics::get().images_failed.add(1);
+      m_impl->metrics.images_failed.add(1);
       return {ErrorCode::DatabaseError, "", e.what()};
     }
 
@@ -357,11 +360,11 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
         m_impl->dbs.deleteFile(id);
       } catch (...) {}
       coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
-      metrics::Metrics::get().images_failed.add(1);
+      m_impl->metrics.images_failed.add(1);
       return {ErrorCode::DatabaseError, "", e.what()};
     }
 
-    metrics::Metrics::get().images_added.add(1);
+    m_impl->metrics.images_added.add(1);
     return {ErrorCode::Ok, id, ""};
   }
 
@@ -369,16 +372,16 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
 
   // 5. Write to all storage roots in parallel
   try {
-    metrics::Timer t(metrics::Metrics::get().storage_write);
+    metrics::Timer t(m_impl->metrics.storage_write);
     coro::blockOn(m_impl->pool, m_impl->storage.writeFileAsync(id, ext, blob));
   } catch (const std::exception& e) {
-    metrics::Metrics::get().images_failed.add(1);
+    m_impl->metrics.images_failed.add(1);
     return {ErrorCode::StorageError, "", std::string("Storage write failed: ") + e.what()};
   }
 
   // 6. Insert into all databases in parallel (store bare name)
   try {
-    metrics::Timer t(metrics::Metrics::get().db_insert);
+    metrics::Timer t(m_impl->metrics.db_insert);
     m_impl->dbs.addFile(id, bareName, blob.size(), ext);
   } catch (const db::DatabaseException& e) {
     if (e.code() == db::DatabaseErrorCode::ConstraintViolation) {
@@ -386,7 +389,7 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     }
     // Roll back storage
     coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(id, ext));
-    metrics::Metrics::get().images_failed.add(1);
+    m_impl->metrics.images_failed.add(1);
     return {ErrorCode::DatabaseError, "", e.what()};
   }
 
@@ -425,7 +428,7 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     // Best-effort orphan resolution; don't fail parent add
   }
 
-  metrics::Metrics::get().images_added.add(1);
+  m_impl->metrics.images_added.add(1);
   return {ErrorCode::Ok, id, ""};
 }
 
@@ -716,6 +719,10 @@ uint64_t Imager::imageCount() {
   } catch (const db::DatabaseException&) {
     return 0;
   }
+}
+
+const metrics::Metrics& Imager::metrics() const noexcept {
+  return m_impl->metrics;
 }
 
 } // namespace imager

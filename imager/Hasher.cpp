@@ -2,18 +2,25 @@
 
 #include <openssl/evp.h>
 
+#include <memory>
 #include <stdexcept>
+
+namespace {
+struct EvpMdCtxDeleter {
+  void operator()(EVP_MD_CTX* c) const noexcept { EVP_MD_CTX_free(c); }
+};
+using EvpMdCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpMdCtxDeleter>;
+} // namespace
 
 namespace imager {
 
 std::string computeSha256(const Blob& blob) {
-  EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+  EvpMdCtxPtr ctx{EVP_MD_CTX_new()};
   if (!ctx) {
     throw std::runtime_error("EVP_MD_CTX_new failed");
   }
 
-  if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) != 1) {
-    EVP_MD_CTX_free(ctx);
+  if (EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1) {
     throw std::runtime_error("EVP_DigestInit_ex failed");
   }
 
@@ -23,8 +30,7 @@ std::string computeSha256(const Blob& blob) {
   size_t remaining = blob.size();
   while (remaining > 0) {
     size_t n = (remaining < CHUNK) ? remaining : CHUNK;
-    if (EVP_DigestUpdate(ctx, ptr, n) != 1) {
-      EVP_MD_CTX_free(ctx);
+    if (EVP_DigestUpdate(ctx.get(), ptr, n) != 1) {
       throw std::runtime_error("EVP_DigestUpdate failed");
     }
     ptr += n;
@@ -33,11 +39,9 @@ std::string computeSha256(const Blob& blob) {
 
   unsigned char hash[EVP_MAX_MD_SIZE];
   unsigned int hashLen = 0;
-  if (EVP_DigestFinal_ex(ctx, hash, &hashLen) != 1) {
-    EVP_MD_CTX_free(ctx);
+  if (EVP_DigestFinal_ex(ctx.get(), hash, &hashLen) != 1) {
     throw std::runtime_error("EVP_DigestFinal_ex failed");
   }
-  EVP_MD_CTX_free(ctx);
 
   static constexpr char HEX[] = "0123456789abcdef";
   std::string result;

@@ -8,12 +8,6 @@
 #include <thread>
 #include <vector>
 
-#ifdef IMAGER_METRICS_ENABLED
-  #include <metrics/Metrics.h>
-
-  #include <chrono>
-#endif
-
 namespace coro {
 
 class ThreadPool {
@@ -42,34 +36,15 @@ public:
   auto schedule() {
     struct Awaiter {
       ThreadPool& pool;
-#ifdef IMAGER_METRICS_ENABLED
-      std::chrono::steady_clock::time_point enqueueTime;
-#endif
       bool await_ready() const noexcept {
         return false;
       }
-
       void await_suspend(std::coroutine_handle<> h) {
-#ifdef IMAGER_METRICS_ENABLED
-        enqueueTime = std::chrono::steady_clock::now();
-        metrics::Metrics::get().pool_queue_depth.increment();
-#endif
         pool.enqueue(h);
       }
-
-      void await_resume() noexcept {
-#ifdef IMAGER_METRICS_ENABLED
-        metrics::Metrics::get().pool_queue_depth.decrement();
-        auto elapsed = std::chrono::steady_clock::now() - enqueueTime;
-        metrics::Metrics::get().pool_schedule_latency.record(elapsed);
-#endif
-      }
+      void await_resume() noexcept {}
     };
-#ifdef IMAGER_METRICS_ENABLED
-    return Awaiter{*this, {}};
-#else
     return Awaiter{*this};
-#endif
   }
 
   void enqueue(std::coroutine_handle<> h) {
@@ -93,13 +68,7 @@ private:
         h = m_queue.front();
         m_queue.pop_front();
       }
-#ifdef IMAGER_METRICS_ENABLED
-      metrics::Metrics::get().pool_active_threads.increment();
-#endif
       h.resume();
-#ifdef IMAGER_METRICS_ENABLED
-      metrics::Metrics::get().pool_active_threads.decrement();
-#endif
     }
   }
 

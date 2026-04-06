@@ -19,6 +19,8 @@
  *   count                          Print total image count
  */
 
+#include <config/Config.h>
+#include <imager/Imager.h>
 #include <metrics/Metrics.h>
 #include <metrics/Snapshot.h>
 
@@ -28,9 +30,6 @@
 #include <optional>
 #include <string>
 #include <vector>
-
-#include "config/Config.h"
-#include "imager/Imager.h"
 
 using namespace imager;
 
@@ -124,13 +123,15 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  // Print metrics to stderr on scope exit (covers all return paths)
+  // Print metrics to stderr on scope exit (covers all return paths).
+  // Pointer is set once the Imager is constructed below.
   struct MetricsGuard {
     bool enabled;
+    const metrics::Metrics* metrics{nullptr};
 
     ~MetricsGuard() {
-      if (enabled) {
-        std::cerr << '\n' << metrics::format(metrics::Metrics::get().snapshot());
+      if (enabled && metrics) {
+        std::cerr << '\n' << metrics::format(metrics->snapshot());
       }
     }
   } metricsGuard{showMetrics};
@@ -155,6 +156,7 @@ int main(int argc, char* argv[]) {
 
   try {
     Imager img(cfg);
+    metricsGuard.metrics = &img.metrics();
 
     if (cmd == "add") {
       if (rest.empty()) {

@@ -5,10 +5,12 @@
 #include <string>
 #include <vector>
 
-#include "config/Config.h"
-#include "coro/Task.h"
-#include "coro/ThreadPool.h"
-#include "database/Database.h"
+#include <metrics/Metrics.h>
+
+#include <config/Config.h>
+#include <coro/Task.h>
+#include <coro/ThreadPool.h>
+#include <database/Database.h>
 
 namespace imager {
 
@@ -24,11 +26,15 @@ namespace imager {
 /// all components share a single pool rather than competing with separate ones.
 class MultiDatabase {
 public:
-  explicit MultiDatabase(const std::vector<config::TargetConfig>& targets, coro::ThreadPool& pool);
+  explicit MultiDatabase(
+    const std::vector<config::TargetConfig>& targets, coro::ThreadPool& pool, metrics::Metrics& metrics
+  );
   ~MultiDatabase();
 
   MultiDatabase(const MultiDatabase&) = delete;
   MultiDatabase& operator=(const MultiDatabase&) = delete;
+  MultiDatabase(MultiDatabase&&) = delete;
+  MultiDatabase& operator=(MultiDatabase&&) = delete;
 
   // --- Write operations (all-or-nothing, parallel across all DBs) ---
 
@@ -87,7 +93,8 @@ public:
 
 private:
   std::vector<std::unique_ptr<db::Database>> m_dbs;
-  coro::ThreadPool& m_pool; // not owned — shared with Imager::Impl
+  coro::ThreadPool& m_pool;         // not owned — shared with Imager::Impl
+  metrics::Metrics& m_metrics;      // not owned — injected by Imager::Impl
 
   template<typename Op, typename Compensate>
   void parallelWriteAll(Op&& op, Compensate&& compensate);

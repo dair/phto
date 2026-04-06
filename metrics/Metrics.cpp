@@ -2,11 +2,6 @@
 
 namespace metrics {
 
-Metrics& Metrics::get() {
-  static Metrics instance;
-  return instance;
-}
-
 FullSnapshot Metrics::snapshot() const {
   FullSnapshot snap;
   snap.histograms = {

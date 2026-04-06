@@ -1,7 +1,8 @@
 // Separate TU so that aae_validator.h's ::ValidationResult enum does not
 // conflict with identically-named enums in other validator headers.
+#include <validations/aae/aae_validator.h>
+
 #include "Validators.h"
-#include "aae_validator.h"
 
 namespace {
 

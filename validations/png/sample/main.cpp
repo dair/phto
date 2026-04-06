@@ -3,7 +3,7 @@
 #include <iterator>
 #include <vector>
 
-#include "validate_png.h"
+#include <validations/png/validate_png.h>
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {

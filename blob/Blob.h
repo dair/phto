@@ -5,10 +5,6 @@
 #include <memory>
 #include <vector>
 
-#ifdef IMAGER_METRICS_ENABLED
-  #include <metrics/Metrics.h>
-#endif
-
 namespace blob {
 
 /// Shared-ownership binary buffer.
@@ -32,28 +28,9 @@ public:
   /// Fill via writableData(), then call freeze() before sharing.
   explicit Blob(size_t size)
     : m_data(
-        size > 0 ? std::shared_ptr<uint8_t[]>(
-                     new uint8_t[size],
-                     [size](uint8_t* p) noexcept {
-#ifdef IMAGER_METRICS_ENABLED
-                       auto& m = metrics::Metrics::get();
-                       m.blobs_alive.decrement();
-                       m.blob_bytes_alive.add(-static_cast<int64_t>(size));
-#endif
-                       delete[] p;
-                     }
-                   )
-                 : nullptr
+        size > 0 ? std::shared_ptr<uint8_t[]>(new uint8_t[size], [](uint8_t* p) noexcept { delete[] p; }) : nullptr
       ),
-      m_size(size) {
-#ifdef IMAGER_METRICS_ENABLED
-    if (size > 0) {
-      auto& m = metrics::Metrics::get();
-      m.blobs_alive.increment();
-      m.blob_bytes_alive.add(static_cast<int64_t>(size));
-    }
-#endif
-  }
+      m_size(size) {}
 
   /// Adopt ownership of an existing shared_ptr (already frozen).
   Blob(std::shared_ptr<uint8_t[]> data, size_t size)

@@ -9,7 +9,7 @@
 #include <fstream>
 #include <vector>
 
-#include "nef_validator.h"
+#include <validations/nef/nef_validator.h>
 
 // ---------------------------------------------------------------------------
 // Minimal TIFF-based header bytes for constructing test data.

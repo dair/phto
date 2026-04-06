@@ -27,7 +27,7 @@ else()
 endif()
 
 add_library(nef_validator STATIC nef_validator.cpp)
-target_include_directories(nef_validator PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(nef_validator PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 target_link_libraries(nef_validator PRIVATE ${LIBRAW_TARGET})
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")

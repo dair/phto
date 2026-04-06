@@ -31,7 +31,7 @@ if(NOT FFMPEG_FOUND)
 endif()
 
 add_library(mov_validator STATIC mov_validator.cpp)
-target_include_directories(mov_validator PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(mov_validator PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 if(DEFINED FFMPEG_INCLUDE_DIRS)
     target_include_directories(mov_validator PRIVATE ${FFMPEG_INCLUDE_DIRS})
 endif()

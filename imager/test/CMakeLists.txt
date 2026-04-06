@@ -41,7 +41,7 @@ target_link_libraries(imager_tests
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(imager_tests PRIVATE -Wall -Wextra)
+    target_compile_options(imager_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 include(CTest)

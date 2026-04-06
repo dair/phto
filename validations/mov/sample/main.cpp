@@ -3,7 +3,7 @@
 #include <iterator>
 #include <vector>
 
-#include "mov_validator.h"
+#include <validations/mov/mov_validator.h>
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {

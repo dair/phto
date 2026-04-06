@@ -12,7 +12,8 @@ if(NOT CPPUNIT_FOUND)
 endif()
 
 if(NOT CPPUNIT_FOUND)
-    message(FATAL_ERROR "CppUnit not found")
+    message(STATUS "CppUnit not found — skipping jpeg_validator_tests")
+    return()
 endif()
 
 add_executable(test_jpeg_validator test_jpeg_validator.cpp)

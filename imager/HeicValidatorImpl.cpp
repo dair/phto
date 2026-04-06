@@ -1,7 +1,8 @@
 // Separate TU so that heic_validator.h's ::ValidationResult enum does not
 // conflict with identically-named enums in other validator headers.
+#include <validations/heic/heic_validator.h>
+
 #include "Validators.h"
-#include "heic_validator.h"
 
 namespace {
 

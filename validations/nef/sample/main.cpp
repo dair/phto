@@ -3,7 +3,7 @@
 #include <iterator>
 #include <vector>
 
-#include "nef_validator.h"
+#include <validations/nef/nef_validator.h>
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {

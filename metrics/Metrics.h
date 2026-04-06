@@ -8,18 +8,20 @@
 
 namespace metrics {
 
-/// Singleton registry of all named metrics.
+/// Registry of all named metrics.
 ///
-/// All members are public for direct access: metrics::Metrics::get().hash.record(...)
+/// All members are public for direct access: metrics.hash.record(...)
 ///
 /// Thread-safe: all primitives are lock-free atomics.
-/// Meyer's singleton: thread-safe construction guaranteed by C++11+.
+/// Owned by Imager::Impl and injected by reference into FileStorage and MultiDatabase.
 class Metrics {
 public:
-  static Metrics& get();
+  Metrics() = default;
 
   Metrics(const Metrics&) = delete;
   Metrics& operator=(const Metrics&) = delete;
+  Metrics(Metrics&&) = delete;
+  Metrics& operator=(Metrics&&) = delete;
 
   // --- Per-image pipeline ---
   Histogram addimage_total{"addimage_total"};
@@ -60,9 +62,6 @@ public:
   /// Reset all counters, histograms, and gauges to zero.
   /// Useful for periodic reporting windows.
   void reset();
-
-private:
-  Metrics() = default;
 };
 
 } // namespace metrics

@@ -1,9 +1,8 @@
 #include "MultiDatabase.h"
 
+#include <coro/BlockOn.h>
+#include <coro/WhenAll.h>
 #include <metrics/Metrics.h>
-
-#include "coro/BlockOn.h"
-#include "coro/WhenAll.h"
 
 namespace imager {
 
@@ -11,8 +10,11 @@ namespace imager {
 // Constructor / destructor
 // ---------------------------------------------------------------------------
 
-MultiDatabase::MultiDatabase(const std::vector<config::TargetConfig>& targets, coro::ThreadPool& pool)
-  : m_pool(pool) {
+MultiDatabase::MultiDatabase(
+  const std::vector<config::TargetConfig>& targets, coro::ThreadPool& pool, metrics::Metrics& metrics
+)
+  : m_pool(pool),
+    m_metrics(metrics) {
   m_dbs.reserve(targets.size());
   for (const auto& t : targets) {
     m_dbs.push_back(std::make_unique<db::Database>(t.database));
@@ -39,17 +41,18 @@ void MultiDatabase::parallelWriteAll(Op&& op, Compensate&& compensate) {
     for (size_t i = 0; i < n; ++i) {
       tasks.push_back(
         [](
-          coro::ThreadPool& pool, db::Database& db, Op& op_, uint8_t& ok, std::exception_ptr& err
+          coro::ThreadPool& pool, db::Database& db, Op& op_, uint8_t& ok, std::exception_ptr& err,
+          metrics::Metrics& metrics
         ) -> coro::Task<void> {
           co_await pool.schedule();
           try {
-            metrics::Timer t(metrics::Metrics::get().db_insert_single);
+            metrics::Timer t(metrics.db_insert_single);
             op_(db);
             ok = 1;
           } catch (...) {
             err = std::current_exception();
           }
-        }(m_pool, *m_dbs[i], op, succeeded[i], errors[i])
+        }(m_pool, *m_dbs[i], op, succeeded[i], errors[i], m_metrics)
       );
     }
     co_await coro::whenAll(std::move(tasks));

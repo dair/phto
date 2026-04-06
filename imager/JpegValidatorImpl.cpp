@@ -1,7 +1,8 @@
 // Separate TU so that jpeg_validator.h's ::ValidationResult enum does not
 // conflict with validate_png.h's identically-named enum.
+#include <validations/jpeg/jpeg_validator.h>
+
 #include "Validators.h"
-#include "jpeg_validator.h"
 
 namespace {
 

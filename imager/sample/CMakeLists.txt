@@ -5,5 +5,5 @@ add_executable(imager_cli main.cpp)
 target_link_libraries(imager_cli PRIVATE libimager)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(imager_cli PRIVATE -Wall -Wextra)
+    target_compile_options(imager_cli PRIVATE -Wall -Wextra -Wpedantic)
 endif()

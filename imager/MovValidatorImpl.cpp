@@ -1,7 +1,8 @@
 // Separate TU so that mov_validator.h's ::ValidationResult enum does not
 // conflict with identically-named enums in other validator headers.
+#include <validations/mov/mov_validator.h>
+
 #include "Validators.h"
-#include "mov_validator.h"
 
 namespace {
 

@@ -9,7 +9,7 @@ enable_testing()
 find_package(PNG REQUIRED)
 
 add_library(png_validation STATIC validate_png.cpp)
-target_include_directories(png_validation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(png_validation PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 target_link_libraries(png_validation PRIVATE PNG::PNG)
 
 add_subdirectory(sample)

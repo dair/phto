@@ -3,7 +3,7 @@
 #include <iostream>
 #include <vector>
 
-#include "jpeg_validator.h"
+#include <validations/jpeg/jpeg_validator.h>
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {

@@ -4,9 +4,11 @@
 #include <string>
 #include <vector>
 
-#include "coro/Task.h"
-#include "coro/ThreadPool.h"
-#include "imager/types/Blob.h"
+#include <metrics/Metrics.h>
+
+#include <coro/Task.h>
+#include <coro/ThreadPool.h>
+#include <imager/types/Blob.h>
 
 namespace imager {
 
@@ -19,7 +21,12 @@ namespace imager {
 /// async versions via blockOn and are kept for call-sites that don't co_await.
 class FileStorage {
 public:
-  explicit FileStorage(std::vector<std::filesystem::path> roots, coro::ThreadPool& pool);
+  explicit FileStorage(std::vector<std::filesystem::path> roots, coro::ThreadPool& pool, metrics::Metrics& metrics);
+
+  FileStorage(const FileStorage&) = delete;
+  FileStorage& operator=(const FileStorage&) = delete;
+  FileStorage(FileStorage&&) = delete;
+  FileStorage& operator=(FileStorage&&) = delete;
 
   // --- Synchronous API (blocks until complete) ---
 
@@ -50,6 +57,7 @@ public:
 private:
   std::vector<std::filesystem::path> m_roots;
   coro::ThreadPool& m_pool;
+  metrics::Metrics& m_metrics;
 
   std::filesystem::path filePath(
     const std::filesystem::path& root, const std::string& id, const std::string& ext

@@ -9,7 +9,7 @@
 #include <fstream>
 #include <vector>
 
-#include "mov_validator.h"
+#include <validations/mov/mov_validator.h>
 
 // ---------------------------------------------------------------------------
 // Minimal valid MOV (QuickTime) file — 16x16, 1 frame, H.264 baseline, 1416 bytes.
