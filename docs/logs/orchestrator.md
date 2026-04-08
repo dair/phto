@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-04-08 11:00] - Phase B of Step 0015 — Multi-target Integrity Tests Complete
+
+- **Agent**: test-spec-writer
+- **Task**: Write B6 (DB parity), B7 (storage rollback), B8 (read failover), B10 (sidecar consistency) tests — all in new `imager/imager/test/MultiTargetTest.cpp`
+- **Outcome**: 11 new tests across 3 fixtures (`MultiTargetDbTest`, `StorageFailoverTest`, `MultiTargetSidecarTest`). All 9 test suites pass (42 ImagerTests total). Full suite: 100% pass in 2.69s.
+- **Next Step**: Phase C — wire declared metrics (C4, C5, C6) + metrics layer tests (B4, B9)
+
 ## [2026-04-08 10:00] - Phase A of Step 0015 — Config Foundations Complete
 
 - **Agent**: Orchestrator
