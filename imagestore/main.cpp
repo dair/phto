@@ -17,67 +17,13 @@
 #include <thread>
 #include <vector>
 
+#include "DisplayMode.h"
 #include "ErrorFile.h"
+#include "Output.h"
+#include "ProgressReporter.h"
+#include "Stats.h"
 
 namespace fs = std::filesystem;
-
-// ---------------------------------------------------------------------------
-// Statistics
-// ---------------------------------------------------------------------------
-
-struct Stats {
-  std::atomic<uint64_t> processed{0};
-  std::atomic<uint64_t> added{0};
-  std::atomic<uint64_t> duplicates{0};
-  std::atomic<uint64_t> errors{0};
-  std::atomic<uint64_t> skipped{0};
-  std::atomic<uint64_t> totalBytes{0};
-};
-
-// ---------------------------------------------------------------------------
-// Verbose / progress output
-// ---------------------------------------------------------------------------
-
-static std::mutex g_outputMutex;
-
-static void stderrLine(const std::string& line) {
-  std::lock_guard<std::mutex> lk(g_outputMutex);
-  std::cerr << line << '\n';
-}
-
-struct ProgressTracker {
-  std::chrono::steady_clock::time_point startTime;
-  std::chrono::steady_clock::time_point lastPrint;
-  uint64_t lastCount{0};
-  std::mutex mtx;
-
-  ProgressTracker() {
-    startTime = std::chrono::steady_clock::now();
-    lastPrint = startTime;
-  }
-
-  void maybeReport(const Stats& stats) {
-    uint64_t processed = stats.processed.load();
-
-    std::lock_guard<std::mutex> lk(mtx);
-    auto now = std::chrono::steady_clock::now();
-    bool byCount = (processed - lastCount) >= 1000;
-    bool byTime = std::chrono::duration_cast<std::chrono::seconds>(now - lastPrint).count() >= 5;
-    if (!byCount && !byTime) {
-      return;
-    }
-    lastCount = processed;
-    lastPrint = now;
-
-    uint64_t bytes = stats.totalBytes.load();
-    double elapsedS = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() / 1000.0;
-    double mbps = (elapsedS > 0.0) ? (static_cast<double>(bytes) / (1024.0 * 1024.0)) / elapsedS : 0.0;
-
-    std::lock_guard<std::mutex> outLk(g_outputMutex);
-    std::cerr << "[progress] " << processed << "/? processed, " << stats.errors.load() << " errors, "
-              << stats.duplicates.load() << " duplicates, " << std::fixed << std::setprecision(1) << mbps << " MB/s\n";
-  }
-};
 
 // ---------------------------------------------------------------------------
 // Usage
@@ -94,13 +40,20 @@ static void printUsage(const char* prog) {
                "  -e, --errors PATH    Error file: skip paths listed here, append new failures\n"
                "  -j, --jobs N         Concurrent image processing limit (default: nproc)\n"
                "  -n, --dry-run        Validate and hash only, do not write to storage or DB\n"
-               "  -v, --verbose        Print progress and per-file status to stderr\n"
+               "  -v, --verbose        Print per-file status lines to stderr (OK/DUP/ERR/SKIP)\n"
+               "  -q, --quiet          Suppress all progress and summary output\n"
+               "      --graph          Display animated pipeline graph (requires TTY on stderr)\n"
                "  -h, --help           Show usage and exit\n"
                "\n"
                "Exit codes:\n"
                "  0   All files processed successfully (duplicates are not errors)\n"
                "  1   Usage error or configuration failure\n"
-               "  2   Some files failed\n";
+               "  2   Some files failed\n"
+               "\n"
+               "Notes:\n"
+               "  --quiet and --graph are mutually exclusive.\n"
+               "  --graph and --verbose are mutually exclusive.\n"
+               "  --graph falls back to normal mode if stderr is not a TTY.\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +71,8 @@ int main(int argc, char* argv[]) {
   jobs = std::min(jobs, 256u);
   bool dryRun = false;
   bool verbose = false;
+  bool quiet = false;
+  bool graphMode = false;
 
   static const option longOpts[] = {
     {"config", required_argument, nullptr, 'c'},
@@ -125,12 +80,14 @@ int main(int argc, char* argv[]) {
     {"jobs", required_argument, nullptr, 'j'},
     {"dry-run", no_argument, nullptr, 'n'},
     {"verbose", no_argument, nullptr, 'v'},
+    {"quiet", no_argument, nullptr, 'q'},
+    {"graph", no_argument, nullptr, 1},
     {"help", no_argument, nullptr, 'h'},
     {nullptr, 0, nullptr, 0}
   };
 
   int opt;
-  while ((opt = getopt_long(argc, argv, "c:e:j:nvh", longOpts, nullptr)) != -1) {
+  while ((opt = getopt_long(argc, argv, "c:e:j:nvqh", longOpts, nullptr)) != -1) {
     switch (opt) {
       case 'c':
         configPath = optarg;
@@ -153,6 +110,12 @@ int main(int argc, char* argv[]) {
       case 'v':
         verbose = true;
         break;
+      case 'q':
+        quiet = true;
+        break;
+      case 1:
+        graphMode = true;
+        break;
       case 'h':
         printUsage(argv[0]);
         return 0;
@@ -160,6 +123,24 @@ int main(int argc, char* argv[]) {
         printUsage(argv[0]);
         return 1;
     }
+  }
+
+  // Validate mutually exclusive flag combinations
+  if (quiet && graphMode) {
+    std::cerr << "--quiet and --graph are mutually exclusive\n";
+    return 1;
+  }
+  if (graphMode && verbose) {
+    std::cerr << "--graph and --verbose are mutually exclusive\n";
+    return 1;
+  }
+
+  // Resolve display mode
+  imagestore::DisplayMode mode = imagestore::DisplayMode::Normal;
+  if (quiet) {
+    mode = imagestore::DisplayMode::Quiet;
+  } else if (graphMode) {
+    mode = imagestore::DisplayMode::Graph;
   }
 
   // Resolve config path
@@ -194,13 +175,16 @@ int main(int argc, char* argv[]) {
       return 1;
     }
     if (verbose && errorFile->initialSkipCount() > 0) {
-      stderrLine("Loaded " + std::to_string(errorFile->initialSkipCount()) + " paths to skip from " + errorsPath);
+      imagestore::stderrLine(
+        "Loaded " + std::to_string(errorFile->initialSkipCount()) + " paths to skip from " + errorsPath
+      );
     }
   }
 
-  Stats stats;
-  ProgressTracker progress;
+  imagestore::Stats stats;
   auto startTime = std::chrono::steady_clock::now();
+
+  imagestore::ProgressReporter progress(mode, img, stats, jobs, dryRun, startTime);
 
   // Bounded semaphore — caps files in-flight at `jobs`
   std::counting_semaphore<256> sem(static_cast<std::ptrdiff_t>(jobs));
@@ -228,7 +212,7 @@ int main(int argc, char* argv[]) {
     fs::path absPath = fs::absolute(line, ec);
     if (ec) {
       if (verbose) {
-        stderrLine("ERR " + line + ": cannot resolve path: " + ec.message());
+        imagestore::stderrLine("ERR " + line + ": cannot resolve path: " + ec.message());
       }
       stats.errors.fetch_add(1, std::memory_order_relaxed);
       stats.processed.fetch_add(1, std::memory_order_relaxed);
@@ -242,7 +226,7 @@ int main(int argc, char* argv[]) {
     // Check skip set
     if (errorFile && errorFile->shouldSkip(absStr)) {
       if (verbose) {
-        stderrLine("SKIP " + absStr + " (in error list)");
+        imagestore::stderrLine("SKIP " + absStr + " (in error list)");
       }
       stats.skipped.fetch_add(1, std::memory_order_relaxed);
       stats.processed.fetch_add(1, std::memory_order_relaxed);
@@ -259,7 +243,6 @@ int main(int argc, char* argv[]) {
          &stats,
          &sem,
          &errorFile,
-         &progress,
          verbose,
          dryRun,
          capturedPath = std::move(absPath),
@@ -277,7 +260,7 @@ int main(int argc, char* argv[]) {
           auto fileSize = fs::file_size(capturedPath, fec);
           if (fec) {
             if (verbose) {
-              stderrLine("ERR " + capturedStr + ": " + fec.message());
+              imagestore::stderrLine("ERR " + capturedStr + ": " + fec.message());
             }
             stats.errors.fetch_add(1, std::memory_order_relaxed);
             stats.processed.fetch_add(1, std::memory_order_relaxed);
@@ -293,7 +276,7 @@ int main(int argc, char* argv[]) {
             std::ifstream in(capturedPath, std::ios::binary);
             if (!in) {
               if (verbose) {
-                stderrLine("ERR " + capturedStr + ": cannot open file");
+                imagestore::stderrLine("ERR " + capturedStr + ": cannot open file");
               }
               stats.errors.fetch_add(1, std::memory_order_relaxed);
               stats.processed.fetch_add(1, std::memory_order_relaxed);
@@ -306,7 +289,7 @@ int main(int argc, char* argv[]) {
               in.read(reinterpret_cast<char*>(blob.writableData()), static_cast<std::streamsize>(fileSize));
               if (in.fail() && !in.eof()) {
                 if (verbose) {
-                  stderrLine("ERR " + capturedStr + ": read error");
+                  imagestore::stderrLine("ERR " + capturedStr + ": read error");
                 }
                 stats.errors.fetch_add(1, std::memory_order_relaxed);
                 stats.processed.fetch_add(1, std::memory_order_relaxed);
@@ -330,28 +313,24 @@ int main(int argc, char* argv[]) {
             case imager::ErrorCode::Ok:
               stats.added.fetch_add(1, std::memory_order_relaxed);
               if (verbose) {
-                stderrLine("OK " + result.id + " " + capturedStr);
+                imagestore::stderrLine("OK " + result.id + " " + capturedStr);
               }
               break;
             case imager::ErrorCode::DuplicateFile:
               stats.duplicates.fetch_add(1, std::memory_order_relaxed);
               if (verbose) {
-                stderrLine("DUP " + capturedStr);
+                imagestore::stderrLine("DUP " + capturedStr);
               }
               break;
             default:
               stats.errors.fetch_add(1, std::memory_order_relaxed);
               if (verbose) {
-                stderrLine("ERR " + capturedStr + ": " + result.message);
+                imagestore::stderrLine("ERR " + capturedStr + ": " + result.message);
               }
               if (errorFile) {
                 errorFile->recordError(capturedStr);
               }
               break;
-          }
-
-          if (verbose) {
-            progress.maybeReport(stats);
           }
         }
       )
@@ -365,38 +344,11 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  // Final summary — always printed
+  progress.stop();
+
   auto endTime = std::chrono::steady_clock::now();
   double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count() / 1000.0;
+  progress.printFinalSummary(elapsed);
 
-  uint64_t processed = stats.processed.load();
-  uint64_t added = stats.added.load();
-  uint64_t duplicates = stats.duplicates.load();
-  uint64_t errors = stats.errors.load();
-  uint64_t skipped = stats.skipped.load();
-  uint64_t totalBytes = stats.totalBytes.load();
-
-  double filesPerSec = (elapsed > 0.0) ? static_cast<double>(processed) / elapsed : 0.0;
-  double totalGB = static_cast<double>(totalBytes) / (1024.0 * 1024.0 * 1024.0);
-  double totalMB = static_cast<double>(totalBytes) / (1024.0 * 1024.0);
-
-  std::cerr << std::fixed;
-  if (dryRun) {
-    std::cerr << processed << " processed, " << added << " valid, " << duplicates << " would-be-duplicates, " << errors
-              << " errors"
-              << " — " << std::setprecision(1) << elapsed << "s"
-              << " (dry run, no writes)\n";
-  } else {
-    std::cerr << processed << " processed, " << added << " added, " << duplicates << " duplicates, " << errors
-              << " errors, " << skipped << " skipped — " << std::setprecision(1) << elapsed << "s ("
-              << std::setprecision(0) << filesPerSec << " files/s, ";
-    if (totalGB >= 1.0) {
-      std::cerr << std::setprecision(1) << totalGB << " GB total";
-    } else {
-      std::cerr << std::setprecision(1) << totalMB << " MB total";
-    }
-    std::cerr << ")\n";
-  }
-
-  return (errors > 0) ? 2 : 0;
+  return (stats.errors.load() > 0) ? 2 : 0;
 }

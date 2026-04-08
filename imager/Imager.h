@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -29,6 +30,17 @@ public:
   /// Validates format, computes SHA256, checks for duplicates,
   /// writes to all storage roots, then inserts into all DBs.
   AddResult addImage(const Blob& blob, const std::string& filename);
+
+  /// Read a file from disk and process it through the full addImage pipeline.
+  /// The file read happens inside the library, making it observable via metrics.
+  ///
+  /// @param path     Absolute or relative path to the file on disk.
+  /// @param filename Display name for the file (used for extension detection
+  ///                 and stored in the database). If empty, the path's
+  ///                 filename component is used.
+  /// @return AddResult with the outcome.
+  AddResult addFile(const std::filesystem::path& path,
+                    const std::string& filename = "");
 
   /// Validate format and compute SHA256 without writing to storage or DB.
   /// Performs extension check, validation, hashing, and duplicate detection.

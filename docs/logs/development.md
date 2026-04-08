@@ -1,5 +1,19 @@
 # Work Log
 
+## [2026-04-07 11:30] - Phase 0014: imagestore Progress Metrics Display
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement phase 0014 — add `-q`/`--graph` flags and a `ProgressReporter` background-thread class to `imagestore` per `docs/plan/0014.DISPLAY.md`.
+- **Outcome**: All implementation tasks completed. New files: `imagestore/Stats.h` (extracted struct in `imagestore` namespace), `imagestore/DisplayMode.h` (enum class), `imagestore/Output.h` (inline `g_outputMutex` + `stderrLine`), `imagestore/ProgressReporter.h` + `ProgressReporter.cpp` (background thread, Normal/Graph/Quiet modes, ANSI cursor hide/show, TTY guard, terminal width via `ioctl`). `main.cpp` updated: removed `ProgressTracker`, uses new headers, `-q`/`--graph` flags with mutual-exclusion validation, `ProgressReporter` wired in. `imagestore/CMakeLists.txt` updated to add `ProgressReporter.cpp`. Build clean, all 8 tests pass.
+- **Next Step**: Integration testing of Normal, Quiet, and Graph modes on a live run (task #10, #11).
+
+## [2026-04-07 10:00] - Phase 0013: Runtime Pipeline Progress Tracking
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement phase 0013 — add per-stage counters, byte counters, in-flight gauges, GaugeGuard/SizedGaugeGuard RAII helpers, pipeline progress snapshot table, and `addFile` entry point per `docs/plan/0013.PROGRESS.md`.
+- **Outcome**: All 7 implementation steps were already complete in the codebase — `GaugeGuard`/`SizedGaugeGuard` in `metrics/Gauge.h`, new Counter/Gauge/Histogram members in `metrics/Metrics.h`, `snapshot()`/`reset()` updated in `metrics/Metrics.cpp`, pipeline progress table in `metrics/Snapshot.cpp`, full instrumentation in `imager/Imager.cpp` (`addImage` + `addFile`), and `addFile` declaration in `imager/Imager.h`. Build clean, all 8 tests passed (DatabaseTests, jpeg, png, heic, nef, mov, aae, ImagerTests).
+- **Next Step**: No further action required for this phase.
+
 ## [2026-04-05 18:00] - Fix Include Ordering and Angle-Bracket Violations (M1)
 
 - **Agent**: cpp-spec-coder

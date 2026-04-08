@@ -4,13 +4,17 @@
 #include <coro/ThreadPool.h>
 #include <coro/WhenAll.h>
 #include <imager/ImageValidator.h>
+#include <metrics/Gauge.h>
 #include <metrics/Metrics.h>
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -190,22 +194,28 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
 
   // 2+3. Hash (and validate) — parallel when validator present
   std::string id;
+  const auto blobSize = static_cast<int64_t>(blob.size());
 
   if (!validator) {
     try {
+      metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_hashing,
+                                  m_impl->metrics.inflight_hashing_bytes, blobSize);
       metrics::Timer t(m_impl->metrics.hash);
       id = computeSha256(blob);
     } catch (const std::exception& e) {
       m_impl->metrics.images_failed.add(1);
       return {ErrorCode::StorageError, "", std::string("Hashing failed: ") + e.what()};
     }
+    m_impl->metrics.stage_hashed.add(1);
+    m_impl->metrics.stage_hashed_bytes.add(blob.size());
   } else {
     validation::ValidationResult valResult;
     try {
       auto [vr, hid] = coro::blockOn(
         m_impl->pool,
         [](
-          coro::ThreadPool& p, const validation::IValidator* v, Blob b, metrics::Metrics& m
+          coro::ThreadPool& p, const validation::IValidator* v, Blob b, metrics::Metrics& m,
+          int64_t bSz
         ) -> coro::Task<std::pair<validation::ValidationResult, std::string>> {
           validation::ValidationResult vRes;
           std::string hId;
@@ -215,23 +225,25 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
           tasks.push_back(
             [](
               coro::ThreadPool& p2, const validation::IValidator* v2, Blob b2, validation::ValidationResult& out,
-              metrics::Metrics& m2
+              metrics::Metrics& m2, int64_t sz
             ) -> coro::Task<void> {
               co_await p2.schedule();
+              metrics::SizedGaugeGuard sg(m2.inflight_validating, m2.inflight_validating_bytes, sz);
               metrics::Timer t(m2.validate);
               out = v2->validate(b2.data(), b2.size());
-            }(p, v, b, vRes, m)
+            }(p, v, b, vRes, m, bSz)
           );
 
-          tasks.push_back([](coro::ThreadPool& p2, Blob b2, std::string& out, metrics::Metrics& m2) -> coro::Task<void> {
+          tasks.push_back([](coro::ThreadPool& p2, Blob b2, std::string& out, metrics::Metrics& m2, int64_t sz) -> coro::Task<void> {
             co_await p2.schedule();
+            metrics::SizedGaugeGuard sg(m2.inflight_hashing, m2.inflight_hashing_bytes, sz);
             metrics::Timer t(m2.hash);
             out = computeSha256(b2);
-          }(p, b, hId, m));
+          }(p, b, hId, m, bSz));
 
           co_await coro::whenAll(std::move(tasks));
           co_return std::make_pair(vRes, std::move(hId));
-        }(m_impl->pool, validator, blob, m_impl->metrics)
+        }(m_impl->pool, validator, blob, m_impl->metrics, blobSize)
       );
 
       valResult = vr;
@@ -245,10 +257,16 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
       m_impl->metrics.images_failed.add(1);
       return {ErrorCode::BrokenFile, "", valResult.errorMessage};
     }
+    m_impl->metrics.stage_validated.add(1);
+    m_impl->metrics.stage_validated_bytes.add(blob.size());
+    m_impl->metrics.stage_hashed.add(1);
+    m_impl->metrics.stage_hashed_bytes.add(blob.size());
   }
 
   // Measure mutex wait time separately from the lock guard
   {
+    metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_waiting_mutex,
+                                m_impl->metrics.inflight_waiting_mutex_bytes, blobSize);
     metrics::Timer t(m_impl->metrics.mutex_wait);
     m_impl->writeMutex.lock();
   }
@@ -256,6 +274,8 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
 
   // 4. Duplicate check
   try {
+    metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_dedup_checking,
+                                m_impl->metrics.inflight_dedup_checking_bytes, blobSize);
     metrics::Timer t(m_impl->metrics.dedup_check);
     if (m_impl->dbs.fileExists(id)) {
       return {ErrorCode::DuplicateFile, "", "File already exists: " + id};
@@ -264,6 +284,7 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     m_impl->metrics.images_failed.add(1);
     return {ErrorCode::DatabaseError, "", e.what()};
   }
+  m_impl->metrics.stage_dedup_checked.add(1);
 
   // ---- Sidecar path -------------------------------------------------------
   if (Impl::isSidecarExtension(ext)) {
@@ -317,15 +338,20 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
 
     // 5. Write sidecar to storage using storageId as the filename prefix
     try {
+      metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_writing_storage,
+                                  m_impl->metrics.inflight_writing_storage_bytes, blobSize);
       metrics::Timer t(m_impl->metrics.storage_write);
       coro::blockOn(m_impl->pool, m_impl->storage.writeFileAsync(storageId, ext, blob));
     } catch (const std::exception& e) {
       m_impl->metrics.images_failed.add(1);
       return {ErrorCode::StorageError, "", std::string("Storage write failed: ") + e.what()};
     }
+    m_impl->metrics.stage_stored.add(1);
 
     // 6. Insert file record (bare name only, not full path)
     try {
+      metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_inserting_db,
+                                  m_impl->metrics.inflight_inserting_db_bytes, blobSize);
       metrics::Timer t(m_impl->metrics.db_insert);
       m_impl->dbs.addFile(id, bareName, blob.size(), ext);
     } catch (const db::DatabaseException& e) {
@@ -338,6 +364,8 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
       m_impl->metrics.images_failed.add(1);
       return {ErrorCode::DatabaseError, "", e.what()};
     }
+    m_impl->metrics.stage_db_inserted.add(1);
+    m_impl->metrics.stage_db_inserted_bytes.add(blob.size());
 
     // 7. Insert original_name entry
     try {
@@ -372,15 +400,21 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
 
   // 5. Write to all storage roots in parallel
   try {
+    metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_writing_storage,
+                                m_impl->metrics.inflight_writing_storage_bytes, blobSize);
     metrics::Timer t(m_impl->metrics.storage_write);
     coro::blockOn(m_impl->pool, m_impl->storage.writeFileAsync(id, ext, blob));
   } catch (const std::exception& e) {
     m_impl->metrics.images_failed.add(1);
     return {ErrorCode::StorageError, "", std::string("Storage write failed: ") + e.what()};
   }
+  m_impl->metrics.stage_stored.add(1);
+  // storage_bytes_written already incremented inside writeToRoot
 
   // 6. Insert into all databases in parallel (store bare name)
   try {
+    metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_inserting_db,
+                                m_impl->metrics.inflight_inserting_db_bytes, blobSize);
     metrics::Timer t(m_impl->metrics.db_insert);
     m_impl->dbs.addFile(id, bareName, blob.size(), ext);
   } catch (const db::DatabaseException& e) {
@@ -392,6 +426,8 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     m_impl->metrics.images_failed.add(1);
     return {ErrorCode::DatabaseError, "", e.what()};
   }
+  m_impl->metrics.stage_db_inserted.add(1);
+  m_impl->metrics.stage_db_inserted_bytes.add(blob.size());
 
   // 7. Insert original_name entry so sidecars can find this file as a parent
   const std::string baseName = Impl::extractBaseName(bareName);
@@ -430,6 +466,63 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
 
   m_impl->metrics.images_added.add(1);
   return {ErrorCode::Ok, id, ""};
+}
+
+// ---------------------------------------------------------------------------
+// addFile
+// ---------------------------------------------------------------------------
+
+AddResult Imager::addFile(const std::filesystem::path& path, const std::string& filename) {
+  std::string displayName = filename.empty() ? path.filename().string() : filename;
+
+  // Stage 0: file read — tracked by metrics.
+  // inflight_reading (file count) is incremented immediately.
+  // inflight_reading_bytes is incremented after stat (once we know the size).
+  Blob blob;
+  {
+    m_impl->metrics.inflight_reading.increment();
+
+    std::error_code ec;
+    auto fileSize = std::filesystem::file_size(path, ec);
+    if (ec) {
+      m_impl->metrics.inflight_reading.decrement();
+      m_impl->metrics.images_failed.add(1);
+      return {ErrorCode::FileNotFound, "",
+              "Cannot stat: " + path.string() + ": " + ec.message()};
+    }
+
+    const auto blobSz = static_cast<int64_t>(fileSize);
+    m_impl->metrics.inflight_reading_bytes.add(blobSz);
+    metrics::Timer t(m_impl->metrics.file_read);
+
+    blob = Blob(fileSize);
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+      m_impl->metrics.inflight_reading.decrement();
+      m_impl->metrics.inflight_reading_bytes.add(-blobSz);
+      m_impl->metrics.images_failed.add(1);
+      return {ErrorCode::FileNotFound, "",
+              "Cannot open: " + path.string()};
+    }
+    if (fileSize > 0) {
+      in.read(reinterpret_cast<char*>(blob.writableData()),
+              static_cast<std::streamsize>(fileSize));
+      if (in.fail() && !in.eof()) {
+        m_impl->metrics.inflight_reading.decrement();
+        m_impl->metrics.inflight_reading_bytes.add(-blobSz);
+        m_impl->metrics.images_failed.add(1);
+        return {ErrorCode::StorageError, "",
+                "Read error: " + path.string()};
+      }
+    }
+    blob.freeze();
+    m_impl->metrics.inflight_reading.decrement();
+    m_impl->metrics.inflight_reading_bytes.add(-blobSz);
+  }
+  m_impl->metrics.stage_read.add(1);
+  m_impl->metrics.stage_read_bytes.add(blob.size());
+
+  return addImage(blob, displayName);
 }
 
 // ---------------------------------------------------------------------------
