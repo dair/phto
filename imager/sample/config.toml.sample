@@ -1,5 +1,7 @@
-[storage]
-roots = ["/mnt/disk1/images", "/mnt/disk2/images-backup"]
+[[targets]]
+root = "/mnt/disk1/images"
+database = "/mnt/disk1/imager.db"
 
-[database]
-path = "/var/lib/imager/imager.db"
+[[targets]]
+root = "/mnt/disk2/images-backup"
+database = "/mnt/disk2/imager.db"

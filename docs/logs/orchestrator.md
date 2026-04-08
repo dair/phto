@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-04-08 10:00] - Phase A of Step 0015 — Config Foundations Complete
+
+- **Agent**: Orchestrator
+- **Task**: Coordinate four Phase A priority-1 tasks from 0015.GAPS.md: fix sample config (A6), config tests (B1), semantic validation (C7), CLAUDE.md update (A1-A5)
+- **Outcome**: All four tasks completed. Sample config corrected; semantic validation added and tested; 10-test CPPUnit suite added for config/; CLAUDE.md updated with imagestore/, all 9 test suites, all plan docs 0001-0015, and accurate implementation status.
+- **Next Step**: Phase B — multi-target rollback/integrity tests (1.1 / B6, B7)
+
 ## [2026-04-07 11:00] - Plan 0014: imagestore Progress Metrics Display — Planning Complete
 - **Agent**: Orchestrator
 - **Task**: Coordinate planning for step 0014 — adding progress metrics display, `-q`/`--quiet`, and `--graph` animated terminal display to `imagestore`

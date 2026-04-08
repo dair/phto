@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-04-08 08:30] - Config semantic validation (2.4 / C7)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Reject configs with duplicate root paths or duplicate database paths across targets; throw `std::runtime_error` with a clear message.
+- **Outcome**: Added post-parse validation block in `config/Config.cpp` using two `std::unordered_set<std::string>` to detect duplicates in O(n). Added `<unordered_set>` include. Error messages use colon separator: `"Config: duplicate root path: <path>"` and `"Config: duplicate database path: <path>"`. Build clean (`config_lib` target passes).
+- **Next Step**: Config parser tests (task #2 / B1).
+
 ## [2026-04-07 11:30] - Phase 0014: imagestore Progress Metrics Display
 
 - **Agent**: cpp-spec-coder

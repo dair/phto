@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 #include <toml++/toml.hpp>
+#include <unordered_set>
 
 namespace config {
 
@@ -39,6 +40,21 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
     }
 
     cfg.targets.push_back({*root, *database});
+  }
+
+  // Semantic validation: duplicate root or database paths are rejected.
+  {
+    std::unordered_set<std::string> roots, databases;
+    for (const auto& target : cfg.targets) {
+      auto rootStr = target.root.string();
+      if (!roots.insert(rootStr).second) {
+        throw std::runtime_error("Config: duplicate root path: " + rootStr);
+      }
+      auto dbStr = target.database.string();
+      if (!databases.insert(dbStr).second) {
+        throw std::runtime_error("Config: duplicate database path: " + dbStr);
+      }
+    }
   }
 
   return cfg;

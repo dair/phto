@@ -36,9 +36,10 @@ Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
 │   ├── Hasher.cpp          # SHA256 via OpenSSL
 │   ├── sample/             # CLI demo
 │   └── test/
+├── imagestore/    # Batch import CLI: stdin pipe, bounded concurrency, progress, error file
 ├── metrics/       # Lock-free monitoring: Histogram, Counter, Gauge, Timer (namespace metrics)
 └── docs/
-    ├── plan/      # Design documents (0001–0007)
+    ├── plan/      # Design documents (0001–0015)
     └── analysis/  # Implementation analysis
 ```
 
@@ -89,7 +90,7 @@ Config is read once at startup (no hot reload).
 
 ## Testing
 
-CPPUnit-based. Test suites: `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `ImagerTests`, `mov_validator_tests`.
+CPPUnit-based. Test suites: `DatabaseTests`, `ImagerTests`, `config_tests`, `jpeg_validator_tests`, `test_validate_png`, `heic_validator_tests`, `nef_validator_tests`, `aae_validator_tests`, `mov_validator_tests`.
 
 Use temporary directories for test databases and file storage; clean up in `tearDown()`.
 
@@ -104,8 +105,17 @@ Detailed plans live in `docs/plan/`:
 - **[0004.REFACTORING](docs/plan/0004.REFACTORING.md)** — Type splitting (Types.h → individual headers) and library extraction (coro/, blob/ as top-level libs)
 - **[0005.MONITORING](docs/plan/0005.MONITORING.md)** — Lock-free metrics infrastructure for pipeline bottleneck analysis
 - **[0006.UTILITY](docs/plan/0006.UTILITY.md)** — `imagestore` batch import CLI utility (stdin pipe, bounded concurrency, error file, dry-run)
+- **[0007.HEIC](docs/plan/0007.HEIC.md)** — HEIC/HEIF format validation via libheif
+- **[0008.NEF](docs/plan/0008.NEF.md)** — Nikon NEF raw format validation via LibRaw
+- **[0009.MOV](docs/plan/0009.MOV.md)** — MOV/MP4 container validation via libavformat + libavcodec
+- **[0010.AAE](docs/plan/0010.AAE.md)** — Apple AAE sidecar support: parent-hash storage, orphan relocation, cascade delete
+- **[0011.ARCHIVES](docs/plan/0011.ARCHIVES.md)** — Archive format support (planned)
+- **[0012.CODING_STANDARDS](docs/plan/0012.CODING_STANDARDS.md)** — Project coding standards reference
+- **[0013.PROGRESS](docs/plan/0013.PROGRESS.md)** — Progress tracking: stage counters, `--graph` mode, `Imager::addFile()`
+- **[0014.DISPLAY](docs/plan/0014.DISPLAY.md)** — Display and output improvements for imagestore
+- **[0015.GAPS](docs/plan/0015.GAPS.md)** — Gap analysis and remediation plan
 
-Implementation status is tracked in **[docs/analysis/ANALYSIS.md](docs/analysis/ANALYSIS.md)** — 0001 complete, 0002 largely implemented, 0003 partially implemented, 0004–0006 planned.
+Implementation status is tracked in **[docs/analysis/ANALYSIS.md](docs/analysis/ANALYSIS.md)** — Phase 1 core complete; 0002 (multi-target DB), 0003 (coroutine parallelism), 0004 (refactoring), 0007–0010 (HEIC/NEF/MOV/AAE validators), and 0013 (progress tracking) implemented. 0005 (metrics) partially wired. 0006 (`imagestore` CLI) substantially implemented.
 
 ## Key conventions
 
