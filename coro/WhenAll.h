@@ -14,9 +14,13 @@ namespace coro {
 // whenAll — start all tasks concurrently, wait for all to complete.
 //
 // Assumptions:
-//   - Each task suspends at least once before completing (e.g. via
-//     co_await pool.schedule()), so sub-tasks never complete synchronously
-//     inside AllAwaiter::await_suspend. This prevents reentrancy issues.
+//   - INVARIANT: All tasks passed to whenAll() MUST suspend at least once
+//     (e.g. via co_await pool.schedule()) before producing a result.
+//     If a sub-task completes synchronously, the last-to-finish decrement
+//     may resume the continuation from within await_suspend, which is
+//     undefined behaviour in the C++20 coroutine model.
+//     Callers: ensure every whenAll task begins with co_await pool.schedule()
+//     or equivalent before doing any work.
 //   - Tasks run on an external thread pool (captured by reference in lambdas).
 // ---------------------------------------------------------------------------
 

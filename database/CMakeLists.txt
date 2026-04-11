@@ -17,6 +17,7 @@ target_include_directories(database
 
 target_link_libraries(database
     PRIVATE SQLite::SQLite3
+    PUBLIC metrics_lib
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")

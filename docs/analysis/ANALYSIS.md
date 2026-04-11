@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document compares the current workspace against the specs rooted at [`CLAUDE.md`](../../CLAUDE.md) and the plan documents it points to, plus the follow-on plans that are now clearly reflected in the code:
+This document compares the current workspace against the spec chain rooted at [`CLAUDE.md`](../../CLAUDE.md), including the dependent plans and module-level spec files it points to:
 
 - `docs/plan/README.md`
 - `docs/plan/0001.INITIAL.md`
@@ -23,48 +23,64 @@ This document compares the current workspace against the specs rooted at [`CLAUD
 - `validations/nef/CLAUDE.md`
 - `validations/mov/CLAUDE.md`
 
-This analysis reflects the current working tree as of 2026-04-07, including uncommitted `imagestore/` and metrics/progress changes already present in the workspace.
+This analysis reflects the current working tree as of 2026-04-11.
+
+## Executive summary
+
+The implementation is now substantially correspondent to the Phase 1 spec set.
+
+- The offline core described in `CLAUDE.md` and `docs/plan/0001` is implemented and testable.
+- `0002` multi-target databases is implemented, including parallel fan-out and compensation logic.
+- `0003` coroutine-based internal parallelism is implemented across hashing, validation, storage, DB fan-out, and tag enrichment.
+- `0004` refactoring into top-level `blob/` and `coro/` libraries is implemented.
+- `0005` monitoring is implemented enough to be useful in practice, but still not complete relative to the plan's full ambition.
+- `0006` `imagestore` is implemented, built, and covered by a CLI test target.
+- `0007` HEIC, `0008` NEF, `0009` MOV/MP4, and `0010` AAE sidecars are implemented and covered by tests.
+- `0013` runtime progress tracking is implemented, including `Imager::addFile()` and pipeline-stage metrics.
+
+The main drift is no longer missing core functionality. The remaining issues are mostly:
+
+- stale top-level documentation;
+- a few plan/doc statements that no longer match the actual implementation;
+- monitoring gaps that are narrower than before but still real;
+- some best-effort sidecar rollback behavior that is not fully transactional.
 
 ## Current high-level status
 
-The codebase is materially ahead of the status summary still written in `CLAUDE.md`.
+Compared to the older analysis, the codebase has advanced materially:
 
-- Phase 1 core is implemented and usable.
-- `0002` multi-target database fan-out is implemented.
-- `0003` coroutine-based parallelism is implemented across the main ingestion/storage paths.
-- `0004` refactoring into top-level `blob/`, `coro/`, and split type headers is implemented.
-- `0005` monitoring is partially implemented.
-- `0006` utility is now substantially implemented as `imagestore/`.
-- `0007`, `0008`, `0009`, and `0010` are implemented: HEIC, NEF, MOV/MP4, and AAE support all exist in code and tests.
-- `0013` progress tracking is largely implemented: new stage counters/gauges exist and `Imager::addFile()` exists.
+- `config_tests`, `blob_tests`, `coro_tests`, `metrics_tests`, and `imagestore_cli_tests` now exist and pass.
+- multi-target parity, storage rollback, read failover, and multi-target sidecar consistency now have direct tests in [`imager/test/MultiTargetTest.cpp`](../../imager/test/MultiTargetTest.cpp).
+- config semantic validation now rejects duplicate root paths and duplicate database paths.
+- `Blob` now updates blob lifetime gauges when metrics are injected.
+- `ThreadPool` now updates queue depth, active-thread, and schedule-latency metrics.
+- `Database` now records read and write timings into `db_read_duration` and `db_write_duration`.
+- `imagestore` non-dry-run mode now uses `Imager::addFile()` instead of duplicating the full non-dry-run read path itself.
 
-The main remaining work is no longer "build the offline core". It is mostly:
-
-- align top-level docs with the actual code and test set;
-- add missing tests around config parsing, coroutine primitives, metrics, multi-target rollback, and `imagestore`;
-- finish or explicitly defer the unimplemented parts of monitoring;
-- harden some error/rollback edge cases in multi-target and sidecar flows.
+That means several items previously called out as gaps are now closed.
 
 ## Key correspondence summary
 
 ### `CLAUDE.md`
 
-Status: **Partially accurate, but stale**
+Status: **Mostly accurate, but stale in several summary sections**
 
-Still accurate:
+Accurate:
 
-- the project is a C++23 local-network media organizer library;
-- `blob/`, `coro/`, `config/`, `database/`, `imager/`, `metrics/`, and `validations/` exist as described;
-- multi-root storage, per-target databases, coroutine fan-out, SHA-256 sharded storage, and sidecar handling are present;
-- public APIs are synchronous while coroutines stay internal.
+- project structure is broadly correct;
+- redundant multi-root storage exists;
+- per-target databases exist;
+- coroutine-based internal I/O parallelism exists;
+- SHA-256 sharded storage exists;
+- JPEG, PNG, HEIC, NEF, MOV/MP4, and AAE validation/support exist;
+- sidecar pairing/orphan relocation/cascade-delete behavior exists;
+- public API remains synchronous with coroutines kept internal.
 
-Stale or inaccurate:
+Out of date:
 
-- the implementation-status paragraph is outdated; the codebase now includes `0006` utility work, extra validators, AAE support, and progress tracking;
-- the listed test suites are outdated; `ctest --preset default` currently runs 8 passing tests, not 5;
-- `docs/plan/` contains more active specs than the six documents enumerated there;
-- `imagestore/` exists at the repo root, but the project structure section does not mention it;
-- the config sample referenced elsewhere is obsolete and still uses `[storage]` / `[database]`.
+- the implementation-status paragraph undersells the current tree;
+- the test-suite summary is stale, because the current preset now runs 13 passing tests rather than the older smaller set;
+- it still frames `0005` as only partially wired without noting that DB timings, blob gauges, thread-pool metrics, config tests, blob tests, coro tests, metrics tests, and `imagestore` CLI tests now exist.
 
 ### `docs/plan/README.md`
 
@@ -72,93 +88,86 @@ Status: **Partially accurate**
 
 Accurate:
 
-- offline-first Phase 1 architecture is implemented;
-- SQLite metadata and redundant storage are implemented;
-- startup-only config loading is implemented;
-- Phase 2 HTTP/JWT work is still absent.
+- Phase 1 offline-first direction matches the code;
+- Phase 2 network/HTTP work is still absent.
 
 Drift:
 
-- it still says identity is SHA-256 plus size; the effective dedup key in the current facade is the SHA-256 string alone, with size stored separately;
-- it still refers to `validation/` instead of `validations/`;
-- it does not reflect the implemented `imagestore` utility, expanded validators, sidecar support, or progress work.
+- the text still says identity is SHA-256 plus size, while the runtime duplicate key is the SHA-256 ID alone and size is stored as metadata;
+- it predates the implemented validator expansion, sidecar support, progress tracking, and `imagestore` utility.
 
 ## Plan-by-plan assessment
 
 ### `0001.INITIAL.md`
 
-Status: **Implemented in spirit, but superseded in several areas**
+Status: **Implemented in spirit, with some planned details superseded by later plans**
 
 Implemented:
 
-- top-level CMake builds the project as a set of focused subprojects;
-- `config/`, `database/`, `imager/`, JPEG validation, PNG validation, hashing, storage, tags, lookup, listing, and deletion all exist;
-- facade API exists and is coherent;
-- tests exist for DB, validators, and facade behavior.
+- modular CMake layout exists;
+- config/database/imager/validator structure exists;
+- hashing via OpenSSL exists;
+- redundant storage exists;
+- facade API exists;
+- end-to-end facade tests exist.
 
-Superseded:
+Superseded by later plans:
 
-- config is now `[[targets]]`, not `[storage]` plus `[database]`;
-- ingestion API uses `Blob`, not raw pointer plus size;
-- the architecture is multi-database, not single-database;
-- supported formats now include HEIC, NEF, MOV/MP4, and AAE.
+- config now uses `[[targets]]`, not older single-storage/single-db sections;
+- ingestion uses `Blob`;
+- storage/database are multi-target, not single-target;
+- MOV/MP4 are validated, not extension-only;
+- HEIC, NEF, and AAE support now exist.
 
-Current mismatches:
+Residual doc mismatch:
 
-- [`imager/sample/config.toml.sample`](../../imager/sample/config.toml.sample) still uses the obsolete config format;
-- the document still frames MOV/MP4 as extension-only, but the current code fully validates them;
-- the identity wording still suggests hash+size instead of the hash-only dedup key actually enforced.
+- the identity wording still reads like hash-plus-size even though dedup is effectively hash-only.
 
 ### `0002.DATABASES.md`
 
-Status: **Largely implemented**
+Status: **Implemented**
 
 Implemented:
 
-- `config::AppConfig` now holds `std::vector<TargetConfig>`;
-- config parser requires non-empty `[[targets]]`;
-- `MultiDatabase` exists and opens one `db::Database` per target;
-- writes are fanned out in parallel over a shared thread pool;
-- rollback/compensation exists for file CRUD and tag-binding operations;
+- `config::AppConfig` stores `std::vector<TargetConfig>`;
+- parser requires non-empty `[[targets]]`;
+- `MultiDatabase` owns one `db::Database` per target;
+- writes are fanned out in parallel through a shared `ThreadPool`;
+- compensation logic exists for `addFile`, `deleteFile`, `editFileName`, `addTag`, `deleteTag`, `bindTag`, and `unbindTag`;
 - reads intentionally go to `m_dbs[0]`.
 
-Good alignment details:
+Now directly tested:
 
-- `Imager::Impl` owns one shared pool and passes it into storage and DB layers;
-- the all-or-nothing intent is correctly expressed in `parallelWriteAll()`.
+- successful multi-target DB parity after writes;
+- storage rollback after a root write failure.
 
-Gaps:
+Remaining limits:
 
-- there is still no direct test proving all target databases stay identical under multi-target writes;
-- rollback is not fault-injected or directly tested;
-- semantic config validation is still minimal: duplicate roots, duplicate database paths, and other invalid pairings are not rejected;
-- `MultiDatabase` still assumes a non-empty target set on reads, relying on config validation rather than defensive construction.
+- consistency repair after an external crash remains out of scope, matching the plan's own noted risk;
+- `MultiDatabase` still assumes valid non-empty target construction rather than defending every read path itself.
 
 ### `0003.PARALLELIZING.md`
 
-Status: **Substantially implemented**
+Status: **Implemented**
 
 Implemented:
 
-- top-level `blob/` and `coro/` libraries exist and are used;
-- `Imager::addImage()` accepts `Blob`;
+- top-level `blob/` and `coro/` libraries exist;
+- `addImage()` uses `Blob`;
 - hashing and validation run concurrently;
-- storage write/delete fan out across roots in parallel;
-- tag enrichment in `listImages()` / `getImagesByTags()` is parallelized;
-- synchronous facade methods bridge into coroutine internals via `blockOn()`.
+- storage writes/deletes/relocations fan out in parallel;
+- query-time tag enrichment is parallelized;
+- synchronous facade methods bridge to internal coroutines via `blockOn()`;
+- `whenAllSettled()` exists and is used for rollback-oriented flows.
 
-Still true by design:
+Also now covered by tests:
 
-- `getImage()` remains sequential;
-- `getImageData()` remains sequential because it depends on metadata first.
+- `ThreadPool`, `blockOn`, `whenAll`, and `whenAllSettled` have direct unit tests;
+- storage read failover has direct integration coverage.
 
-Gaps and risks:
+Remaining caveat:
 
-- `Blob::fromVector()` is still more expensive than intended: it copies twice rather than adopting the vector storage;
-- `Blob::freeze()` is advisory only and does not actually prevent subsequent mutable access;
-- `whenAll()` still relies on the documented invariant that subtasks suspend before completion;
-- there are no direct tests for `Task`, `ThreadPool`, `whenAll`, `whenAllSettled`, or `blockOn`;
-- read failover in `FileStorage::readFile()` exists but is not directly tested.
+- `whenAll()` still depends on the documented invariant that subtasks suspend before completion. The test suite exercises the intended pattern, but the implementation still documents this as an assumption rather than eliminating it structurally.
 
 ### `0004.REFACTORING.md`
 
@@ -166,66 +175,62 @@ Status: **Implemented**
 
 Implemented:
 
-- `Types.h` is now an umbrella over split type headers;
-- `blob/` and `coro/` are top-level libraries;
-- `imager/` links against those extracted libraries;
-- namespace boundaries match the directory layout.
+- type splitting is in place;
+- `Types.h` is an umbrella;
+- `blob/` and `coro/` are extracted top-level libraries;
+- namespace boundaries align with the directory structure.
 
-Residual debt:
+Minor residual drift:
 
-- `createDefaultValidators()` remains an inline factory in a header rather than being moved to a `.cpp`, which is minor but still noted by the repo's own coding notes.
+- `createDefaultValidators()` still lives header-side in [`imager/Validators.h`](../../imager/Validators.h), which is a small structural debt rather than a functional issue.
 
 ### `0005.MONITORING.md`
 
-Status: **Partially implemented**
+Status: **Mostly implemented, but not complete to the full plan**
 
 Implemented:
 
-- dedicated `metrics/` library with `Histogram`, `Counter`, `Gauge`, `Timer`, snapshots, formatting, and reset;
-- instrumentation in `Imager`, `FileStorage`, and the thread-pool-facing paths;
-- progress counters and in-flight gauges added per `0013`;
-- metrics snapshot formatting includes pipeline progress tables and read latency.
+- dedicated `metrics/` library exists with `Counter`, `Gauge`, `Histogram`, `Timer`, snapshots, formatting, and reset;
+- `Imager`, `FileStorage`, `MultiDatabase`, `ThreadPool`, `Blob`, and `Database` all produce metrics now;
+- stage counters and in-flight gauges from `0013` exist;
+- `file_read` metrics exist through `Imager::addFile()`;
+- metrics tests exist and pass.
 
-Implemented beyond the previous analysis:
+Implemented specifically beyond the previous analysis:
 
-- `Metrics::reset()` now exists;
-- stage counters/gauges from `0013` now exist;
-- file-read latency metric `file_read` exists;
-- `Imager::addFile()` is present and measures library-owned file reads.
+- `Database` now records `db_read_duration` and `db_write_duration`;
+- `Blob` now updates `blobs_alive` and `blob_bytes_alive` when metrics are supplied;
+- `ThreadPool` now updates queue depth, active threads, and schedule latency.
 
-Still missing from the original monitoring plan:
+Still incomplete relative to the plan:
 
-- `database/Database.cpp` still does not record `db_read_duration` or `db_write_duration`;
-- `blobs_alive` and `blob_bytes_alive` are defined but not actually updated anywhere in the current `Blob` implementation;
-- there are still no tests for the metrics layer;
-- there is still no richer file-size correlation beyond the byte counters now added for progress reporting.
+- there is no compile-time metrics-disable mode described in the plan;
+- there is no Prometheus/OpenTelemetry/export layer;
+- instrumentation is concentrated in the core library and CLI, not in any future daemon/reporting surface.
 
 ### `0006.UTILITY.md`
 
-Status: **Substantially implemented, but not complete**
+Status: **Implemented**
 
 Implemented:
 
-- `imagestore/` now exists and builds as an executable;
-- stdin-driven batch import is implemented;
-- `--config`, `--errors`, `--jobs`, `--dry-run`, `--verbose`, and `--help` exist;
-- error-file skip-list behavior exists via `ErrorFile`;
+- `imagestore/` exists and builds;
+- stdin-driven import exists;
+- `--config`, `--errors`, `--jobs`, `--dry-run`, `--verbose`, `--quiet`, `--graph`, and `--help` exist;
 - bounded concurrency exists via `std::counting_semaphore`;
-- `Imager::validateOnly()` exists for dry-run mode;
+- error-file skip list exists;
 - periodic progress reporting exists;
-- final summary output exists.
+- final summary exists;
+- CLI tests exist and pass.
 
-Implemented beyond the original plan:
+Alignment improvements since the previous analysis:
 
-- `--quiet` and `--graph` output modes now exist in the working tree.
+- non-dry-run mode now delegates file reading to `Imager::addFile()`, so the library-owned read stage is used by the main importer path;
+- `imagestore_cli_tests` is now registered in CTest and passing.
 
-Still missing or divergent:
+Remaining gap:
 
-- `imagestore` still reads files itself instead of using `Imager::addFile()`, so the library-owned `read` stage metrics remain mostly unused by the utility;
-- there are no tests for `imagestore`;
-- the plan said duplicates are not errors and should not go to the error file, which matches the implementation;
-- the default config path behavior does not explicitly error on a missing default file before parsing; it relies on config-load failure messaging instead;
-- progress summary cadence differs from the exact "every 1000 files or every 5 seconds" wording in the plan.
+- dry-run mode still manually reads files because there is no `validateOnlyFile()` API. That is reasonable, but it means dry-run does not exercise the same library-owned read-stage metrics path as normal ingestion.
 
 ### `0007.HEIC.md`
 
@@ -233,14 +238,13 @@ Status: **Implemented**
 
 Implemented:
 
-- `validations/heic/` exists and uses system `libheif`;
-- `HeicValidatorImpl.cpp` registers `.heic` and `.heif`;
-- tests exist and pass under `ctest`;
-- the facade recognizes HEIC/HEIF as supported formats.
+- `validations/heic/` exists and links to system `libheif`;
+- `.heic` and `.heif` support is wired into the validator registry;
+- tests exist and pass.
 
-Minor caveat:
+Note:
 
-- the tests are AV1/AVIF-based fixtures run through the HEIF container path, which is acceptable for validating the container/decoder path but slightly broader than the "HEIC specifically implies HEVC" narrative in the plan.
+- the fixture and validation path are acceptable for HEIF-family validation, even if the plan prose focused on HEIC/HEVC specifically.
 
 ### `0008.NEF.md`
 
@@ -248,10 +252,8 @@ Status: **Implemented**
 
 Implemented:
 
-- `validations/nef/` exists and uses system LibRaw;
-- `.nef` support is wired into the validator factory;
-- tests exist and pass;
-- the facade accepts and validates NEF files.
+- `validations/nef/` exists and links to LibRaw via pkg-config;
+- `.nef` support is registered and tested.
 
 ### `0009.MOV.md`
 
@@ -259,10 +261,9 @@ Status: **Implemented**
 
 Implemented:
 
-- `validations/mov/` exists and uses FFmpeg libraries;
-- `.mov` and `.mp4` are validated through `MovValidatorImpl.cpp`;
-- tests exist and pass;
-- the facade no longer treats MOV/MP4 as extension-only.
+- `validations/mov/` exists and links to FFmpeg libraries;
+- `.mov` and `.mp4` are validated, not merely accepted by extension;
+- tests exist and pass.
 
 ### `0010.AAE.md`
 
@@ -270,191 +271,160 @@ Status: **Largely implemented**
 
 Implemented:
 
-- `validations/aae/` exists with a dedicated validator;
-- `Database` schema includes `original_name` and `file_companion`;
-- `Imager::addImage()` accepts path-bearing filenames and extracts source directory plus base name;
-- sidecar-parent pairing, orphan sidecars, relocation on later parent arrival, and cascade delete are implemented;
-- storage for sidecars uses `storage_id` indirection;
-- DB tests cover original-name and companion tables;
-- imager tests cover main AAE scenarios.
+- dedicated AAE validator exists;
+- DB schema includes `original_name` and `file_companion`;
+- path-bearing filenames are supported;
+- parent lookup, orphan sidecars, relocation after parent arrival, and cascade delete are implemented;
+- sidecars are stored under `storage_id`, which may be the parent hash;
+- multi-target sidecar parity is now directly tested.
 
-Gaps and risks:
+Still weaker than a fully transactional design:
 
-- sidecar handling is only lightly guarded on ambiguous multi-parent scenarios; it currently returns `StorageError`, which works functionally but is not a very precise error classification;
-- rollback around `addOriginalName()` / `addCompanion()` is best-effort rather than fully transactional across storage and DB;
-- there is no explicit multi-target test covering sidecar relocation and companion consistency across more than one database.
+- sidecar-related bookkeeping across storage plus multiple DB writes is still orchestrated through best-effort compensation rather than one global transaction spanning all resources;
+- parent-arrival orphan resolution intentionally does not fail the parent add if relocation/update best-effort work fails.
 
 ### `0013.PROGRESS.md`
 
-Status: **Largely implemented**
+Status: **Implemented**
 
 Implemented:
 
-- per-stage counters and gauges exist in `metrics::Metrics`;
-- `Imager::addImage()` updates validation, hashing, mutex wait, dedup, storage, and DB-insert progress metrics;
-- `Imager::addFile()` exists and measures read-stage progress inside the library;
-- metrics snapshot formatting renders pipeline progress.
+- per-stage counters and in-flight gauges exist;
+- `Imager::addImage()` updates validation/hash/mutex/dedup/storage/db stages;
+- `Imager::addFile()` exists and measures the read stage;
+- metrics snapshots and `imagestore --graph` consume the pipeline metrics.
 
-Remaining mismatch:
+Only partial remaining mismatch:
 
-- `imagestore` still uses manual file reading and `addImage()` instead of switching to `addFile()`, so the read-stage metrics are not exercised by the main batch importer path yet.
+- dry-run still owns its own read path, so read-stage metrics are not unified across both normal and dry-run execution modes.
 
-## Spec correspondence by module
+## Module-by-module assessment
 
 ### `config/`
 
-Current state:
+Status: **Correspondent**
 
-- small and aligned with the post-`0002` target-array format;
-- parser behavior is deterministic and throws readable `std::runtime_error`s.
+Implemented:
 
-Strengths:
+- parser matches `[[targets]]` config format;
+- parser rejects empty or malformed target sets;
+- parser now rejects duplicate roots and duplicate database paths;
+- direct config tests exist and pass.
 
-- minimal surface area;
-- correct structural validation for `[[targets]]`.
+Residual note:
 
-Gaps:
-
-- no dedicated tests;
-- no semantic validation of duplicate or contradictory target entries;
-- sample config in `imager/sample/` is still wrong for the actual parser.
+- validation is structural plus a small amount of semantic checking; it does not attempt to validate filesystem reachability or cross-field policy beyond duplicates.
 
 ### `database/`
 
-Current state:
+Status: **Correspondent**
 
-- closely aligned with `database/CLAUDE.md`, plus additive schema extensions for sidecars;
-- schema, prepared statements, shared mutex, WAL, busy timeout, and foreign keys are all present;
-- this remains the strongest-tested module.
+Implemented:
 
-Strengths:
+- schema and CRUD behavior align with `database/CLAUDE.md`;
+- WAL, busy timeout, foreign keys, prepared statements, and shared-mutex threading are present;
+- sidecar schema extensions are present;
+- DB read/write metrics are now instrumented;
+- test coverage is broad.
 
-- good RAII around SQLite handles and statements;
-- broad CRUD, pagination, multithreading, original-name, and companion coverage.
+Minor mismatch:
 
-Gaps:
-
-- no metrics instrumentation despite declared histogram fields for DB read/write timing;
-- no explicit multi-database integration tests at the `MultiDatabase` level;
-- some DB tests still use extension strings without a leading dot while the facade stores dotted extensions, so conventions are not perfectly uniform across layers.
+- the original `database/CLAUDE.md` does not mention the later-added sidecar tables because they come from `0010`, so the database implementation is ahead of that narrower module-local spec.
 
 ### `blob/`
 
-Current state:
+Status: **Correspondent**
 
-- shared-ownership buffer exists and is actively used by the facade;
-- API is small and workable.
+Implemented:
 
-Strengths:
+- shared-ownership binary buffer exists;
+- `fromVector()` adopts vector storage without an extra memcpy;
+- freeze semantics are enforced at least in debug builds through the `assert` on `writableData()`;
+- blob lifetime metrics exist when a `Metrics` pointer is supplied;
+- direct blob tests exist and pass.
 
-- cheap copies after construction;
-- direct writable construction path supports zero-extra-copy file reads.
+Residual caveat:
 
-Gaps:
-
-- no direct tests;
-- `fromVector()` is inefficient relative to the intended design;
-- `freeze()` is not enforced;
-- memory metrics promised in `0005` are not wired into `Blob`.
+- immutability after `freeze()` is still a runtime convention rather than a type-level guarantee, which is consistent with the plan's wording.
 
 ### `coro/`
 
-Current state:
+Status: **Correspondent**
 
-- `Task`, `ThreadPool`, `whenAll`, `whenAllSettled`, and `blockOn` exist and are actively used.
+Implemented:
 
-Strengths:
+- `Task`, `ThreadPool`, `whenAll`, `whenAllSettled`, and `blockOn` exist;
+- thread-pool metrics are wired;
+- direct coroutine tests exist and pass.
 
-- small, owned implementation;
-- sufficient for current fan-out patterns.
+Residual caveat:
 
-Gaps:
-
-- no direct tests;
-- `whenAll()` still depends on a fragile documented scheduling invariant;
-- thread-pool metrics fields exist, but the current `ThreadPool` implementation does not appear to update queue-depth, active-thread, or schedule-latency metrics directly.
+- `whenAll()` still relies on the documented "must suspend at least once" invariant.
 
 ### `metrics/`
 
-Current state:
+Status: **Correspondent, but still narrower than the full monitoring vision**
 
-- usable instrumentation and snapshot formatting exist;
-- progress additions are present.
+Implemented:
 
-Strengths:
+- metric primitives, registry, reset, snapshots, and formatting exist;
+- direct tests exist and pass;
+- pipeline, storage, DB, pool, and blob metrics are now all represented.
 
-- compact primitives;
-- good enough to observe pipeline behavior at a high level.
+Still absent relative to the broader plan:
 
-Gaps:
-
-- incomplete coverage relative to the monitoring plan;
-- no tests;
-- defined blob and DB timing metrics are still mostly placeholders because producers are missing.
+- export/integration surfaces;
+- compile-time disable path.
 
 ### `validations/`
 
-Current state:
+Status: **Correspondent**
 
-- JPEG, PNG, HEIC, NEF, MOV, and AAE validators all exist;
-- each validator has its own focused test suite;
-- all validator suites currently pass in the default preset.
+Implemented:
 
-Strengths:
-
-- format support now matches the current plan set well;
-- facade adapters are straightforward and easy to extend.
-
-Gaps:
-
-- there is still no abstraction-level test around `validation::IValidator` itself;
-- validator test depth varies by format and environment capabilities.
+- JPEG, PNG, HEIC, NEF, MOV, and AAE validators exist;
+- each has focused tests;
+- all current validator suites pass.
 
 ### `imager/`
 
-Current state:
+Status: **Strong correspondence to the current Phase 1 spec set**
 
-- the architectural core is coherent and feature-rich;
-- shared pool, multi-target DB, storage fan-out, validator registry, sidecar logic, and progress metrics are integrated in one place.
+Implemented:
 
-Strengths:
+- coherent facade over config, validators, hashing, storage, multi-DB writes, metrics, and sidecars;
+- rollback from DB insert failure back into storage cleanup exists;
+- multi-target parity, storage rollback, storage failover, and sidecar parity now have direct test coverage;
+- `addFile()` and `validateOnly()` exist.
 
-- add path is logically ordered and mostly robust;
-- rollback on DB failure after storage write is present;
-- sidecar/orphan handling is implemented instead of only planned;
-- public API now includes `validateOnly()` and `addFile()`.
+Known design choice:
 
-Important limitations:
-
-- write serialization still happens under a single `writeMutex`, intentionally limiting throughput to preserve dedup/write consistency;
-- rollback and compensation are still only partially proven by tests;
-- some failure handling around sidecar bookkeeping remains best-effort rather than fully atomic.
+- top-level writes are still serialized under `writeMutex` to preserve dedup/write consistency. That intentionally limits peak write throughput in exchange for correctness.
 
 ### `imagestore/`
 
-Current state:
+Status: **Correspondent**
 
-- the planned batch utility exists and builds;
-- it is now the main area still showing "active development" characteristics.
+Implemented:
 
-Strengths:
+- batch importer shape matches the utility plan closely;
+- progress and summary output are implemented;
+- graph mode is implemented beyond the earlier basic plan;
+- CLI tests exist and pass.
 
-- practical CLI shape already exists;
-- skip-list behavior and bounded concurrency are implemented;
-- display/reporting has already evolved beyond the original plan.
+Remaining nuance:
 
-Gaps:
-
-- no test coverage;
-- still duplicates some file-reading logic that the library can now own;
-- current workspace contains active uncommitted UI/reporting changes, so this area is less settled than the core libraries.
+- dry-run still performs its own file read rather than going through a library file-reading entry point.
 
 ## Test coverage status
 
 ## Current passing test set
 
-`ctest --preset default --output-on-failure` currently passes all 8 registered test targets:
+`ctest --preset default --output-on-failure` passes all 13 registered tests as of 2026-04-11:
 
+- `metrics_tests`
+- `blob_tests`
+- `coro_tests`
 - `DatabaseTests`
 - `jpeg_validator_tests`
 - `test_validate_png`
@@ -462,63 +432,60 @@ Gaps:
 - `nef_validator_tests`
 - `mov_validator_tests`
 - `aae_validator_tests`
+- `config_tests`
 - `ImagerTests`
+- `imagestore_cli_tests`
 
-This is materially broader than the older analysis and broader than the test list still mentioned in `CLAUDE.md`.
+## Areas now covered well
 
-## Covered well
+### Core libraries
 
-### Database tests
+- database CRUD, pagination, binding, multithreading, original-name, and companion behavior;
+- blob ownership and metric tracking;
+- coroutine primitives and scheduling behavior;
+- metric primitives and reset behavior.
 
-Coverage is broad:
+### Imager integration
 
-- construction/open failure;
-- file/tag CRUD;
-- binding and unbinding;
-- pagination;
-- AND-semantics tag queries;
-- multithreaded access;
-- `original_name` and `file_companion` support.
-
-### Validator tests
-
-Each validator has focused unit coverage for valid, wrong-format, and corrupt/truncated data.
-
-### Imager tests
-
-The facade suite covers:
-
-- JPEG, HEIC, NEF, MOV, and MP4 ingestion paths;
+- JPEG, HEIC, NEF, MOV, MP4, and AAE ingestion;
 - duplicate detection;
-- unsupported-format and broken-file rejection;
-- querying and tags;
 - deletion;
+- tags and listing;
 - multi-root storage;
 - concurrent adds;
-- AAE parent/orphan/relocation/delete scenarios.
+- multi-target DB parity;
+- rollback on a storage root failure;
+- storage read failover;
+- sidecar orphan resolution and multi-target companion consistency.
 
-## Still weak or missing
+### CLI
 
-- no tests for `config/`;
-- no direct tests for `blob/`, `coro/`, or `metrics/`;
-- no tests for `imagestore/`;
-- no direct tests for multi-target DB parity after successful writes;
-- no direct tests for induced rollback after partial DB or storage failure;
-- no direct tests for storage-root read failover;
-- little or no verification of metrics correctness.
+- `imagestore` option handling and basic error-path behavior.
+
+## Remaining weak spots
+
+- there is still no fault-injection around DB-write compensation paths inside `MultiDatabase`;
+- `imagestore` tests are shell-level argument/exit-path tests, not full end-to-end import workflow tests with fixture ingestion and assertions on outputs/DB state;
+- the `whenAll()` invariant is tested indirectly but not structurally eliminated.
 
 ## Main mismatches and risks
 
-1. Top-level documentation is behind the actual codebase, especially around implemented plans, tests, and `imagestore`.
-2. The sample config is obsolete and does not match the actual parser.
-3. The dedup identity wording in the docs still says hash+size, but the runtime uniqueness key is effectively the hash alone.
-4. Monitoring is only partly realized: DB timing and blob-lifetime metrics are declared but not actually produced.
-5. `Blob::fromVector()` and `Blob::freeze()` do not yet match the intended semantics/performance.
-6. The most important multi-target guarantees are implemented but still under-tested in failure scenarios.
-7. `imagestore` is now real and useful, but still lacks tests and has not yet been simplified to use `Imager::addFile()`.
+1. `CLAUDE.md` and some plan summaries are stale relative to the current implementation and test surface.
+2. The docs still carry the old "hash plus size identity" framing, while the runtime dedup key is the hash ID.
+3. Monitoring is now broadly wired, but the full plan's export/disable features are still absent.
+4. Sidecar relocation and companion updates after parent arrival remain best-effort rather than globally atomic across storage plus all databases.
+5. `whenAll()` still depends on a documented coroutine scheduling invariant rather than enforcing safety mechanically.
+6. `imagestore` normal mode uses `addFile()`, but dry-run still duplicates the file-read path because there is no `validateOnlyFile()` API.
 
 ## Conclusion
 
-The repository is now in late Phase 1 rather than early/mid Phase 1.
+The current codebase is substantially correspondent to the Phase 1 specs rooted at `CLAUDE.md`.
 
-The core library promised by the original specs is present, coherent, and green under the current test preset. The codebase has advanced beyond the top-level narrative: extra validators, AAE sidecars, the batch importer, and progress instrumentation are already in place. The main work left is documentation correction, stronger verification of rollback/consistency paths, and finishing the remaining monitoring and utility hardening work.
+The major implementation work described by `0001`, `0002`, `0003`, `0004`, `0006`, `0007`, `0008`, `0009`, `0010`, and `0013` is present in code and backed by passing tests. `0005` monitoring is no longer merely skeletal: it is materially implemented and integrated, though not finished to every optional endpoint/export ambition in the plan.
+
+At this stage, the highest-value work is not building missing core behavior. It is:
+
+- bringing top-level docs in line with the actual current implementation;
+- deciding whether to keep the current best-effort sidecar resolution model or harden it further;
+- deciding whether dry-run should get a library-owned file-read path;
+- deciding whether the remaining `whenAll()` invariant should be eliminated in code rather than documented as a rule.

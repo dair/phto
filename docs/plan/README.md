@@ -14,9 +14,13 @@ There is the SQLite-based database along with the files located in the place spe
 
 The application configuration file is supposed to be read on the start of the app and its changes when the app is running are not applied before the restart.
 
-Images are identified with the sha256 of the entire file combined with its size in bytes, this is being done to prevent duplicates.
+Images are identified with the sha256 of the entire file; this is being done to prevent duplicates.
 
-before being stored, the image should be verified to be valid. For that, the specific libraries have been created, located in "validation" directory: "validation/jpeg" and "validation/png" for, respectively JPEG and PNG images. It is expected the number of supported formats will be increased in the newarest future so some common wrapping interface should be used for that.
+before being stored, the image should be verified to be valid. For that, the specific libraries have been created, located in "validations/" directory: "validations/jpeg", "validations/png", "validations/heic", "validations/nef", "validations/mov", and "validations/aae" for, respectively JPEG, PNG, HEIC, Nikon NEF, MOV/MP4, and Apple AAE sidecar files. A common wrapping interface (IValidator) is used across all formats.
+
+AAE files are sidecar files produced by Apple devices; they are stored using their parent image's content hash as a filename prefix, preserving the pairing relationship. Orphan AAE files (added before their parent) are relocated when the parent arrives.
+
+The imagestore utility provides batch import from stdin with bounded concurrency, progress tracking, and an error log file.
 
 The invalid image (i.e., image that failed to be validated with the appropriate validation library) should not be added and the appropriate request should return appropriate error.
 

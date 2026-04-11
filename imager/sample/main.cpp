@@ -98,6 +98,8 @@ static const char* errName(ErrorCode c) {
       return "FileNotFound";
     case ErrorCode::StorageError:
       return "StorageError";
+    case ErrorCode::AmbiguousSidecar:
+      return "AmbiguousSidecar";
     case ErrorCode::DatabaseError:
       return "DatabaseError";
     case ErrorCode::ConfigError:

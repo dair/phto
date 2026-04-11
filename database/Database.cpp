@@ -1,9 +1,12 @@
 #include "Database.h"
 
+#include <metrics/Metrics.h>
+#include <metrics/Timer.h>
 #include <sqlite3.h>
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 
@@ -138,9 +141,25 @@ static constexpr std::string_view SQL_SELECT_COMPANIONS_FOR_PARENT =
 struct Database::Impl {
   DbPtr db;
   mutable std::shared_mutex mutex;
+  metrics::Metrics* metrics{nullptr};
 
-  explicit Impl(sqlite3* raw)
-    : db(raw) {}
+  explicit Impl(sqlite3* raw, metrics::Metrics* m)
+    : db(raw),
+      metrics(m) {}
+
+  [[nodiscard]] std::optional<metrics::Timer> readTimer() const {
+    if (metrics) {
+      return std::optional<metrics::Timer>{std::in_place, metrics->db_read_duration};
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<metrics::Timer> writeTimer() const {
+    if (metrics) {
+      return std::optional<metrics::Timer>{std::in_place, metrics->db_write_duration};
+    }
+    return std::nullopt;
+  }
 
   // Prepare a statement; throws QueryFailed on error.
   [[nodiscard]] StmtPtr prepare(std::string_view sql) const {
@@ -194,7 +213,7 @@ static File rowToFile(sqlite3_stmt* stmt) {
 // Constructor / destructor
 // ---------------------------------------------------------------------------
 
-Database::Database(const std::filesystem::path& dbPath) {
+Database::Database(const std::filesystem::path& dbPath, metrics::Metrics* metrics) {
   const bool existed = std::filesystem::exists(dbPath);
 
   sqlite3* raw = nullptr;
@@ -212,7 +231,7 @@ Database::Database(const std::filesystem::path& dbPath) {
     );
   }
 
-  m_impl = std::make_unique<Impl>(raw);
+  m_impl = std::make_unique<Impl>(raw, metrics);
 
   try {
     // Apply pragmas as a script (journal_mode returns a result row so we
@@ -235,6 +254,7 @@ Database& Database::operator=(Database&&) noexcept = default;
 // ---------------------------------------------------------------------------
 
 void Database::addFile(const std::string& id, const std::string& name, uint64_t size, const std::string& ext) {
+  auto t = m_impl->writeTimer();
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_INSERT_FILE);
   sqlite3_bind_text(stmt.get(), 1, id.c_str(), -1, SQLITE_STATIC);
@@ -245,6 +265,7 @@ void Database::addFile(const std::string& id, const std::string& name, uint64_t 
 }
 
 void Database::deleteFile(const std::string& id) {
+  auto t = m_impl->writeTimer();
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_DELETE_FILE);
   sqlite3_bind_text(stmt.get(), 1, id.c_str(), -1, SQLITE_STATIC);
@@ -255,6 +276,7 @@ void Database::deleteFile(const std::string& id) {
 }
 
 void Database::editFileName(const std::string& id, const std::string& newName) {
+  auto t = m_impl->writeTimer();
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_UPDATE_FILE_NAME);
   sqlite3_bind_text(stmt.get(), 1, newName.c_str(), -1, SQLITE_STATIC);
@@ -266,6 +288,7 @@ void Database::editFileName(const std::string& id, const std::string& newName) {
 }
 
 std::optional<File> Database::getFile(const std::string& id) {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_SELECT_FILE);
   sqlite3_bind_text(stmt.get(), 1, id.c_str(), -1, SQLITE_STATIC);
@@ -276,6 +299,7 @@ std::optional<File> Database::getFile(const std::string& id) {
 }
 
 std::vector<File> Database::getAllFiles(std::optional<Pagination> page) {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   StmtPtr stmt;
   if (page) {
@@ -293,6 +317,7 @@ std::vector<File> Database::getAllFiles(std::optional<Pagination> page) {
 }
 
 bool Database::fileExists(const std::string& id) {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_FILE_EXISTS);
   sqlite3_bind_text(stmt.get(), 1, id.c_str(), -1, SQLITE_STATIC);
@@ -300,6 +325,7 @@ bool Database::fileExists(const std::string& id) {
 }
 
 uint64_t Database::fileCount() {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_FILE_COUNT);
   if (sqlite3_step(stmt.get()) == SQLITE_ROW) {
@@ -313,6 +339,7 @@ uint64_t Database::fileCount() {
 // ---------------------------------------------------------------------------
 
 void Database::addTag(const std::string& name) {
+  auto t = m_impl->writeTimer();
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_INSERT_TAG);
   sqlite3_bind_text(stmt.get(), 1, name.c_str(), -1, SQLITE_STATIC);
@@ -320,6 +347,7 @@ void Database::addTag(const std::string& name) {
 }
 
 void Database::deleteTag(const std::string& name) {
+  auto t = m_impl->writeTimer();
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_DELETE_TAG);
   sqlite3_bind_text(stmt.get(), 1, name.c_str(), -1, SQLITE_STATIC);
@@ -330,6 +358,7 @@ void Database::deleteTag(const std::string& name) {
 }
 
 std::vector<std::string> Database::getAllTags(std::optional<Pagination> page) {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   StmtPtr stmt;
   if (page) {
@@ -347,6 +376,7 @@ std::vector<std::string> Database::getAllTags(std::optional<Pagination> page) {
 }
 
 bool Database::tagExists(const std::string& name) {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_TAG_EXISTS);
   sqlite3_bind_text(stmt.get(), 1, name.c_str(), -1, SQLITE_STATIC);
@@ -354,6 +384,7 @@ bool Database::tagExists(const std::string& name) {
 }
 
 uint64_t Database::tagCount() {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_TAG_COUNT);
   if (sqlite3_step(stmt.get()) == SQLITE_ROW) {
@@ -367,6 +398,7 @@ uint64_t Database::tagCount() {
 // ---------------------------------------------------------------------------
 
 void Database::bindTag(const std::string& fileId, const std::string& tagName) {
+  auto t = m_impl->writeTimer();
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_INSERT_FILE_TAG);
   sqlite3_bind_text(stmt.get(), 1, fileId.c_str(), -1, SQLITE_STATIC);
@@ -379,6 +411,7 @@ void Database::bindTag(const std::string& fileId, const std::string& tagName) {
 }
 
 void Database::unbindTag(const std::string& fileId, const std::string& tagName) {
+  auto t = m_impl->writeTimer();
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_DELETE_FILE_TAG);
   sqlite3_bind_text(stmt.get(), 1, fileId.c_str(), -1, SQLITE_STATIC);
@@ -392,6 +425,7 @@ void Database::unbindTag(const std::string& fileId, const std::string& tagName) 
 }
 
 std::vector<std::string> Database::getTagsForFile(const std::string& fileId, std::optional<Pagination> page) {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   StmtPtr stmt;
   if (page) {
@@ -415,6 +449,7 @@ std::vector<std::string> Database::getTagsForFile(const std::string& fileId, std
 // ---------------------------------------------------------------------------
 
 void Database::addOriginalName(const std::string& sourceDir, const std::string& baseName, const std::string& fileId) {
+  auto t = m_impl->writeTimer();
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_INSERT_ORIGINAL_NAME);
   sqlite3_bind_text(stmt.get(), 1, sourceDir.c_str(), -1, SQLITE_STATIC);
@@ -424,6 +459,7 @@ void Database::addOriginalName(const std::string& sourceDir, const std::string& 
 }
 
 std::vector<File> Database::getFilesBySourceAndBaseName(const std::string& sourceDir, const std::string& baseName) {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_SELECT_FILES_BY_SOURCE_BASENAME);
   sqlite3_bind_text(stmt.get(), 1, sourceDir.c_str(), -1, SQLITE_STATIC);
@@ -442,6 +478,7 @@ std::vector<File> Database::getFilesBySourceAndBaseName(const std::string& sourc
 void Database::addCompanion(
   const std::string& fileId, const std::optional<std::string>& parentId, const std::string& storageId
 ) {
+  auto t = m_impl->writeTimer();
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_INSERT_COMPANION);
   sqlite3_bind_text(stmt.get(), 1, fileId.c_str(), -1, SQLITE_STATIC);
@@ -459,6 +496,7 @@ void Database::addCompanion(
 }
 
 std::optional<Database::CompanionInfo> Database::getCompanion(const std::string& fileId) {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_SELECT_COMPANION);
   sqlite3_bind_text(stmt.get(), 1, fileId.c_str(), -1, SQLITE_STATIC);
@@ -477,6 +515,7 @@ std::optional<Database::CompanionInfo> Database::getCompanion(const std::string&
 std::vector<Database::CompanionInfo> Database::getOrphanCompanionsBySourceAndBaseName(
   const std::string& sourceDir, const std::string& baseName
 ) {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_SELECT_ORPHAN_COMPANIONS_BY_SOURCE_BASENAME);
   sqlite3_bind_text(stmt.get(), 1, sourceDir.c_str(), -1, SQLITE_STATIC);
@@ -495,6 +534,7 @@ std::vector<Database::CompanionInfo> Database::getOrphanCompanionsBySourceAndBas
 void Database::updateCompanionParent(
   const std::string& fileId, const std::string& parentId, const std::string& storageId
 ) {
+  auto t = m_impl->writeTimer();
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_UPDATE_COMPANION_PARENT);
   sqlite3_bind_text(stmt.get(), 1, parentId.c_str(), -1, SQLITE_STATIC);
@@ -507,6 +547,7 @@ void Database::updateCompanionParent(
 }
 
 std::vector<Database::CompanionInfo> Database::getCompanionsForParent(const std::string& parentId) {
+  auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_SELECT_COMPANIONS_FOR_PARENT);
   sqlite3_bind_text(stmt.get(), 1, parentId.c_str(), -1, SQLITE_STATIC);
@@ -527,6 +568,7 @@ std::vector<File> Database::getFilesByTags(const std::vector<std::string>& tagNa
   if (tagNames.empty()) {
     return {};
   }
+  auto t = m_impl->readTimer();
 
   // Build: SELECT files that carry ALL listed tags (intersection semantics).
   std::string placeholders;

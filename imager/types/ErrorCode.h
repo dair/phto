@@ -9,6 +9,7 @@ enum class ErrorCode {
   UnsupportedFormat, ///< Extension not recognized
   FileNotFound,      ///< ID does not exist in the database
   StorageError,      ///< Filesystem I/O failure
+  AmbiguousSidecar,  ///< Sidecar file matches multiple potential parent files
   DatabaseError,     ///< Underlying DB error
   ConfigError,       ///< Configuration problem
 };

@@ -1,7 +1,9 @@
 #pragma once
 
+#include <metrics/Metrics.h>
+
+#include <cassert>
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -26,11 +28,27 @@ public:
 
   /// Allocate a writable buffer of the given size.
   /// Fill via writableData(), then call freeze() before sharing.
-  explicit Blob(size_t size)
+  /// Pass a non-null \p m to track blobs_alive and blob_bytes_alive gauges.
+  explicit Blob(size_t size, metrics::Metrics* m = nullptr)
     : m_data(
-        size > 0 ? std::shared_ptr<uint8_t[]>(new uint8_t[size], [](uint8_t* p) noexcept { delete[] p; }) : nullptr
+        size > 0 ? std::shared_ptr<uint8_t[]>(
+                     new uint8_t[size],
+                     [m, size](uint8_t* p) noexcept {
+                       delete[] p;
+                       if (m) {
+                         m->blobs_alive.decrement();
+                         m->blob_bytes_alive.add(-static_cast<int64_t>(size));
+                       }
+                     }
+                   )
+                 : nullptr
       ),
-      m_size(size) {}
+      m_size(size) {
+    if (m && size > 0) {
+      m->blobs_alive.increment();
+      m->blob_bytes_alive.add(static_cast<int64_t>(size));
+    }
+  }
 
   /// Adopt ownership of an existing shared_ptr (already frozen).
   Blob(std::shared_ptr<uint8_t[]> data, size_t size)
@@ -38,21 +56,26 @@ public:
       m_size(size),
       m_frozen(true) {}
 
-  /// Adopt a vector's contents (one memcpy, then the vector is no longer needed).
-  static Blob fromVector(std::vector<uint8_t>&& vec) {
+  /// Adopt a vector's heap allocation directly — no memcpy, no second allocation.
+  static Blob fromVector(std::vector<uint8_t>&& vec, metrics::Metrics* m = nullptr) {
     const size_t n = vec.size();
     if (n == 0) {
       return {};
     }
-    auto* raw = new uint8_t[n];
-    std::memcpy(raw, vec.data(), n);
-    // Use the size-tracking constructor path by going through Blob(size)
-    // then replacing the data pointer.
-    Blob b(n);
-    std::memcpy(b.writableData(), raw, n);
-    delete[] raw;
-    b.freeze();
-    return b;
+    auto* owned = new std::vector<uint8_t>(std::move(vec));
+    uint8_t* raw = owned->data();
+    auto deleter = [m, n, owned](uint8_t*) noexcept {
+      delete owned;
+      if (m) {
+        m->blobs_alive.decrement();
+        m->blob_bytes_alive.add(-static_cast<int64_t>(n));
+      }
+    };
+    if (m) {
+      m->blobs_alive.increment();
+      m->blob_bytes_alive.add(static_cast<int64_t>(n));
+    }
+    return Blob(std::shared_ptr<uint8_t[]>(raw, deleter), n);
   }
 
   /// Read-only pointer to the data. Valid in any state.
@@ -63,6 +86,7 @@ public:
   /// Writable pointer for filling the buffer.
   /// Must only be used before freeze() is called.
   uint8_t* writableData() noexcept {
+    assert(!m_frozen && "writableData() called after freeze()");
     return m_data.get();
   }
 

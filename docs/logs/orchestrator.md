@@ -89,3 +89,58 @@
 - **Task**: Update CLAUDE.md, CODING.md, and sub-module CLAUDE.md files to reflect all-system dependencies
 - **Outcome**: Updated CLAUDE.md dependency table (SQLite/libjpeg/libpng now system entries), project structure section, architecture highlights, and key conventions (removed bundled-readonly note). Updated CODING.md bundled vs system table to reflect all-system policy. Updated database/CLAUDE.md, validations/jpeg/CLAUDE.md, validations/png/CLAUDE.md.
 - **Next Step**: None — migration complete
+
+## [2026-04-11 10:00] - Resume Phase C — Fix linker error + complete metrics tests
+
+- **Agent**: Orchestrator + test-spec-writer
+- **Task**: Resume stalled Phase C work. Tasks #8 (DB timing metrics) and #9 (blob/ThreadPool metrics) were implemented but left in_progress with a latent linker error. Task #10 (metrics layer tests) was unblocked but not started.
+- **Outcome**: 
+  - Fixed linker error: `database/CMakeLists.txt` was missing `PUBLIC metrics_lib` link — `metrics::Timer` symbols were undefined at link time for `dbcli`. 
+  - Marked tasks #8 and #9 completed.
+  - Delegated task #10 to test-spec-writer: 44 CPPUnit tests written in `metrics/test/MetricsTest.cpp` covering Counter, Gauge, GaugeGuard, SizedGaugeGuard, Histogram, Timer, Metrics::snapshot(), Metrics::reset(), and format(FullSnapshot). 
+  - All 10 test suites pass (was 9, now includes metrics_tests).
+- **Next Step**: All Phase C tasks complete. Task list is now empty — check with team lead for next work.
+
+## [2026-04-11 11:00] - Phase D — imagestore addFile() migration + CLI tests
+
+- **Agent**: Orchestrator + cpp-spec-coder + test-spec-writer
+- **Task**: Phase D of Step 0015: (2.5/C1) migrate imagestore to addFile(), (3.6/B5) add imagestore CLI tests
+- **Outcome**:
+  - Task #11 (addFile migration): worker lambda split into if/else — dryRun branch keeps blob-reading + validateOnly; non-dryRun branch now calls img.addFile(capturedPath) after a single fs::file_size stat for totalBytes tracking. ~25 lines of boilerplate removed. Build and all 10 tests clean.
+  - Task #12 (CLI tests): 12 shell-based tests in imagestore/test/test_cli.sh.in, wired via configure_file + add_test. Covers --help, --quiet/--graph mutual exclusion, --graph/--verbose mutual exclusion, invalid --jobs, missing config, unknown flags. 11/11 ctest suites pass.
+- **Next Step**: Phase D complete. Report to team lead and await Phase E assignment.
+
+## [2026-04-11 12:00] - Phase E — Polish complete
+
+- **Agent**: Orchestrator + cpp-spec-coder (x2) + test-spec-writer
+- **Task**: Phase E of Step 0015: 3.4+3.5 (Blob fixes), 3.7 (README), 3.8 (C8-C11 cleanup), 3.1 (blob/coro tests)
+- **Outcome**:
+  - 3.4 (fromVector zero-copy): Blob::fromVector() now adopts the vector's heap allocation via a custom deleter — no memcpy, no second allocation.
+  - 3.5 (freeze enforcement): Blob::writableData() now asserts !m_frozen; includes cassert.
+  - 3.7 (README A7-A9): Fixed identity wording (hash-only), fixed validation/→validations/, added HEIC/NEF/MOV/AAE validators, AAE sidecar description, imagestore utility mention.
+  - 3.8/C8 (AmbiguousSidecar): Added ErrorCode::AmbiguousSidecar; updated Imager.cpp and imager_cli sample switch.
+  - 3.8/C9 (sidecar rollback): Investigated — original_name.file_id has ON DELETE CASCADE so deleteFile() already cascades; added clarifying comment.
+  - 3.8/C10 (whenAll invariant): Expanded WhenAll.h comment with full INVARIANT block documenting UB consequence and caller obligation.
+  - 3.8/C11 (createDefaultValidators): Moved inline body from Validators.h to new Validators.cpp; added to libimager CMakeLists.
+  - 3.1 (blob/coro tests): 21 CppUnit tests in blob/test/BlobTest.cpp (8 tests) and coro/test/CoroTest.cpp (13 tests across 5 fixtures). Both wired into CMake.
+  - Note: test-spec-writer agent hit token limit before writing coro/test/CMakeLists.txt — orchestrator completed the missing file and coro/CMakeLists.txt add_subdirectory(test) wiring directly.
+- **Next Step**: All Phase E tasks complete. Step 0015 fully remediated. 13/13 tests pass.
+
+## [2026-04-11 14:00] - User Documentation Created
+
+- **Agent**: Orchestrator (direct, no sub-agents needed)
+- **Task**: Create comprehensive user documentation in `docs/user/` and add a Documentation section to `README.md`.
+- **Outcome**: Created 9 documentation files under `docs/user/`:
+  - `README.md` — navigation index with quick-start routing
+  - `getting-started.md` — prerequisites, build instructions, first import walkthrough
+  - `configuration.md` — TOML format, multi-root semantics, best practices
+  - `api-reference.md` — full C++ API reference: all methods, types, error codes, thread-safety notes, usage patterns
+  - `imagestore-cli.md` — all options, usage patterns, error file workflow, large-collection tips
+  - `imager-cli.md` — all commands, exit codes, comparison with imagestore
+  - `formats.md` — per-format validation details, accepted/rejected file characteristics, limitations
+  - `storage.md` — disk layout, database schema, SHA256 sharding, full AAE sidecar mechanics
+  - `metrics.md` — all available metrics, how to read them, bottleneck analysis patterns
+  - `architecture.md` — component map, concurrency model, ingestion data flow, build structure
+  - `troubleshooting.md` — common errors, diagnosis steps, recovery procedures
+  - Updated `README.md` to add a Documentation section linking to all guides.
+- **Next Step**: Documentation complete.

@@ -16,3 +16,5 @@ target_include_directories(metrics_lib PUBLIC
 if(IMAGER_METRICS_ENABLED)
     target_compile_definitions(metrics_lib PUBLIC IMAGER_METRICS_ENABLED)
 endif()
+
+add_subdirectory(test)

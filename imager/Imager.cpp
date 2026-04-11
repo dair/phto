@@ -52,7 +52,7 @@ struct Imager::Impl {
 
   explicit Impl(const config::AppConfig& cfg)
     : metrics(),
-      pool(defaultPoolSize(cfg.targets.size())),
+      pool(defaultPoolSize(cfg.targets.size()), &metrics),
       dbs(cfg.targets, pool, metrics),
       storage(extractRoots(cfg.targets), pool, metrics),
       validators(createDefaultValidators()) {}
@@ -332,7 +332,7 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
       } else {
         // Still ambiguous — reject
         m_impl->metrics.images_failed.add(1);
-        return {ErrorCode::StorageError, "", "Ambiguous sidecar: multiple parent files match for '" + bareName + "'"};
+        return {ErrorCode::AmbiguousSidecar, "", "Ambiguous sidecar: multiple parent files match for '" + bareName + "'"};
       }
     }
 
@@ -385,6 +385,8 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
       m_impl->dbs.addCompanion(id, parentId, storageId);
     } catch (const db::DatabaseException& e) {
       try {
+        // deleteFile cascades via ON DELETE CASCADE to both original_name and
+        // file_companion, so no separate original_name deletion is needed.
         m_impl->dbs.deleteFile(id);
       } catch (...) {}
       coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
@@ -495,7 +497,7 @@ AddResult Imager::addFile(const std::filesystem::path& path, const std::string& 
     m_impl->metrics.inflight_reading_bytes.add(blobSz);
     metrics::Timer t(m_impl->metrics.file_read);
 
-    blob = Blob(fileSize);
+    blob = Blob(fileSize, &m_impl->metrics);
     std::ifstream in(path, std::ios::binary);
     if (!in) {
       m_impl->metrics.inflight_reading.decrement();

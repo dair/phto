@@ -8,6 +8,12 @@
 #include <string>
 #include <vector>
 
+namespace metrics {
+
+class Metrics;
+
+} // namespace metrics
+
 namespace db {
 
 // ---------------------------------------------------------------------------
@@ -58,7 +64,8 @@ public:
   ///   is initialised; throws DatabaseErrorCode::CreationFailed on failure.
   /// - If the path exists it is opened for read-write access; throws
   ///   DatabaseErrorCode::OpenFailed on failure.
-  explicit Database(const std::filesystem::path& dbPath);
+  /// @p metrics optional — if non-null, read/write durations are recorded.
+  explicit Database(const std::filesystem::path& dbPath, metrics::Metrics* metrics = nullptr);
   ~Database();
 
   Database(const Database&) = delete;

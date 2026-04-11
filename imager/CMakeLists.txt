@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.28)
 add_library(libimager
     Hasher.cpp
     FileStorage.cpp
+    Validators.cpp
     JpegValidatorImpl.cpp
     PngValidatorImpl.cpp
     HeicValidatorImpl.cpp

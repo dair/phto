@@ -17,7 +17,7 @@ MultiDatabase::MultiDatabase(
     m_metrics(metrics) {
   m_dbs.reserve(targets.size());
   for (const auto& t : targets) {
-    m_dbs.push_back(std::make_unique<db::Database>(t.database));
+    m_dbs.push_back(std::make_unique<db::Database>(t.database, &metrics));
   }
 }
 
@@ -41,7 +41,11 @@ void MultiDatabase::parallelWriteAll(Op&& op, Compensate&& compensate) {
     for (size_t i = 0; i < n; ++i) {
       tasks.push_back(
         [](
-          coro::ThreadPool& pool, db::Database& db, Op& op_, uint8_t& ok, std::exception_ptr& err,
+          coro::ThreadPool& pool,
+          db::Database& db,
+          Op& op_,
+          uint8_t& ok,
+          std::exception_ptr& err,
           metrics::Metrics& metrics
         ) -> coro::Task<void> {
           co_await pool.schedule();
