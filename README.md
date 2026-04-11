@@ -1,5 +1,14 @@
 # Imager
 
+## Vibe
+
+"Vibe-coded" with Claude Code (@claude); code validated and analyzed with OpenAI Codex 4.6 (@codex).
+
+All the code verified and read through by a mere human being (i.e., @dair).
+Claude paid for PRO account ($20 + extra).
+
+## Description
+
 A C++23 library and toolset for local-network media management. Imager ingests, validates, deduplicates, and organizes photo and video collections across multiple redundant storage roots, with SQLite-based metadata and tag management.
 
 ## Features
