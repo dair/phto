@@ -6,7 +6,7 @@
       "displayName": "Default (build in /tmp)",
       "binaryDir": "/tmp/imager-build",
       "cacheVariables": {
-        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "${sourceDir}/cmake/SelectCompiler.cmake",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     }
