@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-04-11 10:00] - Fix const-correctness error in nef_validator.cpp line 42
+
+- **Agent**: Orchestrator (direct)
+- **Task**: Fix compilation error: invalid conversion from `const void*` to `void*` when calling `libraw_open_buffer()` in `validateNef()`
+- **Outcome**: Diagnosed root cause — libraw's C API declared `void* buffer` in older versions despite not mutating it (const-incorrect upstream). The installed libraw header on this system already uses `const void*`, so no error exists today, but the fix is still applied defensively. Added `const_cast<void*>(data)` at the call site with an explanatory comment and `NOLINTNEXTLINE` suppression. Build and `nef_validator_tests` pass (1/1, 0.74s).
+- **Next Step**: No follow-up required.
+
 ## [2026-04-08 11:00] - Phase B of Step 0015 — Multi-target Integrity Tests Complete
 
 - **Agent**: test-spec-writer

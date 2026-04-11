@@ -39,7 +39,12 @@ ValidationResult validateNef(const void* data, size_t dataSize) {
     return INVALID;
   }
 
-  int err = libraw_open_buffer(raw.get(), data, dataSize);
+  // libraw_open_buffer() does not mutate the buffer; older versions of the
+  // libraw C API declared the parameter as void* (const-incorrect).  Cast
+  // away const here so this translation unit compiles against both old and
+  // new libraw headers without triggering -Wcast-qual warnings on modern ones.
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+  int err = libraw_open_buffer(raw.get(), const_cast<void*>(data), dataSize);
   if (err != LIBRAW_SUCCESS) {
     return (err == LIBRAW_FILE_UNSUPPORTED) ? WRONG : INVALID;
   }
