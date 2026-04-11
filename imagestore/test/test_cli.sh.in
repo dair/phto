@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+
+BIN="@IMAGESTORE_BIN@"
+
+PASS=0
+FAIL=0
+
+run_test() {
+  local name="$1"
+  shift
+  # Evaluate the test in a subshell so set -e inside doesn't kill us.
+  # We capture exit status explicitly.
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "PASS: $name"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: $name"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Test helpers
+# ---------------------------------------------------------------------------
+
+# Returns 0 if the command exits with the expected code
+expect_exit() {
+  local expected="$1"
+  shift
+  local actual=0
+  "$@" >/dev/null 2>&1 || actual=$?
+  [ "$actual" -eq "$expected" ]
+}
+
+# Returns 0 if stderr contains the given string
+stderr_contains() {
+  local pattern="$1"
+  shift
+  local stderr_out
+  stderr_out=$( "$@" 2>&1 >/dev/null ) || true
+  echo "$stderr_out" | grep -qF "$pattern"
+}
+
+# Returns 0 if combined output (stderr + stdout) contains the given string
+output_contains() {
+  local pattern="$1"
+  shift
+  local combined
+  combined=$( "$@" 2>&1 ) || true
+  echo "$combined" | grep -qF "$pattern"
+}
+
+# ---------------------------------------------------------------------------
+# Test 1: --help exits 0
+# ---------------------------------------------------------------------------
+run_test "--help exits 0" \
+  expect_exit 0 "$BIN" --help
+
+# ---------------------------------------------------------------------------
+# Test 2: --help output contains "Usage"
+# ---------------------------------------------------------------------------
+run_test "--help output contains 'Usage'" \
+  output_contains "Usage" "$BIN" --help
+
+# ---------------------------------------------------------------------------
+# Test 3: --quiet + --graph exits 1
+# ---------------------------------------------------------------------------
+run_test "--quiet + --graph exits 1" \
+  expect_exit 1 "$BIN" --quiet --graph
+
+# ---------------------------------------------------------------------------
+# Test 4: --quiet + --graph prints error to stderr
+# ---------------------------------------------------------------------------
+run_test "--quiet + --graph prints error message" \
+  stderr_contains "mutually exclusive" "$BIN" --quiet --graph
+
+# ---------------------------------------------------------------------------
+# Test 5: --graph + --verbose exits 1
+# ---------------------------------------------------------------------------
+run_test "--graph + --verbose exits 1" \
+  expect_exit 1 "$BIN" --graph --verbose
+
+# ---------------------------------------------------------------------------
+# Test 6: --graph + --verbose prints error to stderr
+# ---------------------------------------------------------------------------
+run_test "--graph + --verbose prints error message" \
+  stderr_contains "mutually exclusive" "$BIN" --graph --verbose
+
+# ---------------------------------------------------------------------------
+# Test 7: --jobs 0 exits 1
+# ---------------------------------------------------------------------------
+run_test "--jobs 0 exits 1" \
+  expect_exit 1 "$BIN" --jobs 0 --config /tmp/nonexistent-imagestore-test.toml
+
+# ---------------------------------------------------------------------------
+# Test 8: --jobs -1 exits 1
+# (getopt treats -1 as unknown flag '-' '1', so it may exit 1 for a different
+#  reason; either way the exit code must be 1)
+# ---------------------------------------------------------------------------
+run_test "--jobs negative exits 1" \
+  expect_exit 1 "$BIN" -j -1 --config /tmp/nonexistent-imagestore-test.toml
+
+# ---------------------------------------------------------------------------
+# Test 9: missing config file exits 1
+# ---------------------------------------------------------------------------
+run_test "missing config file exits 1" \
+  expect_exit 1 "$BIN" --config /tmp/nonexistent-imagestore-test-cfg-xyz.toml
+
+# ---------------------------------------------------------------------------
+# Test 10: missing config file prints error to stderr
+# ---------------------------------------------------------------------------
+run_test "missing config file prints error message" \
+  stderr_contains "Config error" "$BIN" --config /tmp/nonexistent-imagestore-test-cfg-xyz.toml
+
+# ---------------------------------------------------------------------------
+# Test 11: empty stdin with missing config exits 1
+#   (config is validated before stdin is read, so this must still exit 1)
+# ---------------------------------------------------------------------------
+run_test "empty stdin with missing config exits 1" \
+  expect_exit 1 bash -c "echo -n | \"$BIN\" --config /tmp/nonexistent-imagestore-test-cfg-xyz.toml"
+
+# ---------------------------------------------------------------------------
+# Test 12: unknown flag exits 1
+# ---------------------------------------------------------------------------
+run_test "unknown flag exits 1" \
+  expect_exit 1 "$BIN" --unknown-flag-xyz
+
+# ---------------------------------------------------------------------------
+# Results
+# ---------------------------------------------------------------------------
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]
