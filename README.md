@@ -2,10 +2,12 @@
 
 ## Vibe
 
-"Vibe-coded" with Claude Code (@claude); code validated and analyzed with OpenAI Codex 4.6 (@codex).
+"Vibe-coded" with Claude Code (@claude); code validated and analyzed with OpenAI Codex 5.4 (@codex).
 
 All the code verified and read through by a mere human being (i.e., @dair).
 Claude paid for PRO account ($20 + extra).
+
+All design .md-files are created by Claude Opus 4.6. All code and documentation is written by Claude Sonnet 4.6.
 
 ## Description
 
