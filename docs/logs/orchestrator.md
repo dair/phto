@@ -133,6 +133,21 @@
   - Note: test-spec-writer agent hit token limit before writing coro/test/CMakeLists.txt — orchestrator completed the missing file and coro/CMakeLists.txt add_subdirectory(test) wiring directly.
 - **Next Step**: All Phase E tasks complete. Step 0015 fully remediated. 13/13 tests pass.
 
+## [2026-04-12 10:00] - Memory Leak Fix: imagestore futures vector drain
+
+- **Agent**: Orchestrator (direct — specialist skills unavailable)
+- **Task**: Investigate and fix process-killed-after-~10-files memory leak in imager/ on Linux Debian
+- **Outcome**:
+  - **Root cause confirmed**: `imagestore/main.cpp` — the `futures` vector (holding `std::future<void>`) was never drained during the stdin read loop. Every dispatched async task pushed a future that retained its full shared state (closure + `capturedPath` + `capturedStr`) until ALL stdin was consumed. With large image files (HEIC full decode ~10-50 MB, NEF unpack, MOV trial decode), this accumulated to OOM. The semaphore correctly bounded concurrency but not memory.
+  - **Fix**: Added a `futures.erase(std::remove_if(...))` drain after each `futures.push_back(...)`, using `wait_for(0s)` to non-blockingly retire completed futures and release their shared state promptly.
+  - **Secondary verification**: FFmpeg `FFmpegState` destructor order (packet→frame→codec→format→avio) is correct per API contract; added clarifying comment. `ProgressReporter` confirmed to hold only references and atomic counters — no per-file accumulation.
+  - **Build**: 100% clean (no warnings)
+  - **Tests**: 13/13 pass (3.25s)
+- **Files changed**:
+  - `/home/vibe/src/imager/imagestore/main.cpp` — drain loop added (lines 356-375)
+  - `/home/vibe/src/imager/validations/mov/mov_validator.cpp` — destructor order comment added
+- **Next Step**: None — issue resolved.
+
 ## [2026-04-11 14:00] - User Documentation Created
 
 - **Agent**: Orchestrator (direct, no sub-agents needed)

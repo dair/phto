@@ -68,6 +68,12 @@ struct FFmpegState {
   AVFrame* frame = nullptr;
   AVPacket* pkt = nullptr;
 
+  // Destruction order is intentional:
+  //   packet -> frame -> codec -> format -> avio
+  // avformat_close_input() nulls fmtCtx and may internally reference pb
+  // (our AVIOContext), but because AVFMT_FLAG_CUSTOM_IO is set it will NOT
+  // call avio_close() on pb.  After avformat_close_input() fmtCtx is NULL,
+  // so avioCtx is freed directly (not via fmtCtx->pb) — safe and correct.
   ~FFmpegState() {
     if (pkt) {
       av_packet_free(&pkt);
@@ -79,11 +85,11 @@ struct FFmpegState {
       avcodec_free_context(&codecCtx);
     }
     if (fmtCtx) {
-      avformat_close_input(&fmtCtx);
+      avformat_close_input(&fmtCtx); // nulls fmtCtx; does NOT call avio_close (custom IO)
     }
     if (avioCtx) {
-      av_freep(&avioCtx->buffer);
-      avio_context_free(&avioCtx);
+      av_freep(&avioCtx->buffer);   // free the I/O read buffer allocated by av_malloc
+      avio_context_free(&avioCtx);  // free the AVIOContext struct itself
     }
   }
 };

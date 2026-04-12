@@ -352,6 +352,27 @@ int main(int argc, char* argv[]) {
         }
       )
     );
+
+    // Drain completed futures to release their captured memory (path strings,
+    // closure state, std::future shared state) promptly.  The semaphore already
+    // caps concurrency; this erase only removes *finished* futures so there is
+    // no race with in-flight ones.  Without this drain the vector grows
+    // proportionally to the total number of input files, causing the process to
+    // be killed on large datasets.
+    futures.erase(
+      std::remove_if(
+        futures.begin(), futures.end(),
+        [](std::future<void>& f) {
+          if (f.valid() &&
+              f.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            f.get(); // release shared state; propagate any exception
+            return true;
+          }
+          return false;
+        }
+      ),
+      futures.end()
+    );
   }
 
   // Wait for all in-flight tasks
