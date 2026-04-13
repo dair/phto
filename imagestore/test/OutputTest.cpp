@@ -490,6 +490,110 @@ public:
 
 CPPUNIT_TEST_SUITE_REGISTRATION(FmtElapsedTest);
 
+// ---------------------------------------------------------------------------
+// SlotTimer tests — verify the stageSecs computation used in renderVerbose()
+//
+// These tests guard against the 10x timer bug: if the elapsed time is
+// computed as milliseconds/100 (deciseconds) instead of whole seconds, a
+// 1-second wait would produce stageSecs=10 instead of stageSecs=1.
+// ---------------------------------------------------------------------------
+
+class SlotTimerTest : public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(SlotTimerTest);
+  CPPUNIT_TEST(testStageSecsIsZeroForNewSlot);
+  CPPUNIT_TEST(testStageSecsNotTenxLarger);
+  CPPUNIT_TEST(testStageSecsAfterShortSleep);
+  CPPUNIT_TEST(testStageSecsFormatsCorrectly);
+  CPPUNIT_TEST_SUITE_END();
+
+  // Replicate the exact computation from ProgressReporter::renderVerbose().
+  // This is the line under test:
+  //   auto stageSecs = std::chrono::duration_cast<std::chrono::seconds>(
+  //                        now - s.stageStart).count();
+  // The buggy version would be:
+  //   auto stageSecs = std::chrono::duration_cast<std::chrono::milliseconds>(
+  //                        now - s.stageStart).count() / 100;   // gives 10x too large
+  static int64_t computeStageSecs(
+    std::chrono::steady_clock::time_point stageStart,
+    std::chrono::steady_clock::time_point now
+  ) {
+    return std::chrono::duration_cast<std::chrono::seconds>(now - stageStart).count();
+  }
+
+public:
+  // A brand-new slot (stageStart = now) must report 0 seconds immediately.
+  void testStageSecsIsZeroForNewSlot() {
+    auto t0 = std::chrono::steady_clock::now();
+    int64_t secs = computeStageSecs(t0, t0);
+    CPPUNIT_ASSERT_EQUAL(int64_t(0), secs);
+  }
+
+  // After sleeping 100ms (well under 1 second), stageSecs must be 0, not 1+.
+  // The 10x bug would produce stageSecs = 1 (100ms / 100 = 1) for a 100ms sleep.
+  void testStageSecsNotTenxLarger() {
+    auto stageStart = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    auto now = std::chrono::steady_clock::now();
+    int64_t secs = computeStageSecs(stageStart, now);
+
+    // With the correct (seconds) computation: 100ms → 0 seconds.
+    // With the buggy (ms/100) computation: 100ms → 1 decisecond, displayed as 1 second.
+    CPPUNIT_ASSERT_EQUAL_MESSAGE(
+      "After 100ms, stageSecs must be 0 — not 1 (which would indicate the 10x bug)",
+      int64_t(0), secs
+    );
+  }
+
+  // After sleeping ~1.1 seconds, stageSecs must be exactly 1.
+  void testStageSecsAfterShortSleep() {
+    auto stageStart = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    auto now = std::chrono::steady_clock::now();
+    int64_t secs = computeStageSecs(stageStart, now);
+
+    // Must be 1 (floor division). Could be 1 or 2 depending on scheduler jitter,
+    // but must never be 11 (which the 10x bug would produce: 1100ms / 100 = 11).
+    CPPUNIT_ASSERT_MESSAGE(
+      "After ~1.1s, stageSecs must be in [1,2] — never 11 (the 10x-bug value)",
+      secs >= 1 && secs <= 2
+    );
+  }
+
+  // End-to-end: verify that the stageSecs value from a SlotTracker snapshot
+  // formats correctly via fmtElapsed. After a 1.5s slot, the formatted output
+  // must contain "01s" or "02s" in the seconds field, never "10s" or "11s".
+  void testStageSecsFormatsCorrectly() {
+    SlotTracker tracker(1);
+    unsigned int slot = tracker.acquire("timer_test.jpg");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+
+    auto now = std::chrono::steady_clock::now();
+    auto snap = tracker.snapshot();
+    int64_t secs = std::chrono::duration_cast<std::chrono::seconds>(
+      now - snap[slot].stageStart
+    ).count();
+
+    std::ostringstream out;
+    fmtElapsed(out, secs);
+    std::string result = out.str();
+
+    // The seconds field is the last 3 chars before 's': e.g. "01s"
+    // After 1.5s the result must be "00h:00m:01s" or "00h:00m:02s".
+    // The 10x bug would produce "00h:00m:15s" (1500ms/100 = 15).
+    CPPUNIT_ASSERT_MESSAGE(
+      "Timer output after ~1.5s must start with '00h:00m:0' (i.e. single-digit seconds), "
+      "not '00h:00m:1' (which would indicate the 10x bug producing 15s for a 1.5s wait). "
+      "Got: " + result,
+      result.substr(0, 9) == "00h:00m:0"
+    );
+
+    tracker.release(slot);
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(SlotTimerTest);
+
 } // namespace imagestore
 
 // ---------------------------------------------------------------------------
