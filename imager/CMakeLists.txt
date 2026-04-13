@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 
 add_library(libimager
     Hasher.cpp
+    StreamHasher.cpp
     FileStorage.cpp
     Validators.cpp
     JpegValidatorImpl.cpp
@@ -10,6 +11,12 @@ add_library(libimager
     NefValidatorImpl.cpp
     MovValidatorImpl.cpp
     AaeValidatorImpl.cpp
+    JpegStreamValidatorImpl.cpp
+    PngStreamValidatorImpl.cpp
+    HeicStreamValidatorImpl.cpp
+    MovStreamValidatorImpl.cpp
+    NefStreamValidatorImpl.cpp
+    AaeStreamValidatorImpl.cpp
     Imager.cpp
     MultiDatabase.cpp
 )

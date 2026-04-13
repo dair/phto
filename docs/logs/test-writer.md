@@ -1,5 +1,11 @@
 # Work Log
 
+## [2026-04-12 11:00] - Verbose/Normal output modes tests (spec 0016)
+- **Agent**: test-spec-writer
+- **Task**: Write comprehensive tests for the verbose and normal output modes redesign (spec 0016). Task #4 from the imagestore-output-redesign team.
+- **Outcome**: (1) Fixed stale `--graph` tests (tests 3-6) in `imagestore/test/test_cli.sh.in` — they were passing for the wrong reason (`--graph` as unknown flag exits 1, and `printUsage()` contained "mutually exclusive"). Replaced with correct `-v -q` mutual exclusion tests. (2) Added 20 new shell tests covering: flag recognition, normal/quiet/verbose modes, no `[progress]` lines in normal mode, quiet mode produces zero output, verbose non-TTY notice, OK/DUP/ERR/SKIP result line formats with real images, `--dry-run` summary format, exit code 2 on errors. (3) Added `imagestore/test/OutputTest.cpp` — 21 CPPUnit unit tests for `SlotTracker` (14), `ResultLog` (5), and `PipelineStage` names (2). Wired into `imagestore/CMakeLists.txt` using `find_library(CPPUNIT_LIB cppunit)` pattern from other test modules. All 14 ctest suites pass (0 failures). Created `docs/testing/verbose-output.md` and updated `docs/testing/README.md` and `docs/testing/imagestore-cli.md`.
+- **Next Step**: Verbose TTY ANSI rendering cannot be tested without a real PTY. Comma-separated thousands in statistics format not yet enforced by a test. Stage visibility in `--dry-run` + `-v` not automatically verifiable without TTY.
+
 ## [2026-04-11 14:30] - imagestore CLI shell tests
 - **Agent**: test-spec-writer
 - **Task**: Write CLI tests for the `imagestore` binary covering argument validation, mutual exclusion, help text, and config-not-found. Use shell scripts invoked via CMake `add_test`.

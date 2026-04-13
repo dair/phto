@@ -12,6 +12,7 @@ enum class ErrorCode {
   AmbiguousSidecar,  ///< Sidecar file matches multiple potential parent files
   DatabaseError,     ///< Underlying DB error
   ConfigError,       ///< Configuration problem
+  TooLarge,          ///< File exceeds per-format size limit
 };
 
 } // namespace imager

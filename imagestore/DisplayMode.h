@@ -4,8 +4,8 @@ namespace imagestore {
 
 enum class DisplayMode {
   Normal,
+  Verbose,
   Quiet,
-  Graph,
 };
 
 } // namespace imagestore

@@ -1,9 +1,9 @@
 #include "ProgressReporter.h"
 
-#include <metrics/Metrics.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -14,81 +14,73 @@ namespace imagestore {
 
 namespace {
 
-// ASCII bar character (full block via UTF-8 not needed; use '#' per plan Decision 5)
-constexpr char BAR_CHAR = '#';
-
-std::string renderBar(int64_t filled, int64_t total, int width) {
-  int filledChars = (total > 0) ? static_cast<int>((filled * width) / total) : 0;
-  if (filledChars > width) {
-    filledChars = width;
-  }
-  if (filledChars < 0) {
-    filledChars = 0;
-  }
-  std::string bar(static_cast<size_t>(filledChars), BAR_CHAR);
-  bar += std::string(static_cast<size_t>(width - filledChars), ' ');
-  return bar;
-}
-
-std::string fmtBytes(uint64_t bytes) {
-  std::ostringstream ss;
-  ss << std::fixed << std::setprecision(1);
-  double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
-  double mb = static_cast<double>(bytes) / (1024.0 * 1024.0);
-  if (gb >= 1.0) {
-    ss << gb << " GB";
-  } else {
-    ss << mb << " MB";
-  }
-  return ss.str();
+// Format elapsed seconds as HH:MM:SS into the stream.
+void fmtElapsed(std::ostream& out, int64_t totalSeconds) {
+  int64_t h = totalSeconds / 3600;
+  int64_t m = (totalSeconds % 3600) / 60;
+  int64_t s = totalSeconds % 60;
+  out << std::setfill('0') << std::setw(2) << h << "h:" << std::setw(2) << m << "m:" << std::setw(2) << s << "s"
+      << std::setfill(' ');
 }
 
 } // namespace
 
 ProgressReporter::ProgressReporter(
   DisplayMode mode,
-  const imager::Imager& img,
   const Stats& stats,
+  SlotTracker& slots,
+  ResultLog& resultLog,
   unsigned int jobs,
   bool dryRun,
   std::chrono::steady_clock::time_point startTime
 )
   : m_mode(mode),
-    m_img(img),
     m_stats(stats),
+    m_slots(slots),
+    m_resultLog(resultLog),
     m_jobs(jobs),
     m_dryRun(dryRun),
     m_startTime(startTime) {
-  if (m_mode == DisplayMode::Graph) {
-    // TTY guard
+  if (m_mode == DisplayMode::Verbose) {
     if (!isatty(STDERR_FILENO)) {
-      std::cerr << "--graph: stderr is not a TTY, falling back to normal progress\n";
-      m_mode = DisplayMode::Normal;
+      std::cerr << "verbose: stderr is not a TTY, using line-based output\n";
+      m_tty = false;
     } else {
-      // Read terminal width
+      m_tty = true;
+
+      // Query terminal dimensions
       struct winsize ws{};
-      if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+      if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0) {
+        m_termHeight = static_cast<int>(ws.ws_row);
         m_termWidth = static_cast<int>(ws.ws_col);
-      } else {
-        m_termWidth = 80;
-      }
-      // bar width = terminal_width - 44, clamped to [10, 60]
-      m_barWidth = m_termWidth - 44;
-      if (m_barWidth < 10) {
-        m_barWidth = 10;
-      }
-      if (m_barWidth > 60) {
-        m_barWidth = 60;
       }
 
-      // Hide cursor
-      std::cerr << "\033[?25l";
+      // Fixed section: min(jobs, 20) slot lines + separator + 2 stats + separator
+      int maxSlotLines = std::min({static_cast<int>(m_jobs), 20, m_termHeight - 10});
+      if (maxSlotLines < 1) {
+        maxSlotLines = 1;
+      }
+      m_fixedHeight = maxSlotLines + 4;
+
+      // Print blank lines to reserve space for the fixed section
+      for (int i = 0; i < m_fixedHeight; ++i) {
+        std::cerr << '\n';
+      }
+
+      // Set ANSI scrolling region to the bottom portion (below fixed section)
+      std::cerr << "\033[" << (m_fixedHeight + 1) << ";" << m_termHeight << "r";
+
+      // Hide cursor and move to top-left
+      std::cerr << "\033[?25l\033[1;1H";
+      std::cerr.flush();
+
+      // Wire result log to write into the scrolling region
+      m_resultLog.setTtyMode(true, m_fixedHeight + 1, m_termHeight);
+
+      m_thread = std::thread(&ProgressReporter::loop, this);
     }
   }
-
-  if (m_mode != DisplayMode::Quiet) {
-    m_thread = std::thread(&ProgressReporter::loop, this);
-  }
+  // Normal and Quiet modes: no background thread, no ANSI setup.
 }
 
 ProgressReporter::~ProgressReporter() {
@@ -102,9 +94,13 @@ void ProgressReporter::stop() {
   if (m_thread.joinable()) {
     m_thread.join();
   }
-  if (m_mode == DisplayMode::Graph) {
-    // Show cursor again and move past the graph block
-    std::cerr << "\033[?25h\n";
+  if (m_mode == DisplayMode::Verbose && m_tty) {
+    // Reset scrolling region, show cursor, position below fixed section
+    std::lock_guard<std::mutex> lk(g_outputMutex);
+    std::cerr << "\033[r"                                   // reset scrolling region
+              << "\033[?25h"                                // show cursor
+              << "\033[" << (m_fixedHeight + 1) << ";1H\n"; // move past fixed section
+    std::cerr.flush();
   }
 }
 
@@ -121,16 +117,15 @@ void ProgressReporter::printFinalSummary(double elapsedSeconds) const {
   uint64_t totalBytes = m_stats.totalBytes.load();
 
   double filesPerSec = (elapsedSeconds > 0.0) ? static_cast<double>(processed) / elapsedSeconds : 0.0;
-  double totalGB = static_cast<double>(totalBytes) / (1024.0 * 1024.0 * 1024.0);
   double totalMB = static_cast<double>(totalBytes) / (1024.0 * 1024.0);
+  double totalGB = totalMB / 1024.0;
 
   std::lock_guard<std::mutex> lk(g_outputMutex);
   std::cerr << std::fixed;
   if (m_dryRun) {
     std::cerr << processed << " processed, " << added << " valid, " << duplicates << " would-be-duplicates, " << errors
               << " errors"
-              << " — " << std::setprecision(1) << elapsedSeconds << "s"
-              << " (dry run, no writes)\n";
+              << " — " << std::setprecision(1) << elapsedSeconds << "s (dry run, no writes)\n";
   } else {
     std::cerr << processed << " processed, " << added << " added, " << duplicates << " duplicates, " << errors
               << " errors, " << skipped << " skipped — " << std::setprecision(1) << elapsedSeconds << "s ("
@@ -146,144 +141,91 @@ void ProgressReporter::printFinalSummary(double elapsedSeconds) const {
 
 void ProgressReporter::loop() {
   using namespace std::chrono_literals;
-  auto interval = (m_mode == DisplayMode::Graph) ? 200ms : 1000ms;
-
   while (!m_stop.load(std::memory_order_relaxed)) {
-    std::this_thread::sleep_for(interval);
+    std::this_thread::sleep_for(200ms);
     if (m_stop.load(std::memory_order_relaxed)) {
       break;
     }
-
-    if (m_mode == DisplayMode::Graph) {
-      renderGraph();
-    } else {
-      renderNormal();
-    }
+    renderVerbose();
   }
 }
 
-void ProgressReporter::renderNormal() const {
+void ProgressReporter::renderVerbose() {
   auto now = std::chrono::steady_clock::now();
   double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_startTime).count() / 1000.0;
 
   uint64_t processed = m_stats.processed.load(std::memory_order_relaxed);
-  uint64_t errors = m_stats.errors.load(std::memory_order_relaxed);
+  uint64_t added = m_stats.added.load(std::memory_order_relaxed);
   uint64_t duplicates = m_stats.duplicates.load(std::memory_order_relaxed);
-  uint64_t totalBytes = m_stats.totalBytes.load(std::memory_order_relaxed);
-
-  double mbps = (elapsed > 0.0) ? (static_cast<double>(totalBytes) / (1024.0 * 1024.0)) / elapsed : 0.0;
-
-  const auto& m = m_img.metrics();
-  int64_t inFlight = m.inflight_validating.value() + m.inflight_hashing.value() + m.inflight_waiting_mutex.value() +
-                     m.inflight_dedup_checking.value() + m.inflight_writing_storage.value() +
-                     m.inflight_inserting_db.value() + m.inflight_reading.value();
-
-  std::lock_guard<std::mutex> lk(g_outputMutex);
-  std::cerr << "[progress] " << processed << " processed, " << errors << " errors, " << duplicates << " duplicates, "
-            << std::fixed << std::setprecision(1) << mbps << " MB/s, " << inFlight << " in-flight\n";
-}
-
-void ProgressReporter::renderGraph() {
-  auto now = std::chrono::steady_clock::now();
-  double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_startTime).count() / 1000.0;
-
-  uint64_t processed = m_stats.processed.load(std::memory_order_relaxed);
+  uint64_t errors = m_stats.errors.load(std::memory_order_relaxed);
+  uint64_t skipped = m_stats.skipped.load(std::memory_order_relaxed);
   uint64_t totalBytes = m_stats.totalBytes.load(std::memory_order_relaxed);
 
   double filesPerSec = (elapsed > 0.0) ? static_cast<double>(processed) / elapsed : 0.0;
-  double gbps = (elapsed > 0.0) ? static_cast<double>(totalBytes) / (1024.0 * 1024.0 * 1024.0) / elapsed : 0.0;
-  double mbps = gbps * 1024.0;
+  double mbps = (elapsed > 0.0) ? (static_cast<double>(totalBytes) / (1024.0 * 1024.0)) / elapsed : 0.0;
 
-  const auto& m = m_img.metrics();
-
-  struct StageRow {
-    const char* label;
-    int64_t inflight;
-    int64_t completed;
-    int64_t bytesCompleted; // -1 = not shown
-  };
-
-  StageRow rows[] = {
-    {"read",
-     m.inflight_reading.value(),
-     static_cast<int64_t>(m.stage_read.value()),
-     static_cast<int64_t>(m.stage_read_bytes.value())},
-    {"validate",
-     m.inflight_validating.value(),
-     static_cast<int64_t>(m.stage_validated.value()),
-     static_cast<int64_t>(m.stage_validated_bytes.value())},
-    {"hash",
-     m.inflight_hashing.value(),
-     static_cast<int64_t>(m.stage_hashed.value()),
-     static_cast<int64_t>(m.stage_hashed_bytes.value())},
-    {"mutex wait", m.inflight_waiting_mutex.value(), -1, -1},
-    {"dedup check", m.inflight_dedup_checking.value(), static_cast<int64_t>(m.stage_dedup_checked.value()), -1},
-    {"storage write",
-     m.inflight_writing_storage.value(),
-     static_cast<int64_t>(m.stage_stored.value()),
-     static_cast<int64_t>(m.storage_bytes_written.value())},
-    {"db insert",
-     m.inflight_inserting_db.value(),
-     static_cast<int64_t>(m.stage_db_inserted.value()),
-     static_cast<int64_t>(m.stage_db_inserted_bytes.value())},
-  };
-  constexpr int NUM_ROWS = 7;
-  // Total block lines: 1 header + 1 separator + 1 column header + NUM_ROWS stage rows + 1 separator + 1 pool line = 12
-  constexpr int BLOCK_LINES = 12;
+  auto slots = m_slots.snapshot();
+  int displaySlots = m_fixedHeight - 4; // total fixed height minus separators + stats lines
 
   std::ostringstream out;
 
-  if (m_graphInitialized) {
-    // Move cursor up to top of block and go to column 1
-    out << "\033[" << BLOCK_LINES << "A\r";
-  }
+  // Save cursor and move to top-left of fixed section
+  out << "\0337\033[1;1H";
 
-  // Line 1: header
-  out << std::fixed << std::setprecision(1);
-  out << "Elapsed: " << elapsed << "s   Files: " << std::setprecision(0) << filesPerSec << "/s   Throughput: ";
-  if (gbps >= 1.0) {
-    out << std::setprecision(2) << gbps << " GB/s";
-  } else {
-    out << std::setprecision(1) << mbps << " MB/s";
-  }
-  out << "\033[K\n";
+  // Slot lines
+  for (int i = 0; i < displaySlots && i < static_cast<int>(slots.size()); ++i) {
+    const auto& s = slots[static_cast<size_t>(i)];
+    auto stageSecs = std::chrono::duration_cast<std::chrono::seconds>(now - s.stageStart).count();
 
-  // Line 2: separator (ASCII dashes; Unicode horizontal line requires multibyte encoding)
-  out << std::string(static_cast<size_t>(m_termWidth > 2 ? m_termWidth - 2 : 50), '-') << "\033[K\n";
-
-  // Line 3: column header
-  out << "Pipeline stages   [  in-flight / jobs  ]  completed   bytes\033[K\n";
-
-  // Lines 4-10: stage rows
-  for (int i = 0; i < NUM_ROWS; ++i) {
-    const auto& r = rows[i];
-    std::string bar = renderBar(r.inflight, static_cast<int64_t>(m_jobs), m_barWidth);
-    out << "  " << std::left << std::setw(14) << r.label << " [" << bar << "] " << std::right << std::setw(3)
-        << r.inflight << " /" << std::setw(3) << m_jobs;
-    if (r.completed >= 0) {
-      out << "  " << std::setw(8) << r.completed;
+    out << ' ';
+    if (s.stage == PipelineStage::Idle) {
+      out << std::left << std::setw(16) << "[idle]";
+      fmtElapsed(out, stageSecs);
+      out << "\033[K\n";
     } else {
-      out << "          ";
+      std::string label = std::string("[") + stageName(s.stage) + "]";
+      out << std::left << std::setw(16) << label;
+      fmtElapsed(out, stageSecs);
+      out << "  ";
+
+      // Truncate filename from the left to fit: leave 35 chars for prefix + time
+      int maxNameLen = m_termWidth - 35;
+      if (maxNameLen < 8) {
+        maxNameLen = 8;
+      }
+      const std::string& name = s.filename;
+      if (static_cast<int>(name.size()) > maxNameLen) {
+        out << "..." << name.substr(name.size() - static_cast<size_t>(maxNameLen - 3));
+      } else {
+        out << name;
+      }
+      out << "\033[K\n";
     }
-    if (r.bytesCompleted >= 0) {
-      out << "  " << fmtBytes(static_cast<uint64_t>(r.bytesCompleted));
-    }
-    out << "\033[K\n";
   }
 
-  // Line 11: separator
-  out << std::string(static_cast<size_t>(m_termWidth > 2 ? m_termWidth - 2 : 50), '-') << "\033[K\n";
+  // Separator
+  int sepWidth = std::min(m_termWidth - 2, 70);
+  out << ' ' << std::string(static_cast<size_t>(sepWidth > 0 ? sepWidth : 40), '-') << "\033[K\n";
 
-  // Line 12: thread pool
-  out << "Thread pool: " << m.pool_active_threads.value() << " active  queue depth: " << m.pool_queue_depth.value()
-      << "\033[K\n";
+  // Stats line 1: counters
+  out << std::fixed << std::setprecision(0);
+  out << " Processed: " << processed << "  Written: " << added << "  Skipped: " << skipped << "  Errors: " << errors
+      << "  DUP: " << duplicates << "\033[K\n";
+
+  // Stats line 2: throughput
+  out << " Throughput: " << std::setprecision(0) << filesPerSec << " files/s  " << std::setprecision(1) << mbps
+      << " MB/s  Elapsed: " << elapsed << "s\033[K\n";
+
+  // Separator
+  out << ' ' << std::string(static_cast<size_t>(sepWidth > 0 ? sepWidth : 40), '-') << "\033[K\n";
+
+  // Restore cursor to scrolling region
+  out << "\0338";
 
   std::string output = out.str();
-
   std::lock_guard<std::mutex> lk(g_outputMutex);
   std::cerr << output;
-
-  m_graphInitialized = true;
+  std::cerr.flush();
 }
 
 } // namespace imagestore

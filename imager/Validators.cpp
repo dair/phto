@@ -13,4 +13,15 @@ std::vector<std::unique_ptr<validation::IValidator>> createDefaultValidators() {
   return v;
 }
 
+std::vector<std::unique_ptr<validation::IStreamValidator>> createDefaultStreamValidators() {
+  std::vector<std::unique_ptr<validation::IStreamValidator>> v;
+  v.push_back(createJpegStreamValidator());
+  v.push_back(createPngStreamValidator());
+  v.push_back(createHeicStreamValidator());
+  v.push_back(createMovStreamValidator());
+  v.push_back(createNefStreamValidator());
+  v.push_back(createAaeStreamValidator());
+  return v;
+}
+
 } // namespace imager

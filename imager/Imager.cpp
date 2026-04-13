@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -16,14 +17,23 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "FileStorage.h"
 #include "Hasher.h"
 #include "MultiDatabase.h"
+#include "StreamHasher.h"
 #include "Validators.h"
 
 namespace imager {
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+// Files above this size use streaming paths instead of full Blob allocation.
+static constexpr uint64_t kStreamingThreshold = 256ULL * 1024ULL * 1024ULL; // 256 MB
 
 // ---------------------------------------------------------------------------
 // Pool sizing
@@ -43,11 +53,13 @@ static size_t defaultPoolSize(size_t numTargets) {
 // ---------------------------------------------------------------------------
 
 struct Imager::Impl {
-  metrics::Metrics metrics;  // declared first — dbs and storage hold a reference to it
+  metrics::Metrics metrics; // declared first — dbs and storage hold a reference to it
   coro::ThreadPool pool;
   MultiDatabase dbs;
   FileStorage storage;
   std::vector<std::unique_ptr<validation::IValidator>> validators;
+  std::vector<std::unique_ptr<validation::IStreamValidator>> streamValidators;
+  std::unordered_map<std::string, uint64_t> fileSizeLimits;
   std::mutex writeMutex;
 
   explicit Impl(const config::AppConfig& cfg)
@@ -55,7 +67,9 @@ struct Imager::Impl {
       pool(defaultPoolSize(cfg.targets.size()), &metrics),
       dbs(cfg.targets, pool, metrics),
       storage(extractRoots(cfg.targets), pool, metrics),
-      validators(createDefaultValidators()) {}
+      validators(createDefaultValidators()),
+      streamValidators(createDefaultStreamValidators()),
+      fileSizeLimits(cfg.fileSizeLimits) {}
 
   static std::vector<std::filesystem::path> extractRoots(const std::vector<config::TargetConfig>& targets) {
     std::vector<std::filesystem::path> roots;
@@ -74,6 +88,28 @@ struct Imager::Impl {
     }
     return nullptr;
   }
+
+  const validation::IStreamValidator* findStreamValidator(const std::string& ext) const {
+    for (const auto& v : streamValidators) {
+      if (v->supportsExtension(ext)) {
+        return v.get();
+      }
+    }
+    return nullptr;
+  }
+
+  /// Check per-format file size limit. Returns the limit (bytes) if set, or 0 if none.
+  uint64_t fileSizeLimit(const std::string& ext) const {
+    // ext has leading dot (e.g. ".jpg"); strip it for lookup.
+    std::string bare = (ext.size() > 1 && ext[0] == '.') ? ext.substr(1) : ext;
+    auto it = fileSizeLimits.find(bare);
+    return (it != fileSizeLimits.end()) ? it->second : 0;
+  }
+
+  /// Core image-add pipeline for large files (> kStreamingThreshold).
+  AddResult addFileLarge(
+    const std::filesystem::path& path, const std::string& displayName, uint64_t fileSize, StageCallback onStage
+  );
 
   static bool isVideoExtension(const std::string& /* ext */) {
     return false; // All previously extension-only formats now have validators
@@ -129,6 +165,9 @@ struct Imager::Impl {
     return ImageInfo{f.id, f.name, f.size, f.ext, std::move(tags)};
   }
 
+  /// Core image-add pipeline, optionally reporting stage transitions via callback.
+  AddResult addImageImpl(const Blob& blob, const std::string& filename, StageCallback onStage);
+
   /// Fetch tags for a batch of files in parallel and assemble ImageInfo list.
   coro::Task<std::vector<ImageInfo>> enrichWithTags(std::vector<db::File> files);
 };
@@ -174,21 +213,21 @@ Imager::Imager(const config::AppConfig& cfg)
 Imager::~Imager() = default;
 
 // ---------------------------------------------------------------------------
-// addImage
+// Impl::addImageImpl
 // ---------------------------------------------------------------------------
 
-AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
-  metrics::Timer total(m_impl->metrics.addimage_total);
+AddResult Imager::Impl::addImageImpl(const Blob& blob, const std::string& filename, StageCallback onStage) {
+  metrics::Timer total(metrics.addimage_total);
 
   // 1. Split filename into (sourceDir, bareName) and extract extension
-  auto [sourceDir, bareName] = Impl::splitFilename(filename);
-  std::string ext = Impl::lowercaseExt(bareName);
+  auto [sourceDir, bareName] = splitFilename(filename);
+  std::string ext = lowercaseExt(bareName);
   if (ext.empty()) {
     return {ErrorCode::UnsupportedFormat, "", "Filename has no extension"};
   }
 
-  const auto* validator = m_impl->findValidator(ext);
-  if (!validator && !Impl::isVideoExtension(ext)) {
+  const auto* validator = findValidator(ext);
+  if (!validator && !isVideoExtension(ext)) {
     return {ErrorCode::UnsupportedFormat, "", "Unsupported format: " + ext};
   }
 
@@ -197,25 +236,29 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
   const auto blobSize = static_cast<int64_t>(blob.size());
 
   if (!validator) {
+    if (onStage) {
+      onStage(ProcessingStage::Hashing);
+    }
     try {
-      metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_hashing,
-                                  m_impl->metrics.inflight_hashing_bytes, blobSize);
-      metrics::Timer t(m_impl->metrics.hash);
+      metrics::SizedGaugeGuard sg(metrics.inflight_hashing, metrics.inflight_hashing_bytes, blobSize);
+      metrics::Timer t(metrics.hash);
       id = computeSha256(blob);
     } catch (const std::exception& e) {
-      m_impl->metrics.images_failed.add(1);
+      metrics.images_failed.add(1);
       return {ErrorCode::StorageError, "", std::string("Hashing failed: ") + e.what()};
     }
-    m_impl->metrics.stage_hashed.add(1);
-    m_impl->metrics.stage_hashed_bytes.add(blob.size());
+    metrics.stage_hashed.add(1);
+    metrics.stage_hashed_bytes.add(blob.size());
   } else {
+    if (onStage) {
+      onStage(ProcessingStage::Validating);
+    }
     validation::ValidationResult valResult;
     try {
       auto [vr, hid] = coro::blockOn(
-        m_impl->pool,
+        pool,
         [](
-          coro::ThreadPool& p, const validation::IValidator* v, Blob b, metrics::Metrics& m,
-          int64_t bSz
+          coro::ThreadPool& p, const validation::IValidator* v, Blob b, metrics::Metrics& m, int64_t bSz
         ) -> coro::Task<std::pair<validation::ValidationResult, std::string>> {
           validation::ValidationResult vRes;
           std::string hId;
@@ -224,8 +267,12 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
 
           tasks.push_back(
             [](
-              coro::ThreadPool& p2, const validation::IValidator* v2, Blob b2, validation::ValidationResult& out,
-              metrics::Metrics& m2, int64_t sz
+              coro::ThreadPool& p2,
+              const validation::IValidator* v2,
+              Blob b2,
+              validation::ValidationResult& out,
+              metrics::Metrics& m2,
+              int64_t sz
             ) -> coro::Task<void> {
               co_await p2.schedule();
               metrics::SizedGaugeGuard sg(m2.inflight_validating, m2.inflight_validating_bytes, sz);
@@ -234,75 +281,81 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
             }(p, v, b, vRes, m, bSz)
           );
 
-          tasks.push_back([](coro::ThreadPool& p2, Blob b2, std::string& out, metrics::Metrics& m2, int64_t sz) -> coro::Task<void> {
-            co_await p2.schedule();
-            metrics::SizedGaugeGuard sg(m2.inflight_hashing, m2.inflight_hashing_bytes, sz);
-            metrics::Timer t(m2.hash);
-            out = computeSha256(b2);
-          }(p, b, hId, m, bSz));
+          tasks.push_back(
+            [](coro::ThreadPool& p2, Blob b2, std::string& out, metrics::Metrics& m2, int64_t sz) -> coro::Task<void> {
+              co_await p2.schedule();
+              metrics::SizedGaugeGuard sg(m2.inflight_hashing, m2.inflight_hashing_bytes, sz);
+              metrics::Timer t(m2.hash);
+              out = computeSha256(b2);
+            }(p, b, hId, m, bSz)
+          );
 
           co_await coro::whenAll(std::move(tasks));
           co_return std::make_pair(vRes, std::move(hId));
-        }(m_impl->pool, validator, blob, m_impl->metrics, blobSize)
+        }(pool, validator, blob, metrics, blobSize)
       );
 
       valResult = vr;
       id = std::move(hid);
     } catch (const std::exception& e) {
-      m_impl->metrics.images_failed.add(1);
+      metrics.images_failed.add(1);
       return {ErrorCode::StorageError, "", std::string("Validation/hashing failed: ") + e.what()};
     }
 
     if (!valResult.valid) {
-      m_impl->metrics.images_failed.add(1);
+      metrics.images_failed.add(1);
       return {ErrorCode::BrokenFile, "", valResult.errorMessage};
     }
-    m_impl->metrics.stage_validated.add(1);
-    m_impl->metrics.stage_validated_bytes.add(blob.size());
-    m_impl->metrics.stage_hashed.add(1);
-    m_impl->metrics.stage_hashed_bytes.add(blob.size());
+    metrics.stage_validated.add(1);
+    metrics.stage_validated_bytes.add(blob.size());
+    metrics.stage_hashed.add(1);
+    metrics.stage_hashed_bytes.add(blob.size());
   }
 
   // Measure mutex wait time separately from the lock guard
-  {
-    metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_waiting_mutex,
-                                m_impl->metrics.inflight_waiting_mutex_bytes, blobSize);
-    metrics::Timer t(m_impl->metrics.mutex_wait);
-    m_impl->writeMutex.lock();
+  if (onStage) {
+    onStage(ProcessingStage::WaitingMutex);
   }
-  std::lock_guard<std::mutex> lock(m_impl->writeMutex, std::adopt_lock);
+  {
+    metrics::SizedGaugeGuard sg(metrics.inflight_waiting_mutex, metrics.inflight_waiting_mutex_bytes, blobSize);
+    metrics::Timer t(metrics.mutex_wait);
+    writeMutex.lock();
+  }
+  std::lock_guard<std::mutex> lock(writeMutex, std::adopt_lock);
 
   // 4. Duplicate check
+  if (onStage) {
+    onStage(ProcessingStage::DedupChecking);
+  }
   try {
-    metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_dedup_checking,
-                                m_impl->metrics.inflight_dedup_checking_bytes, blobSize);
-    metrics::Timer t(m_impl->metrics.dedup_check);
-    if (m_impl->dbs.fileExists(id)) {
+    metrics::SizedGaugeGuard sg(metrics.inflight_dedup_checking, metrics.inflight_dedup_checking_bytes, blobSize);
+    metrics::Timer t(metrics.dedup_check);
+    if (dbs.fileExists(id)) {
       return {ErrorCode::DuplicateFile, "", "File already exists: " + id};
     }
   } catch (const db::DatabaseException& e) {
-    m_impl->metrics.images_failed.add(1);
+    metrics.images_failed.add(1);
     return {ErrorCode::DatabaseError, "", e.what()};
   }
-  m_impl->metrics.stage_dedup_checked.add(1);
+  metrics.stage_dedup_checked.add(1);
 
   // ---- Sidecar path -------------------------------------------------------
-  if (Impl::isSidecarExtension(ext)) {
-    const std::string baseName = Impl::extractBaseName(bareName);
+  if (isSidecarExtension(ext)) {
+    const std::string baseName = extractBaseName(bareName);
 
     // Look up parent candidate(s) via original_name table
     std::vector<db::File> parents;
     try {
-      parents = m_impl->dbs.getFilesBySourceAndBaseName(sourceDir, baseName);
+      parents = dbs.getFilesBySourceAndBaseName(sourceDir, baseName);
     } catch (const db::DatabaseException& e) {
-      m_impl->metrics.images_failed.add(1);
+      metrics.images_failed.add(1);
       return {ErrorCode::DatabaseError, "", e.what()};
     }
 
     // Filter out other sidecars from parent candidates
     std::vector<db::File> nonSidecarParents;
     for (const auto& p : parents) {
-      if (!Impl::isSidecarExtension(p.ext)) {
+      if (!isSidecarExtension(p.ext)) {
         nonSidecarParents.push_back(p);
       }
     }
@@ -322,7 +375,7 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
       // Multiple candidates — try to disambiguate: prefer image over video
       std::vector<db::File> imageParents;
       for (const auto& p : nonSidecarParents) {
-        if (Impl::isImageExtension(p.ext)) {
+        if (isImageExtension(p.ext)) {
           imageParents.push_back(p);
         }
       }
@@ -331,133 +384,143 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
         parentId = imageParents[0].id;
       } else {
         // Still ambiguous — reject
-        m_impl->metrics.images_failed.add(1);
-        return {ErrorCode::AmbiguousSidecar, "", "Ambiguous sidecar: multiple parent files match for '" + bareName + "'"};
+        metrics.images_failed.add(1);
+        return {
+          ErrorCode::AmbiguousSidecar, "", "Ambiguous sidecar: multiple parent files match for '" + bareName + "'"
+        };
       }
     }
 
     // 5. Write sidecar to storage using storageId as the filename prefix
+    if (onStage) {
+      onStage(ProcessingStage::WritingStorage);
+    }
     try {
-      metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_writing_storage,
-                                  m_impl->metrics.inflight_writing_storage_bytes, blobSize);
-      metrics::Timer t(m_impl->metrics.storage_write);
-      coro::blockOn(m_impl->pool, m_impl->storage.writeFileAsync(storageId, ext, blob));
+      metrics::SizedGaugeGuard sg(metrics.inflight_writing_storage, metrics.inflight_writing_storage_bytes, blobSize);
+      metrics::Timer t(metrics.storage_write);
+      coro::blockOn(pool, storage.writeFileAsync(storageId, ext, blob));
     } catch (const std::exception& e) {
-      m_impl->metrics.images_failed.add(1);
+      metrics.images_failed.add(1);
       return {ErrorCode::StorageError, "", std::string("Storage write failed: ") + e.what()};
     }
-    m_impl->metrics.stage_stored.add(1);
+    metrics.stage_stored.add(1);
 
     // 6. Insert file record (bare name only, not full path)
+    if (onStage) {
+      onStage(ProcessingStage::InsertingDb);
+    }
     try {
-      metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_inserting_db,
-                                  m_impl->metrics.inflight_inserting_db_bytes, blobSize);
-      metrics::Timer t(m_impl->metrics.db_insert);
-      m_impl->dbs.addFile(id, bareName, blob.size(), ext);
+      metrics::SizedGaugeGuard sg(metrics.inflight_inserting_db, metrics.inflight_inserting_db_bytes, blobSize);
+      metrics::Timer t(metrics.db_insert);
+      dbs.addFile(id, bareName, blob.size(), ext);
     } catch (const db::DatabaseException& e) {
       if (e.code() == db::DatabaseErrorCode::ConstraintViolation) {
         // Clean up storage — already written with storageId
-        coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
+        coro::blockOn(pool, storage.deleteFileAsync(storageId, ext));
         return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
       }
-      coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
-      m_impl->metrics.images_failed.add(1);
+      coro::blockOn(pool, storage.deleteFileAsync(storageId, ext));
+      metrics.images_failed.add(1);
       return {ErrorCode::DatabaseError, "", e.what()};
     }
-    m_impl->metrics.stage_db_inserted.add(1);
-    m_impl->metrics.stage_db_inserted_bytes.add(blob.size());
+    metrics.stage_db_inserted.add(1);
+    metrics.stage_db_inserted_bytes.add(blob.size());
 
     // 7. Insert original_name entry
     try {
-      m_impl->dbs.addOriginalName(sourceDir, baseName, id);
+      dbs.addOriginalName(sourceDir, baseName, id);
     } catch (const db::DatabaseException& e) {
       // Best effort rollback
       try {
-        m_impl->dbs.deleteFile(id);
+        dbs.deleteFile(id);
       } catch (...) {}
-      coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
-      m_impl->metrics.images_failed.add(1);
+      coro::blockOn(pool, storage.deleteFileAsync(storageId, ext));
+      metrics.images_failed.add(1);
       return {ErrorCode::DatabaseError, "", e.what()};
     }
 
     // 8. Insert file_companion entry
     try {
-      m_impl->dbs.addCompanion(id, parentId, storageId);
+      dbs.addCompanion(id, parentId, storageId);
     } catch (const db::DatabaseException& e) {
       try {
         // deleteFile cascades via ON DELETE CASCADE to both original_name and
         // file_companion, so no separate original_name deletion is needed.
-        m_impl->dbs.deleteFile(id);
+        dbs.deleteFile(id);
       } catch (...) {}
-      coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(storageId, ext));
-      m_impl->metrics.images_failed.add(1);
+      coro::blockOn(pool, storage.deleteFileAsync(storageId, ext));
+      metrics.images_failed.add(1);
       return {ErrorCode::DatabaseError, "", e.what()};
     }
 
-    m_impl->metrics.images_added.add(1);
+    metrics.images_added.add(1);
     return {ErrorCode::Ok, id, ""};
   }
 
   // ---- Non-sidecar path ---------------------------------------------------
 
   // 5. Write to all storage roots in parallel
+  if (onStage) {
+    onStage(ProcessingStage::WritingStorage);
+  }
   try {
-    metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_writing_storage,
-                                m_impl->metrics.inflight_writing_storage_bytes, blobSize);
-    metrics::Timer t(m_impl->metrics.storage_write);
-    coro::blockOn(m_impl->pool, m_impl->storage.writeFileAsync(id, ext, blob));
+    metrics::SizedGaugeGuard sg(metrics.inflight_writing_storage, metrics.inflight_writing_storage_bytes, blobSize);
+    metrics::Timer t(metrics.storage_write);
+    coro::blockOn(pool, storage.writeFileAsync(id, ext, blob));
   } catch (const std::exception& e) {
-    m_impl->metrics.images_failed.add(1);
+    metrics.images_failed.add(1);
     return {ErrorCode::StorageError, "", std::string("Storage write failed: ") + e.what()};
   }
-  m_impl->metrics.stage_stored.add(1);
+  metrics.stage_stored.add(1);
   // storage_bytes_written already incremented inside writeToRoot
 
   // 6. Insert into all databases in parallel (store bare name)
+  if (onStage) {
+    onStage(ProcessingStage::InsertingDb);
+  }
   try {
-    metrics::SizedGaugeGuard sg(m_impl->metrics.inflight_inserting_db,
-                                m_impl->metrics.inflight_inserting_db_bytes, blobSize);
-    metrics::Timer t(m_impl->metrics.db_insert);
-    m_impl->dbs.addFile(id, bareName, blob.size(), ext);
+    metrics::SizedGaugeGuard sg(metrics.inflight_inserting_db, metrics.inflight_inserting_db_bytes, blobSize);
+    metrics::Timer t(metrics.db_insert);
+    dbs.addFile(id, bareName, blob.size(), ext);
   } catch (const db::DatabaseException& e) {
     if (e.code() == db::DatabaseErrorCode::ConstraintViolation) {
       return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
     }
     // Roll back storage
-    coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(id, ext));
-    m_impl->metrics.images_failed.add(1);
+    coro::blockOn(pool, storage.deleteFileAsync(id, ext));
+    metrics.images_failed.add(1);
     return {ErrorCode::DatabaseError, "", e.what()};
   }
-  m_impl->metrics.stage_db_inserted.add(1);
-  m_impl->metrics.stage_db_inserted_bytes.add(blob.size());
+  metrics.stage_db_inserted.add(1);
+  metrics.stage_db_inserted_bytes.add(blob.size());
 
   // 7. Insert original_name entry so sidecars can find this file as a parent
-  const std::string baseName = Impl::extractBaseName(bareName);
+  const std::string baseName = extractBaseName(bareName);
   try {
-    m_impl->dbs.addOriginalName(sourceDir, baseName, id);
+    dbs.addOriginalName(sourceDir, baseName, id);
   } catch (const db::DatabaseException&) {
     // Non-fatal: original_name uses INSERT OR IGNORE, but if something else
-    // goes wrong, don't fail the whole addImage — the file is already stored.
+    // goes wrong, don't fail the whole addImageImpl — the file is already stored.
   }
 
   // 8. Resolve orphan sidecars that were waiting for this parent
   try {
-    auto orphans = m_impl->dbs.getOrphanCompanionsBySourceAndBaseName(sourceDir, baseName);
+    auto orphans = dbs.getOrphanCompanionsBySourceAndBaseName(sourceDir, baseName);
     for (const auto& orphan : orphans) {
       // Get the sidecar's extension from the file record
-      auto sidecarFile = m_impl->dbs.getFile(orphan.fileId);
+      auto sidecarFile = dbs.getFile(orphan.fileId);
       if (!sidecarFile) {
         continue;
       }
       // Relocate sidecar file on disk: old storage path -> new storage path
       try {
-        coro::blockOn(m_impl->pool, m_impl->storage.relocateFileAsync(orphan.storageId, id, sidecarFile->ext));
+        coro::blockOn(pool, storage.relocateFileAsync(orphan.storageId, id, sidecarFile->ext));
       } catch (const std::exception&) {
         continue; // Best-effort relocation; don't fail parent add
       }
       // Update companion record to point to this parent
       try {
-        m_impl->dbs.updateCompanionParent(orphan.fileId, id, id);
+        dbs.updateCompanionParent(orphan.fileId, id, id);
       } catch (const db::DatabaseException&) {
         // Best-effort
       }
@@ -466,16 +529,56 @@ AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
     // Best-effort orphan resolution; don't fail parent add
   }
 
-  m_impl->metrics.images_added.add(1);
+  metrics.images_added.add(1);
   return {ErrorCode::Ok, id, ""};
+}
+
+// ---------------------------------------------------------------------------
+// addImage
+// ---------------------------------------------------------------------------
+
+AddResult Imager::addImage(const Blob& blob, const std::string& filename) {
+  return m_impl->addImageImpl(blob, filename, nullptr);
 }
 
 // ---------------------------------------------------------------------------
 // addFile
 // ---------------------------------------------------------------------------
 
-AddResult Imager::addFile(const std::filesystem::path& path, const std::string& filename) {
+AddResult Imager::addFile(const std::filesystem::path& path, const std::string& filename, StageCallback onStage) {
   std::string displayName = filename.empty() ? path.filename().string() : filename;
+
+  // Determine file size and extension before reading.
+  std::error_code ec;
+  auto fileSize = std::filesystem::file_size(path, ec);
+  if (ec) {
+    m_impl->metrics.images_failed.add(1);
+    return {ErrorCode::FileNotFound, "", "Cannot stat: " + path.string() + ": " + ec.message()};
+  }
+
+  // Extension from display name (which may differ from path for renamed files).
+  std::string ext = Impl::lowercaseExt(displayName);
+
+  // Step 1: Per-format size limit check — reject immediately if exceeded.
+  uint64_t limit = m_impl->fileSizeLimit(ext);
+  if (limit > 0 && fileSize > limit) {
+    m_impl->metrics.images_failed.add(1);
+    return {
+      ErrorCode::TooLarge,
+      "",
+      "File too large for format: " + (ext.empty() ? "unknown" : ext.substr(1)) + " file is " +
+        std::to_string(fileSize) + " bytes, max allowed is " + std::to_string(limit) + " bytes"
+    };
+  }
+
+  // Step 2: Route to streaming path for large files.
+  if (fileSize > kStreamingThreshold) {
+    return m_impl->addFileLarge(path, displayName, fileSize, std::move(onStage));
+  }
+
+  if (onStage) {
+    onStage(ProcessingStage::Reading);
+  }
 
   // Stage 0: file read — tracked by metrics.
   // inflight_reading (file count) is incremented immediately.
@@ -483,15 +586,6 @@ AddResult Imager::addFile(const std::filesystem::path& path, const std::string& 
   Blob blob;
   {
     m_impl->metrics.inflight_reading.increment();
-
-    std::error_code ec;
-    auto fileSize = std::filesystem::file_size(path, ec);
-    if (ec) {
-      m_impl->metrics.inflight_reading.decrement();
-      m_impl->metrics.images_failed.add(1);
-      return {ErrorCode::FileNotFound, "",
-              "Cannot stat: " + path.string() + ": " + ec.message()};
-    }
 
     const auto blobSz = static_cast<int64_t>(fileSize);
     m_impl->metrics.inflight_reading_bytes.add(blobSz);
@@ -503,18 +597,15 @@ AddResult Imager::addFile(const std::filesystem::path& path, const std::string& 
       m_impl->metrics.inflight_reading.decrement();
       m_impl->metrics.inflight_reading_bytes.add(-blobSz);
       m_impl->metrics.images_failed.add(1);
-      return {ErrorCode::FileNotFound, "",
-              "Cannot open: " + path.string()};
+      return {ErrorCode::FileNotFound, "", "Cannot open: " + path.string()};
     }
     if (fileSize > 0) {
-      in.read(reinterpret_cast<char*>(blob.writableData()),
-              static_cast<std::streamsize>(fileSize));
+      in.read(reinterpret_cast<char*>(blob.writableData()), static_cast<std::streamsize>(fileSize));
       if (in.fail() && !in.eof()) {
         m_impl->metrics.inflight_reading.decrement();
         m_impl->metrics.inflight_reading_bytes.add(-blobSz);
         m_impl->metrics.images_failed.add(1);
-        return {ErrorCode::StorageError, "",
-                "Read error: " + path.string()};
+        return {ErrorCode::StorageError, "", "Read error: " + path.string()};
       }
     }
     blob.freeze();
@@ -524,7 +615,370 @@ AddResult Imager::addFile(const std::filesystem::path& path, const std::string& 
   m_impl->metrics.stage_read.add(1);
   m_impl->metrics.stage_read_bytes.add(blob.size());
 
-  return addImage(blob, displayName);
+  return m_impl->addImageImpl(blob, displayName, std::move(onStage));
+}
+
+// ---------------------------------------------------------------------------
+// Impl::addFileLarge — streaming pipeline for files > kStreamingThreshold
+// ---------------------------------------------------------------------------
+
+AddResult Imager::Impl::addFileLarge(
+  const std::filesystem::path& path, const std::string& displayName, uint64_t fileSize, StageCallback onStage
+) {
+  auto [sourceDir, bareName] = splitFilename(displayName);
+  std::string ext = lowercaseExt(bareName);
+  if (ext.empty()) {
+    metrics.images_failed.add(1);
+    return {ErrorCode::UnsupportedFormat, "", "Filename has no extension"};
+  }
+
+  const auto* streamValidator = findStreamValidator(ext);
+  if (!streamValidator) {
+    // No stream validator available — fall back to Blob path.
+    // If allocation fails, the error propagates as StorageError.
+    metrics.inflight_reading.increment();
+    const auto blobSz = static_cast<int64_t>(fileSize);
+    metrics.inflight_reading_bytes.add(blobSz);
+    metrics::Timer t(metrics.file_read);
+
+    Blob blob;
+    try {
+      blob = Blob(fileSize, &metrics);
+    } catch (const std::bad_alloc&) {
+      metrics.inflight_reading.decrement();
+      metrics.inflight_reading_bytes.add(-blobSz);
+      metrics.images_failed.add(1);
+      return {
+        ErrorCode::StorageError,
+        "",
+        "File too large to validate in memory and no streaming validator available for " + ext
+      };
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+      metrics.inflight_reading.decrement();
+      metrics.inflight_reading_bytes.add(-blobSz);
+      metrics.images_failed.add(1);
+      return {ErrorCode::FileNotFound, "", "Cannot open: " + path.string()};
+    }
+    if (fileSize > 0) {
+      in.read(reinterpret_cast<char*>(blob.writableData()), static_cast<std::streamsize>(fileSize));
+      if (in.fail() && !in.eof()) {
+        metrics.inflight_reading.decrement();
+        metrics.inflight_reading_bytes.add(-blobSz);
+        metrics.images_failed.add(1);
+        return {ErrorCode::StorageError, "", "Read error: " + path.string()};
+      }
+    }
+    blob.freeze();
+    metrics.inflight_reading.decrement();
+    metrics.inflight_reading_bytes.add(-blobSz);
+    metrics.stage_read.add(1);
+    metrics.stage_read_bytes.add(blob.size());
+    return addImageImpl(blob, displayName, std::move(onStage));
+  }
+
+  // ----- Pass 1: Hash + Validate in parallel (streamed) -----
+
+  if (onStage) {
+    onStage(ProcessingStage::Hashing);
+  }
+
+  std::string id;
+  validation::ValidationResult valResult;
+
+  try {
+    auto [hash, vr] = coro::blockOn(
+      pool,
+      [](
+        coro::ThreadPool& p, const validation::IStreamValidator* sv, std::filesystem::path filePath_
+      ) -> coro::Task<std::pair<std::string, validation::ValidationResult>> {
+        std::string hashId;
+        validation::ValidationResult vRes;
+
+        std::vector<coro::Task<void>> tasks;
+
+        // Hash coroutine: stream 4 MB chunks through StreamHasher.
+        tasks.push_back([](coro::ThreadPool& p2, std::filesystem::path fp, std::string& out) -> coro::Task<void> {
+          co_await p2.schedule();
+          static constexpr size_t CHUNK = 4ULL * 1024ULL * 1024ULL;
+          std::ifstream in(fp, std::ios::binary);
+          if (!in) {
+            throw std::runtime_error("Cannot open for hashing: " + fp.string());
+          }
+          StreamHasher hasher;
+          std::vector<uint8_t> buf(CHUNK);
+          while (in) {
+            in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+            auto n = static_cast<size_t>(in.gcount());
+            if (n > 0) {
+              hasher.update(buf.data(), n);
+            }
+          }
+          if (in.bad()) {
+            throw std::runtime_error("Read error while hashing: " + fp.string());
+          }
+          out = hasher.finalize();
+        }(p, filePath_, hashId));
+
+        // Validate coroutine: stream via library file API.
+        tasks.push_back(
+          [](
+            coro::ThreadPool& p2,
+            const validation::IStreamValidator* sv2,
+            std::filesystem::path fp,
+            validation::ValidationResult& out
+          ) -> coro::Task<void> {
+            co_await p2.schedule();
+            out = sv2->validateFile(fp);
+          }(p, sv, filePath_, vRes)
+        );
+
+        co_await coro::whenAll(std::move(tasks));
+        co_return std::make_pair(std::move(hashId), vRes);
+      }(pool, streamValidator, path)
+    );
+
+    id = std::move(hash);
+    valResult = vr;
+  } catch (const std::exception& e) {
+    metrics.images_failed.add(1);
+    return {ErrorCode::StorageError, "", std::string("Streaming hash/validate failed: ") + e.what()};
+  }
+
+  if (!valResult.valid) {
+    metrics.images_failed.add(1);
+    return {ErrorCode::BrokenFile, "", valResult.errorMessage};
+  }
+  metrics.stage_validated.add(1);
+  metrics.stage_validated_bytes.add(fileSize);
+  metrics.stage_hashed.add(1);
+  metrics.stage_hashed_bytes.add(fileSize);
+
+  const auto fileSz = static_cast<int64_t>(fileSize);
+
+  // Mutex wait
+  if (onStage) {
+    onStage(ProcessingStage::WaitingMutex);
+  }
+  {
+    metrics::SizedGaugeGuard sg(metrics.inflight_waiting_mutex, metrics.inflight_waiting_mutex_bytes, fileSz);
+    metrics::Timer t(metrics.mutex_wait);
+    writeMutex.lock();
+  }
+  std::lock_guard<std::mutex> lock(writeMutex, std::adopt_lock);
+
+  // Dedup check
+  if (onStage) {
+    onStage(ProcessingStage::DedupChecking);
+  }
+  try {
+    metrics::SizedGaugeGuard sg(metrics.inflight_dedup_checking, metrics.inflight_dedup_checking_bytes, fileSz);
+    metrics::Timer t(metrics.dedup_check);
+    if (dbs.fileExists(id)) {
+      return {ErrorCode::DuplicateFile, "", "File already exists: " + id};
+    }
+  } catch (const db::DatabaseException& e) {
+    metrics.images_failed.add(1);
+    return {ErrorCode::DatabaseError, "", e.what()};
+  }
+  metrics.stage_dedup_checked.add(1);
+
+  // ----- Pass 2: Streaming storage write -----
+  if (onStage) {
+    onStage(ProcessingStage::WritingStorage);
+  }
+  try {
+    metrics::SizedGaugeGuard sg(metrics.inflight_writing_storage, metrics.inflight_writing_storage_bytes, fileSz);
+    metrics::Timer t(metrics.storage_write);
+    coro::blockOn(pool, storage.writeFileFromDiskAsync(id, ext, path));
+  } catch (const std::exception& e) {
+    metrics.images_failed.add(1);
+    return {ErrorCode::StorageError, "", std::string("Streaming storage write failed: ") + e.what()};
+  }
+  metrics.stage_stored.add(1);
+
+  // DB insert
+  if (onStage) {
+    onStage(ProcessingStage::InsertingDb);
+  }
+  try {
+    metrics::SizedGaugeGuard sg(metrics.inflight_inserting_db, metrics.inflight_inserting_db_bytes, fileSz);
+    metrics::Timer t(metrics.db_insert);
+    dbs.addFile(id, bareName, fileSize, ext);
+  } catch (const db::DatabaseException& e) {
+    if (e.code() == db::DatabaseErrorCode::ConstraintViolation) {
+      return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
+    }
+    coro::blockOn(pool, storage.deleteFileAsync(id, ext));
+    metrics.images_failed.add(1);
+    return {ErrorCode::DatabaseError, "", e.what()};
+  }
+  metrics.stage_db_inserted.add(1);
+  metrics.stage_db_inserted_bytes.add(fileSize);
+
+  // original_name entry for sidecar resolution
+  const std::string baseName = extractBaseName(bareName);
+  try {
+    dbs.addOriginalName(sourceDir, baseName, id);
+  } catch (const db::DatabaseException&) {
+    // Non-fatal: best-effort
+  }
+
+  // Orphan sidecar relocation (same as small-file path)
+  try {
+    auto orphans = dbs.getOrphanCompanionsBySourceAndBaseName(sourceDir, baseName);
+    for (const auto& orphan : orphans) {
+      auto sidecarFile = dbs.getFile(orphan.fileId);
+      if (!sidecarFile) {
+        continue;
+      }
+      try {
+        coro::blockOn(pool, storage.relocateFileAsync(orphan.storageId, id, sidecarFile->ext));
+      } catch (const std::exception&) {
+        continue;
+      }
+      try {
+        dbs.updateCompanionParent(orphan.fileId, id, id);
+      } catch (const db::DatabaseException&) {
+        // Best-effort
+      }
+    }
+  } catch (const db::DatabaseException&) {
+    // Best-effort
+  }
+
+  metrics.images_added.add(1);
+  return {ErrorCode::Ok, id, ""};
+}
+
+// ---------------------------------------------------------------------------
+// validateOnlyFile
+// ---------------------------------------------------------------------------
+
+AddResult Imager::validateOnlyFile(const std::filesystem::path& path, const std::string& filename) {
+  std::string displayName = filename.empty() ? path.filename().string() : filename;
+
+  std::error_code ec;
+  auto fileSize = std::filesystem::file_size(path, ec);
+  if (ec) {
+    return {ErrorCode::FileNotFound, "", "Cannot stat: " + path.string() + ": " + ec.message()};
+  }
+
+  std::string ext = Impl::lowercaseExt(displayName);
+
+  // Size limit check
+  uint64_t limit = m_impl->fileSizeLimit(ext);
+  if (limit > 0 && fileSize > limit) {
+    return {
+      ErrorCode::TooLarge,
+      "",
+      "File too large for format: " + (ext.empty() ? "unknown" : ext.substr(1)) + " file is " +
+        std::to_string(fileSize) + " bytes, max allowed is " + std::to_string(limit) + " bytes"
+    };
+  }
+
+  // Small file: load as Blob and use existing validateOnly
+  if (fileSize <= kStreamingThreshold) {
+    Blob blob;
+    try {
+      blob = Blob(fileSize, &m_impl->metrics);
+    } catch (const std::bad_alloc&) {
+      return {ErrorCode::StorageError, "", "Allocation failed for: " + path.string()};
+    }
+    if (fileSize > 0) {
+      std::ifstream in(path, std::ios::binary);
+      if (!in) {
+        return {ErrorCode::FileNotFound, "", "Cannot open: " + path.string()};
+      }
+      in.read(reinterpret_cast<char*>(blob.writableData()), static_cast<std::streamsize>(fileSize));
+      if (in.fail() && !in.eof()) {
+        return {ErrorCode::StorageError, "", "Read error: " + path.string()};
+      }
+    }
+    blob.freeze();
+    return validateOnly(blob, displayName);
+  }
+
+  // Large file: streaming hash + streaming validate
+  const auto* streamValidator = m_impl->findStreamValidator(ext);
+  if (!streamValidator) {
+    return {ErrorCode::UnsupportedFormat, "", "No streaming validator for large " + ext + " files"};
+  }
+
+  std::string id;
+  validation::ValidationResult valResult;
+
+  try {
+    auto [hash, vr] = coro::blockOn(
+      m_impl->pool,
+      [](
+        coro::ThreadPool& p, const validation::IStreamValidator* sv, std::filesystem::path filePath_
+      ) -> coro::Task<std::pair<std::string, validation::ValidationResult>> {
+        std::string hashId;
+        validation::ValidationResult vRes;
+
+        std::vector<coro::Task<void>> tasks;
+
+        tasks.push_back([](coro::ThreadPool& p2, std::filesystem::path fp, std::string& out) -> coro::Task<void> {
+          co_await p2.schedule();
+          static constexpr size_t CHUNK = 4ULL * 1024ULL * 1024ULL;
+          std::ifstream in(fp, std::ios::binary);
+          if (!in) {
+            throw std::runtime_error("Cannot open for hashing: " + fp.string());
+          }
+          StreamHasher hasher;
+          std::vector<uint8_t> buf(CHUNK);
+          while (in) {
+            in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+            auto n = static_cast<size_t>(in.gcount());
+            if (n > 0) {
+              hasher.update(buf.data(), n);
+            }
+          }
+          if (in.bad()) {
+            throw std::runtime_error("Read error while hashing: " + fp.string());
+          }
+          out = hasher.finalize();
+        }(p, filePath_, hashId));
+
+        tasks.push_back(
+          [](
+            coro::ThreadPool& p2,
+            const validation::IStreamValidator* sv2,
+            std::filesystem::path fp,
+            validation::ValidationResult& out
+          ) -> coro::Task<void> {
+            co_await p2.schedule();
+            out = sv2->validateFile(fp);
+          }(p, sv, filePath_, vRes)
+        );
+
+        co_await coro::whenAll(std::move(tasks));
+        co_return std::make_pair(std::move(hashId), vRes);
+      }(m_impl->pool, streamValidator, path)
+    );
+
+    id = std::move(hash);
+    valResult = vr;
+  } catch (const std::exception& e) {
+    return {ErrorCode::StorageError, "", std::string("Streaming validation failed: ") + e.what()};
+  }
+
+  if (!valResult.valid) {
+    return {ErrorCode::BrokenFile, "", valResult.errorMessage};
+  }
+
+  // Dedup check (read-only)
+  try {
+    if (m_impl->dbs.fileExists(id)) {
+      return {ErrorCode::DuplicateFile, id, "File already exists: " + id};
+    }
+  } catch (const db::DatabaseException& e) {
+    return {ErrorCode::DatabaseError, "", e.what()};
+  }
+
+  return {ErrorCode::Ok, id, ""};
 }
 
 // ---------------------------------------------------------------------------

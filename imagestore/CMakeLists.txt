@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-add_executable(imagestore main.cpp ErrorFile.cpp ProgressReporter.cpp)
+add_executable(imagestore main.cpp ErrorFile.cpp ProgressReporter.cpp ResultLog.cpp SlotTracker.cpp)
 
 target_include_directories(imagestore PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
@@ -34,3 +34,36 @@ add_test(
     NAME imagestore_cli_tests
     COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_cli.sh"
 )
+
+# ---------------------------------------------------------------------------
+# CPPUnit unit tests for SlotTracker, ResultLog, and DisplayMode components
+# ---------------------------------------------------------------------------
+find_library(CPPUNIT_LIB cppunit)
+find_path(CPPUNIT_INCLUDE cppunit/TestFixture.h)
+
+if(CPPUNIT_LIB AND CPPUNIT_INCLUDE)
+    add_executable(imagestore_output_tests
+        test/OutputTest.cpp
+        SlotTracker.cpp
+        ResultLog.cpp
+    )
+
+    target_include_directories(imagestore_output_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/.."
+        "${CPPUNIT_INCLUDE}"
+    )
+
+    target_link_libraries(imagestore_output_tests PRIVATE "${CPPUNIT_LIB}")
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(imagestore_output_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(
+        NAME imagestore_output_tests
+        COMMAND imagestore_output_tests
+    )
+else()
+    message(STATUS "CppUnit not found — skipping imagestore_output_tests")
+endif()

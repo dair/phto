@@ -1,9 +1,9 @@
 #pragma once
 
+#include <imager/ImageValidator.h>
+
 #include <memory>
 #include <vector>
-
-#include <imager/ImageValidator.h>
 
 namespace imager {
 
@@ -18,5 +18,16 @@ std::unique_ptr<validation::IValidator> createMovValidator();
 std::unique_ptr<validation::IValidator> createAaeValidator();
 
 std::vector<std::unique_ptr<validation::IValidator>> createDefaultValidators();
+
+/// Factory: returns one IStreamValidator per format.
+/// Implemented in Jpeg/Png/Heic/Mov/Nef/AaeStreamValidatorImpl.cpp.
+std::unique_ptr<validation::IStreamValidator> createJpegStreamValidator();
+std::unique_ptr<validation::IStreamValidator> createPngStreamValidator();
+std::unique_ptr<validation::IStreamValidator> createHeicStreamValidator();
+std::unique_ptr<validation::IStreamValidator> createMovStreamValidator();
+std::unique_ptr<validation::IStreamValidator> createNefStreamValidator();
+std::unique_ptr<validation::IStreamValidator> createAaeStreamValidator();
+
+std::vector<std::unique_ptr<validation::IStreamValidator>> createDefaultStreamValidators();
 
 } // namespace imager

@@ -104,6 +104,8 @@ static const char* errName(ErrorCode c) {
       return "DatabaseError";
     case ErrorCode::ConfigError:
       return "ConfigError";
+    case ErrorCode::TooLarge:
+      return "TooLarge";
   }
   return "Unknown";
 }

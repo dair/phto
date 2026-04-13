@@ -23,7 +23,7 @@ if(NOT CPPUNIT_FOUND)
     return()
 endif()
 
-add_executable(imager_tests ImagerTest.cpp MultiTargetTest.cpp)
+add_executable(imager_tests ImagerTest.cpp MultiTargetTest.cpp LargeFileTest.cpp)
 
 target_include_directories(imager_tests
     PRIVATE ${CPPUNIT_INCLUDE_DIRS}

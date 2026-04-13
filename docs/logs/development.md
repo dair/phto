@@ -1,5 +1,19 @@
 # Work Log
 
+## [2026-04-13 09:00] - Large file streaming support (spec 0017)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement 0017.LARGE_FILES.md — streaming pipeline for files > 256 MB and per-format size limits.
+- **Outcome**: Added `ErrorCode::TooLarge`. Added `fileSizeLimits` to `AppConfig` with TOML `[file_size_limits]` parsing (human-readable strings: KB/MB/GB/TB) and compiled defaults. Added `IStreamValidator` abstract interface to `ImageValidator.h`. Created `StreamHasher` (OpenSSL EVP incremental SHA256). Implemented 6 stream validators (each in a separate TU to prevent enum collisions): JPEG (`jpeg_stdio_src`), PNG (file-backed `pngReadCallback`), HEIC (`heif_reader` callbacks), MOV (file-backed `AVIOContext`), NEF (`libraw_open_file`), AAE (first 64 KB read). Added `writeFileFromDiskAsync`/`writeToRootFromDisk` to `FileStorage` for 4 MB chunk streaming writes with rollback. Updated `Imager::addFile` to: (1) stat file, (2) reject with `TooLarge` if over format limit, (3) route to `addFileLarge` if > 256 MB, (4) else existing Blob path unchanged. Implemented `addFileLarge`: parallel hash+validate coroutines (Pass 1), then streaming write (Pass 2). Added `validateOnlyFile(path)` for dry-run with large files. Added `createDefaultStreamValidators()` factory. Updated `CMakeLists.txt` and fixed `TooLarge` case in sample CLI. Added integration tests (`SizeLimitTest`, `StreamingPathTest`) in `LargeFileTest.cpp`. Build clean, 14/14 tests pass.
+- **Next Step**: None specified.
+
+## [2026-04-12 10:00] - Verbose/Normal output redesign (spec 0016)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement 0016.VERBOSE_OUTPUT.md: remove --graph mode, add Verbose display mode with real-time per-slot ANSI rendering, make Normal mode silent, add StageCallback to Imager::addFile.
+- **Outcome**: `imager/Types.h` — added `ProcessingStage` enum + `StageCallback` typedef. `imager/Imager.h` — updated `addFile` signature with optional `StageCallback onStage=nullptr`. `imager/Imager.cpp` — refactored `addImage` body into `Impl::addImageImpl(blob, filename, onStage)` with callback invocations at each gauge-guard stage; `addImage` delegates with nullptr; `addFile` invokes `onStage(Reading)` before file read. `imagestore/DisplayMode.h` — replaced `Graph` with `Verbose`. New files: `SlotTracker.h/.cpp` (mutex-protected per-slot stage tracker), `ResultLog.h/.cpp` (thread-safe result appender with TTY/non-TTY ANSI scrolling-region support). `ProgressReporter.h/.cpp` — stripped graph members/rendering, added verbose TTY setup (ANSI scrolling region, cursor hide, 200ms render loop calling `renderVerbose()`), Normal mode now fully silent. `main.cpp` — removed --graph flag, added -v/-q mutual exclusion, wires SlotTracker+ResultLog into ProgressReporter, worker lambda acquires/releases slot with RAII, passes onStage callback to addFile. `CMakeLists.txt` — added ResultLog.cpp + SlotTracker.cpp. Build clean, all 12 tests pass.
+- **Next Step**: Task #4 — test verbose and normal output modes.
+
 ## [2026-04-11 12:00] - Docs fix, AmbiguousSidecar error code, sidecar rollback doc, whenAll invariant, move createDefaultValidators (3.7/A7-A9, 3.8/C8-C11)
 
 - **Agent**: cpp-spec-coder

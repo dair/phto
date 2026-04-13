@@ -1,15 +1,14 @@
 #pragma once
 
+#include <config/Config.h>
+#include <imager/Types.h>
+#include <metrics/Metrics.h>
+
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
-
-#include <metrics/Metrics.h>
-
-#include <config/Config.h>
-#include <imager/Types.h>
 
 namespace imager {
 
@@ -39,14 +38,19 @@ public:
   ///                 and stored in the database). If empty, the path's
   ///                 filename component is used.
   /// @return AddResult with the outcome.
-  AddResult addFile(const std::filesystem::path& path,
-                    const std::string& filename = "");
+  AddResult addFile(
+    const std::filesystem::path& path, const std::string& filename = "", StageCallback onStage = nullptr
+  );
 
   /// Validate format and compute SHA256 without writing to storage or DB.
   /// Performs extension check, validation, hashing, and duplicate detection.
   /// Returns Ok (with hash id) if valid and not a duplicate, DuplicateFile if
   /// already stored, or an error code if the file is broken/unsupported.
   AddResult validateOnly(const Blob& blob, const std::string& filename);
+
+  /// Like validateOnly but for files that may be too large to load into a Blob.
+  /// Uses streaming validation for files above the streaming threshold.
+  AddResult validateOnlyFile(const std::filesystem::path& path, const std::string& filename = "");
 
   /// Get image metadata + tags by ID. Returns nullopt if not found.
   std::optional<ImageInfo> getImage(const std::string& id);

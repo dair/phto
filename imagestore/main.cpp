@@ -21,6 +21,8 @@
 #include "ErrorFile.h"
 #include "Output.h"
 #include "ProgressReporter.h"
+#include "ResultLog.h"
+#include "SlotTracker.h"
 #include "Stats.h"
 
 namespace fs = std::filesystem;
@@ -40,9 +42,8 @@ static void printUsage(const char* prog) {
                "  -e, --errors PATH    Error file: skip paths listed here, append new failures\n"
                "  -j, --jobs N         Concurrent image processing limit (default: nproc)\n"
                "  -n, --dry-run        Validate and hash only, do not write to storage or DB\n"
-               "  -v, --verbose        Print per-file status lines to stderr (OK/DUP/ERR/SKIP)\n"
-               "  -q, --quiet          Suppress all progress and summary output\n"
-               "      --graph          Display animated pipeline graph (requires TTY on stderr)\n"
+               "  -v, --verbose        Real-time slot display (TTY) or per-file lines (non-TTY)\n"
+               "  -q, --quiet          Suppress all output\n"
                "  -h, --help           Show usage and exit\n"
                "\n"
                "Exit codes:\n"
@@ -51,9 +52,35 @@ static void printUsage(const char* prog) {
                "  2   Some files failed\n"
                "\n"
                "Notes:\n"
-               "  --quiet and --graph are mutually exclusive.\n"
-               "  --graph and --verbose are mutually exclusive.\n"
-               "  --graph falls back to normal mode if stderr is not a TTY.\n";
+               "  --quiet and --verbose are mutually exclusive.\n"
+               "  In verbose mode, stderr must be a TTY for real-time display;\n"
+               "  otherwise falls back to per-file line output.\n";
+}
+
+// ---------------------------------------------------------------------------
+// Stage mapping: imager::ProcessingStage -> imagestore::PipelineStage
+// ---------------------------------------------------------------------------
+
+static imagestore::PipelineStage mapStage(imager::ProcessingStage stage) {
+  using IP = imager::ProcessingStage;
+  using SP = imagestore::PipelineStage;
+  switch (stage) {
+    case IP::Reading:
+      return SP::Reading;
+    case IP::Validating:
+      return SP::Validating;
+    case IP::Hashing:
+      return SP::Hashing;
+    case IP::WaitingMutex:
+      return SP::WaitingMutex;
+    case IP::DedupChecking:
+      return SP::DedupChecking;
+    case IP::WritingStorage:
+      return SP::WritingStorage;
+    case IP::InsertingDb:
+      return SP::InsertingDb;
+  }
+  return SP::Reading;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +99,6 @@ int main(int argc, char* argv[]) {
   bool dryRun = false;
   bool verbose = false;
   bool quiet = false;
-  bool graphMode = false;
 
   static const option longOpts[] = {
     {"config", required_argument, nullptr, 'c'},
@@ -81,7 +107,6 @@ int main(int argc, char* argv[]) {
     {"dry-run", no_argument, nullptr, 'n'},
     {"verbose", no_argument, nullptr, 'v'},
     {"quiet", no_argument, nullptr, 'q'},
-    {"graph", no_argument, nullptr, 1},
     {"help", no_argument, nullptr, 'h'},
     {nullptr, 0, nullptr, 0}
   };
@@ -113,9 +138,6 @@ int main(int argc, char* argv[]) {
       case 'q':
         quiet = true;
         break;
-      case 1:
-        graphMode = true;
-        break;
       case 'h':
         printUsage(argv[0]);
         return 0;
@@ -126,12 +148,8 @@ int main(int argc, char* argv[]) {
   }
 
   // Validate mutually exclusive flag combinations
-  if (quiet && graphMode) {
-    std::cerr << "--quiet and --graph are mutually exclusive\n";
-    return 1;
-  }
-  if (graphMode && verbose) {
-    std::cerr << "--graph and --verbose are mutually exclusive\n";
+  if (quiet && verbose) {
+    std::cerr << "--quiet and --verbose are mutually exclusive\n";
     return 1;
   }
 
@@ -139,8 +157,8 @@ int main(int argc, char* argv[]) {
   imagestore::DisplayMode mode = imagestore::DisplayMode::Normal;
   if (quiet) {
     mode = imagestore::DisplayMode::Quiet;
-  } else if (graphMode) {
-    mode = imagestore::DisplayMode::Graph;
+  } else if (verbose) {
+    mode = imagestore::DisplayMode::Verbose;
   }
 
   // Resolve config path
@@ -174,7 +192,7 @@ int main(int argc, char* argv[]) {
       std::cerr << "Cannot open error file: " << e.what() << '\n';
       return 1;
     }
-    if (verbose && errorFile->initialSkipCount() > 0) {
+    if (mode != imagestore::DisplayMode::Quiet && errorFile->initialSkipCount() > 0) {
       imagestore::stderrLine(
         "Loaded " + std::to_string(errorFile->initialSkipCount()) + " paths to skip from " + errorsPath
       );
@@ -184,7 +202,15 @@ int main(int argc, char* argv[]) {
   imagestore::Stats stats;
   auto startTime = std::chrono::steady_clock::now();
 
-  imagestore::ProgressReporter progress(mode, img, stats, jobs, dryRun, startTime);
+  // Result log and slot tracker are wired together via ProgressReporter.
+  imagestore::SlotTracker slots(jobs);
+  imagestore::ResultLog resultLog;
+
+  if (mode == imagestore::DisplayMode::Quiet) {
+    resultLog.setEnabled(false);
+  }
+
+  imagestore::ProgressReporter progress(mode, stats, slots, resultLog, jobs, dryRun, startTime);
 
   // Bounded semaphore — caps files in-flight at `jobs`
   std::counting_semaphore<256> sem(static_cast<std::ptrdiff_t>(jobs));
@@ -211,9 +237,7 @@ int main(int argc, char* argv[]) {
     std::error_code ec;
     fs::path absPath = fs::absolute(line, ec);
     if (ec) {
-      if (verbose) {
-        imagestore::stderrLine("ERR " + line + ": cannot resolve path: " + ec.message());
-      }
+      resultLog.append("ERR  " + line + ": cannot resolve path: " + ec.message());
       stats.errors.fetch_add(1, std::memory_order_relaxed);
       stats.processed.fetch_add(1, std::memory_order_relaxed);
       if (errorFile) {
@@ -225,9 +249,7 @@ int main(int argc, char* argv[]) {
 
     // Check skip set
     if (errorFile && errorFile->shouldSkip(absStr)) {
-      if (verbose) {
-        imagestore::stderrLine("SKIP " + absStr + " (in error list)");
-      }
+      resultLog.append("SKIP " + absStr + " (in error list)");
       stats.skipped.fetch_add(1, std::memory_order_relaxed);
       stats.processed.fetch_add(1, std::memory_order_relaxed);
       continue;
@@ -242,29 +264,46 @@ int main(int argc, char* argv[]) {
         [&img,
          &stats,
          &sem,
+         &slots,
+         &resultLog,
          &errorFile,
-         verbose,
          dryRun,
          capturedPath = std::move(absPath),
          capturedStr = std::move(absStr)]() mutable {
-          // Release semaphore slot on scope exit
-          struct Release {
+          // Acquire a slot tracker slot — semaphore guarantees a free slot exists
+          unsigned int slot = slots.acquire(capturedStr);
+
+          // RAII: release semaphore and slot on scope exit
+          struct SemRelease {
             std::counting_semaphore<256>& s;
-            ~Release() {
+            ~SemRelease() {
               s.release();
             }
-          } guard{sem};
+          } semGuard{sem};
 
-          // Dispatch to libimager
+          struct SlotRelease {
+            imagestore::SlotTracker& t;
+            unsigned int s;
+            ~SlotRelease() {
+              t.release(s);
+            }
+          } slotGuard{slots, slot};
+
+          // Stage callback: maps imager stages to slot tracker updates
+          auto onStage = [&slots, slot](imager::ProcessingStage stage) {
+            slots.setStage(slot, mapStage(stage));
+          };
+
           imager::AddResult result;
+
           if (dryRun) {
-            // Dry-run: must pre-load blob for validateOnly (no validateOnlyFile method)
+            // Dry-run: manually read the file and call validateOnly
+            slots.setStage(slot, imagestore::PipelineStage::Reading);
+
             std::error_code fec;
             auto fileSize = fs::file_size(capturedPath, fec);
             if (fec) {
-              if (verbose) {
-                imagestore::stderrLine("ERR " + capturedStr + ": " + fec.message());
-              }
+              resultLog.append("ERR  " + capturedStr + ": " + fec.message());
               stats.errors.fetch_add(1, std::memory_order_relaxed);
               stats.processed.fetch_add(1, std::memory_order_relaxed);
               if (errorFile) {
@@ -277,9 +316,7 @@ int main(int argc, char* argv[]) {
             {
               std::ifstream in(capturedPath, std::ios::binary);
               if (!in) {
-                if (verbose) {
-                  imagestore::stderrLine("ERR " + capturedStr + ": cannot open file");
-                }
+                resultLog.append("ERR  " + capturedStr + ": cannot open file");
                 stats.errors.fetch_add(1, std::memory_order_relaxed);
                 stats.processed.fetch_add(1, std::memory_order_relaxed);
                 if (errorFile) {
@@ -290,9 +327,7 @@ int main(int argc, char* argv[]) {
               if (fileSize > 0) {
                 in.read(reinterpret_cast<char*>(blob.writableData()), static_cast<std::streamsize>(fileSize));
                 if (in.fail() && !in.eof()) {
-                  if (verbose) {
-                    imagestore::stderrLine("ERR " + capturedStr + ": read error");
-                  }
+                  resultLog.append("ERR  " + capturedStr + ": read error");
                   stats.errors.fetch_add(1, std::memory_order_relaxed);
                   stats.processed.fetch_add(1, std::memory_order_relaxed);
                   if (errorFile) {
@@ -304,15 +339,15 @@ int main(int argc, char* argv[]) {
             }
             blob.freeze();
             stats.totalBytes.fetch_add(fileSize, std::memory_order_relaxed);
+
+            slots.setStage(slot, imagestore::PipelineStage::Validating);
             result = img.validateOnly(blob, capturedPath.filename().string());
           } else {
-            // Non-dry-run: stat for totalBytes accounting, then delegate I/O to addFile
+            // Non-dry-run: stat for totalBytes, then delegate I/O to addFile with callback
             std::error_code fec;
             auto fileSize = fs::file_size(capturedPath, fec);
             if (fec) {
-              if (verbose) {
-                imagestore::stderrLine("ERR " + capturedStr + ": " + fec.message());
-              }
+              resultLog.append("ERR  " + capturedStr + ": " + fec.message());
               stats.errors.fetch_add(1, std::memory_order_relaxed);
               stats.processed.fetch_add(1, std::memory_order_relaxed);
               if (errorFile) {
@@ -321,29 +356,27 @@ int main(int argc, char* argv[]) {
               return;
             }
             stats.totalBytes.fetch_add(fileSize, std::memory_order_relaxed);
-            result = img.addFile(capturedPath);
+            result = img.addFile(capturedPath, "", onStage);
           }
 
           stats.processed.fetch_add(1, std::memory_order_relaxed);
 
           switch (result.code) {
-            case imager::ErrorCode::Ok:
+            case imager::ErrorCode::Ok: {
               stats.added.fetch_add(1, std::memory_order_relaxed);
-              if (verbose) {
-                imagestore::stderrLine("OK " + result.id + " " + capturedStr);
-              }
+              // Show first 12 hex chars of hash + original extension
+              std::string hashPfx = result.id.size() >= 12 ? result.id.substr(0, 12) : result.id;
+              std::string ext = capturedPath.extension().string();
+              resultLog.append("OK   " + capturedStr + " -> " + hashPfx + "..." + ext);
               break;
+            }
             case imager::ErrorCode::DuplicateFile:
               stats.duplicates.fetch_add(1, std::memory_order_relaxed);
-              if (verbose) {
-                imagestore::stderrLine("DUP " + capturedStr);
-              }
+              resultLog.append("DUP  " + capturedStr);
               break;
             default:
               stats.errors.fetch_add(1, std::memory_order_relaxed);
-              if (verbose) {
-                imagestore::stderrLine("ERR " + capturedStr + ": " + result.message);
-              }
+              resultLog.append("ERR  " + capturedStr + ": " + result.message);
               if (errorFile) {
                 errorFile->recordError(capturedStr);
               }
@@ -353,19 +386,14 @@ int main(int argc, char* argv[]) {
       )
     );
 
-    // Drain completed futures to release their captured memory (path strings,
-    // closure state, std::future shared state) promptly.  The semaphore already
-    // caps concurrency; this erase only removes *finished* futures so there is
-    // no race with in-flight ones.  Without this drain the vector grows
-    // proportionally to the total number of input files, causing the process to
-    // be killed on large datasets.
+    // Drain completed futures to avoid unbounded memory growth on large inputs.
     futures.erase(
       std::remove_if(
-        futures.begin(), futures.end(),
+        futures.begin(),
+        futures.end(),
         [](std::future<void>& f) {
-          if (f.valid() &&
-              f.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-            f.get(); // release shared state; propagate any exception
+          if (f.valid() && f.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            f.get();
             return true;
           }
           return false;

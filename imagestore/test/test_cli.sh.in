@@ -52,6 +52,15 @@ output_contains() {
   echo "$combined" | grep -qF "$pattern"
 }
 
+# Returns 0 if stderr does NOT contain the given string
+stderr_not_contains() {
+  local pattern="$1"
+  shift
+  local stderr_out
+  stderr_out=$( "$@" 2>&1 >/dev/null ) || true
+  ! echo "$stderr_out" | grep -qF "$pattern"
+}
+
 # ---------------------------------------------------------------------------
 # Test 1: --help exits 0
 # ---------------------------------------------------------------------------
@@ -65,28 +74,28 @@ run_test "--help output contains 'Usage'" \
   output_contains "Usage" "$BIN" --help
 
 # ---------------------------------------------------------------------------
-# Test 3: --quiet + --graph exits 1
+# Test 3: --quiet + --verbose exits 1 (short flags)
 # ---------------------------------------------------------------------------
-run_test "--quiet + --graph exits 1" \
-  expect_exit 1 "$BIN" --quiet --graph
+run_test "--quiet + --verbose exits 1 (short flags -q -v)" \
+  expect_exit 1 "$BIN" -q -v --config /tmp/nonexistent-imagestore-test.toml
 
 # ---------------------------------------------------------------------------
-# Test 4: --quiet + --graph prints error to stderr
+# Test 4: --quiet + --verbose prints "mutually exclusive" to stderr
 # ---------------------------------------------------------------------------
-run_test "--quiet + --graph prints error message" \
-  stderr_contains "mutually exclusive" "$BIN" --quiet --graph
+run_test "--quiet + --verbose prints 'mutually exclusive' to stderr" \
+  stderr_contains "mutually exclusive" "$BIN" -q -v --config /tmp/nonexistent-imagestore-test.toml
 
 # ---------------------------------------------------------------------------
-# Test 5: --graph + --verbose exits 1
+# Test 5: --verbose + --quiet exits 1 (long flags)
 # ---------------------------------------------------------------------------
-run_test "--graph + --verbose exits 1" \
-  expect_exit 1 "$BIN" --graph --verbose
+run_test "--verbose + --quiet exits 1 (long flags)" \
+  expect_exit 1 "$BIN" --verbose --quiet --config /tmp/nonexistent-imagestore-test.toml
 
 # ---------------------------------------------------------------------------
-# Test 6: --graph + --verbose prints error to stderr
+# Test 6: --verbose + --quiet prints "mutually exclusive" to stderr (long flags)
 # ---------------------------------------------------------------------------
-run_test "--graph + --verbose prints error message" \
-  stderr_contains "mutually exclusive" "$BIN" --graph --verbose
+run_test "--verbose + --quiet prints 'mutually exclusive' to stderr (long flags)" \
+  stderr_contains "mutually exclusive" "$BIN" --verbose --quiet --config /tmp/nonexistent-imagestore-test.toml
 
 # ---------------------------------------------------------------------------
 # Test 7: --jobs 0 exits 1
@@ -126,6 +135,217 @@ run_test "empty stdin with missing config exits 1" \
 # ---------------------------------------------------------------------------
 run_test "unknown flag exits 1" \
   expect_exit 1 "$BIN" --unknown-flag-xyz
+
+# ---------------------------------------------------------------------------
+# Test 13: --graph is rejected as unknown flag (removed in spec 0016)
+# ---------------------------------------------------------------------------
+run_test "--graph rejected as unknown flag (exits 1)" \
+  expect_exit 1 "$BIN" --graph
+
+# ---------------------------------------------------------------------------
+# Test 14: --verbose alone does not exit with usage error (flag is recognised)
+# ---------------------------------------------------------------------------
+# --verbose with a missing config must fail on config (exit 1), not on flag parsing.
+# We cannot distinguish config error from flag error by exit code alone, but we
+# can verify the error message says "Config error" (not "unrecognized option").
+run_test "--verbose alone is a recognised flag (config error, not flag error)" \
+  stderr_contains "Config error" "$BIN" --verbose --config /tmp/nonexistent-imagestore-test-cfg-xyz.toml
+
+# ---------------------------------------------------------------------------
+# Test 15: --quiet alone is a recognised flag
+# ---------------------------------------------------------------------------
+run_test "--quiet alone is a recognised flag (config error, not flag error)" \
+  stderr_contains "Config error" "$BIN" --quiet --config /tmp/nonexistent-imagestore-test-cfg-xyz.toml
+
+# ---------------------------------------------------------------------------
+# Test 16: --dry-run alone is a recognised flag
+# ---------------------------------------------------------------------------
+run_test "--dry-run alone is a recognised flag (config error, not flag error)" \
+  stderr_contains "Config error" "$BIN" --dry-run --config /tmp/nonexistent-imagestore-test-cfg-xyz.toml
+
+# ---------------------------------------------------------------------------
+# Tests 17-22: Normal mode output format tests
+# These use a temporary config + real image files (or empty input).
+# ---------------------------------------------------------------------------
+
+# Create a temporary config with a real (writable) storage root + database.
+TMPDIR_TEST=$(mktemp -d)
+STORE_ROOT="$TMPDIR_TEST/storage"
+DB_PATH="$TMPDIR_TEST/test.db"
+CFG_PATH="$TMPDIR_TEST/test.toml"
+mkdir -p "$STORE_ROOT"
+
+cat > "$CFG_PATH" <<EOF
+[[targets]]
+root = "$STORE_ROOT"
+database = "$DB_PATH"
+EOF
+
+# ---------------------------------------------------------------------------
+# Test 17: Normal mode with empty stdin exits 0, no processing needed
+# ---------------------------------------------------------------------------
+run_test "normal mode with empty stdin exits 0" \
+  expect_exit 0 bash -c "echo -n | \"$BIN\" --config \"$CFG_PATH\""
+
+# ---------------------------------------------------------------------------
+# Test 18: Normal mode with empty stdin prints final summary to stderr
+# ---------------------------------------------------------------------------
+run_test "normal mode with empty stdin prints final summary (processed count)" \
+  stderr_contains "0 processed" bash -c "echo -n | \"$BIN\" --config \"$CFG_PATH\""
+
+# ---------------------------------------------------------------------------
+# Test 19: Normal mode with empty stdin produces no [progress] lines to stderr
+# ---------------------------------------------------------------------------
+run_test "normal mode produces no [progress] lines during processing" \
+  stderr_not_contains "[progress]" bash -c "echo -n | \"$BIN\" --config \"$CFG_PATH\""
+
+# ---------------------------------------------------------------------------
+# Test 20: Quiet mode with empty stdin exits 0 and produces no output at all
+# ---------------------------------------------------------------------------
+run_test "quiet mode with empty stdin exits 0" \
+  expect_exit 0 bash -c "echo -n | \"$BIN\" --quiet --config \"$CFG_PATH\""
+
+# Quiet mode should produce nothing on stderr
+run_test "quiet mode produces no stderr output" \
+  bash -c "
+    out=\$( echo -n | \"$BIN\" --quiet --config \"$CFG_PATH\" 2>&1 )
+    [ -z \"\$out\" ]
+  "
+
+# ---------------------------------------------------------------------------
+# Test 22: Verbose non-TTY mode prints one-time notice to stderr
+# ---------------------------------------------------------------------------
+# When stderr is not a TTY (which it never is in a shell pipe), -v should
+# print the fallback notice. stderr_contains already redirects stderr to capture
+# it, so we pass the command directly without extra redirections.
+run_test "verbose non-TTY prints 'stderr is not a TTY' notice" \
+  stderr_contains "stderr is not a TTY" bash -c "echo -n | \"$BIN\" --verbose --config \"$CFG_PATH\""
+
+# ---------------------------------------------------------------------------
+# Test 23: Normal mode OK result line format for a real image file
+# Create a minimal valid JPEG, import it, and verify OK line format.
+# ---------------------------------------------------------------------------
+# Write a minimal valid JPEG (SOI + APP0 + quant + SOF0 + DHT + SOS + EOI)
+# This is a hard-coded 1×1 white JPEG that libjpeg accepts.
+python3 -c "
+import sys
+data = bytes([
+  0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,0x49,0x46,0x00,0x01,0x01,0x00,0x00,0x01,
+  0x00,0x01,0x00,0x00,0xFF,0xDB,0x00,0x43,0x00,0x08,0x06,0x06,0x07,0x06,0x05,0x08,
+  0x07,0x07,0x07,0x09,0x09,0x08,0x0A,0x0C,0x14,0x0D,0x0C,0x0B,0x0B,0x0C,0x19,0x12,
+  0x13,0x0F,0x14,0x1D,0x1A,0x1F,0x1E,0x1D,0x1A,0x1C,0x1C,0x20,0x24,0x2E,0x27,0x20,
+  0x22,0x2C,0x23,0x1C,0x1C,0x28,0x37,0x29,0x2C,0x30,0x31,0x34,0x34,0x34,0x1F,0x27,
+  0x39,0x3D,0x38,0x32,0x3C,0x2E,0x33,0x34,0x32,0xFF,0xC0,0x00,0x0B,0x08,0x00,0x01,
+  0x00,0x01,0x01,0x01,0x11,0x00,0xFF,0xC4,0x00,0x1F,0x00,0x00,0x01,0x05,0x01,0x01,
+  0x01,0x01,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x02,0x03,0x04,
+  0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0xFF,0xC4,0x00,0xB5,0x10,0x00,0x02,0x01,0x03,
+  0x03,0x02,0x04,0x03,0x05,0x05,0x04,0x04,0x00,0x00,0x01,0x7D,0x01,0x02,0x03,0x00,
+  0x04,0x11,0x05,0x12,0x21,0x31,0x41,0x06,0x13,0x51,0x61,0x07,0x22,0x71,0x14,0x32,
+  0x81,0x91,0xA1,0x08,0x23,0x42,0xB1,0xC1,0x15,0x52,0xD1,0xF0,0x24,0x33,0x62,0x72,
+  0x82,0x09,0x0A,0x16,0x17,0x18,0x19,0x1A,0x25,0x26,0x27,0x28,0x29,0x2A,0x34,0x35,
+  0x36,0x37,0x38,0x39,0x3A,0x43,0x44,0x45,0x46,0x47,0x48,0x49,0x4A,0x53,0x54,0x55,
+  0x56,0x57,0x58,0x59,0x5A,0x63,0x64,0x65,0x66,0x67,0x68,0x69,0x6A,0x73,0x74,0x75,
+  0x76,0x77,0x78,0x79,0x7A,0x83,0x84,0x85,0x86,0x87,0x88,0x89,0x8A,0x92,0x93,0x94,
+  0x95,0x96,0x97,0x98,0x99,0x9A,0xA2,0xA3,0xA4,0xA5,0xA6,0xA7,0xA8,0xA9,0xAA,0xB2,
+  0xB3,0xB4,0xB5,0xB6,0xB7,0xB8,0xB9,0xBA,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7,0xC8,0xC9,
+  0xCA,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,0xD8,0xD9,0xDA,0xE1,0xE2,0xE3,0xE4,0xE5,0xE6,
+  0xE7,0xE8,0xE9,0xEA,0xF1,0xF2,0xF3,0xF4,0xF5,0xF6,0xF7,0xF8,0xF9,0xFA,0xFF,0xDA,
+  0x00,0x08,0x01,0x01,0x00,0x00,0x3F,0x00,0xFB,0xD2,0x8A,0x28,0x03,0xFF,0xD9
+])
+sys.stdout.buffer.write(data)
+" > "$TMPDIR_TEST/test_image.jpg"
+
+run_test "normal mode OK result line starts with 'OK'" \
+  bash -c "
+    result=\$( echo \"$TMPDIR_TEST/test_image.jpg\" | \"$BIN\" --config \"$CFG_PATH\" 2>&1 )
+    echo \"\$result\" | grep -qF 'OK'
+  "
+
+# ---------------------------------------------------------------------------
+# Test 24: Normal mode DUP result line for a duplicate file
+# Import the same file a second time — should get a DUP line.
+# ---------------------------------------------------------------------------
+run_test "normal mode DUP result line for duplicate file" \
+  bash -c "
+    result=\$( echo \"$TMPDIR_TEST/test_image.jpg\" | \"$BIN\" --config \"$CFG_PATH\" 2>&1 )
+    echo \"\$result\" | grep -qF 'DUP'
+  "
+
+# ---------------------------------------------------------------------------
+# Test 25: Normal mode ERR result line for a non-existent file
+# ---------------------------------------------------------------------------
+run_test "normal mode ERR result line for non-existent file" \
+  bash -c "
+    result=\$( echo \"/tmp/totally_nonexistent_file_xyz_12345.jpg\" | \"$BIN\" --config \"$CFG_PATH\" 2>&1 )
+    echo \"\$result\" | grep -qF 'ERR'
+  "
+
+# ---------------------------------------------------------------------------
+# Test 26: Normal mode SKIP result line for a file in the error list
+# ---------------------------------------------------------------------------
+ERRFILE="$TMPDIR_TEST/errors.txt"
+SKIP_PATH="$TMPDIR_TEST/test_image.jpg"
+# Resolve to absolute path as imagestore does internally
+echo "$SKIP_PATH" > "$ERRFILE"
+
+run_test "normal mode SKIP result line for file in error list" \
+  bash -c "
+    result=\$( echo \"$SKIP_PATH\" | \"$BIN\" --config \"$CFG_PATH\" --errors \"$ERRFILE\" 2>&1 )
+    echo \"\$result\" | grep -qF 'SKIP'
+  "
+
+# ---------------------------------------------------------------------------
+# Test 27: Verbose non-TTY mode prints per-file result lines (OK/DUP/ERR)
+# ---------------------------------------------------------------------------
+# Create a second fresh store so the image is new (not a dup from test 23)
+TMPDIR_TEST2=$(mktemp -d)
+STORE_ROOT2="$TMPDIR_TEST2/storage"
+DB_PATH2="$TMPDIR_TEST2/test.db"
+CFG_PATH2="$TMPDIR_TEST2/test.toml"
+mkdir -p "$STORE_ROOT2"
+cat > "$CFG_PATH2" <<EOF
+[[targets]]
+root = "$STORE_ROOT2"
+database = "$DB_PATH2"
+EOF
+
+run_test "verbose non-TTY prints OK result line for valid image" \
+  bash -c "
+    result=\$( echo \"$TMPDIR_TEST/test_image.jpg\" | \"$BIN\" --verbose --config \"$CFG_PATH2\" 2>&1 )
+    echo \"\$result\" | grep -qF 'OK'
+  "
+
+# ---------------------------------------------------------------------------
+# Test 28: --dry-run produces no writing/db-insert stages, exits 0 for valid image
+# (We cannot observe stage names without TTY, but dry-run should succeed and
+#  produce result output without writing to the store.)
+# ---------------------------------------------------------------------------
+TMPDIR_TEST3=$(mktemp -d)
+STORE_ROOT3="$TMPDIR_TEST3/storage"
+CFG_PATH3="$TMPDIR_TEST3/test.toml"
+mkdir -p "$STORE_ROOT3"
+cat > "$CFG_PATH3" <<EOF
+[[targets]]
+root = "$STORE_ROOT3"
+database = "$TMPDIR_TEST3/test.db"
+EOF
+
+run_test "--dry-run exits 0 for valid image" \
+  expect_exit 0 bash -c "echo \"$TMPDIR_TEST/test_image.jpg\" | \"$BIN\" --dry-run --config \"$CFG_PATH3\""
+
+run_test "--dry-run summary says 'dry run'" \
+  stderr_contains "dry run" bash -c "echo \"$TMPDIR_TEST/test_image.jpg\" | \"$BIN\" --dry-run --config \"$CFG_PATH3\""
+
+# ---------------------------------------------------------------------------
+# Test 30: Normal mode exit code 2 when a file has errors
+# ---------------------------------------------------------------------------
+run_test "normal mode exits 2 when files fail" \
+  expect_exit 2 bash -c "echo \"/tmp/totally_nonexistent_file_xyz_99999.jpg\" | \"$BIN\" --config \"$CFG_PATH\""
+
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
+rm -rf "$TMPDIR_TEST" "$TMPDIR_TEST2" "$TMPDIR_TEST3"
 
 # ---------------------------------------------------------------------------
 # Results

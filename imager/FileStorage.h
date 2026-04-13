@@ -1,14 +1,13 @@
 #pragma once
 
-#include <filesystem>
-#include <string>
-#include <vector>
-
-#include <metrics/Metrics.h>
-
 #include <coro/Task.h>
 #include <coro/ThreadPool.h>
 #include <imager/types/Blob.h>
+#include <metrics/Metrics.h>
+
+#include <filesystem>
+#include <string>
+#include <vector>
 
 namespace imager {
 
@@ -54,6 +53,13 @@ public:
   /// copy+delete if rename fails (e.g., cross-device).
   coro::Task<void> relocateFileAsync(const std::string& oldId, const std::string& newId, const std::string& ext);
 
+  /// Stream-copy from a source file on disk to ALL storage roots in parallel.
+  /// Reads in 4 MB chunks — never holds the full file in memory.
+  /// Rolls back on partial failure (same semantics as writeFileAsync).
+  coro::Task<void> writeFileFromDiskAsync(
+    const std::string& id, const std::string& ext, const std::filesystem::path& sourcePath
+  );
+
 private:
   std::vector<std::filesystem::path> m_roots;
   coro::ThreadPool& m_pool;
@@ -65,6 +71,11 @@ private:
 
   /// Write blob to a single root on a pool thread.
   coro::Task<void> writeToRoot(std::filesystem::path root, std::string id, std::string ext, Blob blob);
+
+  /// Stream-copy from source file to one storage root on a pool thread.
+  coro::Task<void> writeToRootFromDisk(
+    std::filesystem::path root, std::string id, std::string ext, std::filesystem::path sourcePath
+  );
 };
 
 } // namespace imager
