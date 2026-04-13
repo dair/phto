@@ -13,6 +13,7 @@
 
 #include "../ResultLog.h"
 #include "../SlotTracker.h"
+#include "../TimeFormat.h"
 
 namespace imagestore {
 
@@ -391,6 +392,103 @@ public:
 };
 
 CPPUNIT_TEST_SUITE_REGISTRATION(PipelineStageTest);
+
+// ---------------------------------------------------------------------------
+// fmtElapsed tests
+// ---------------------------------------------------------------------------
+
+class FmtElapsedTest : public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(FmtElapsedTest);
+  CPPUNIT_TEST(testZero);
+  CPPUNIT_TEST(testSeconds);
+  CPPUNIT_TEST(testExactlyOneMinute);
+  CPPUNIT_TEST(testSecondsRolloverToMinutes);
+  CPPUNIT_TEST(testMinutesAndSeconds);
+  CPPUNIT_TEST(testExactlyOneHour);
+  CPPUNIT_TEST(testHoursMinutesSeconds);
+  CPPUNIT_TEST(testSecondsBoundary59);
+  CPPUNIT_TEST(testSecondsBoundary60RollsOver);
+  CPPUNIT_TEST(testMinutesBoundary59);
+  CPPUNIT_TEST(testMinutesBoundary60RollsOver);
+  CPPUNIT_TEST(testBugReportValue188);
+  CPPUNIT_TEST(testLargeValue);
+  CPPUNIT_TEST_SUITE_END();
+
+  static std::string fmt(int64_t secs) {
+    std::ostringstream ss;
+    fmtElapsed(ss, secs);
+    return ss.str();
+  }
+
+public:
+  void testZero() {
+    CPPUNIT_ASSERT_EQUAL(std::string("00h:00m:00s"), fmt(0));
+  }
+
+  void testSeconds() {
+    CPPUNIT_ASSERT_EQUAL(std::string("00h:00m:08s"), fmt(8));
+    CPPUNIT_ASSERT_EQUAL(std::string("00h:00m:45s"), fmt(45));
+  }
+
+  void testExactlyOneMinute() {
+    CPPUNIT_ASSERT_EQUAL(std::string("00h:01m:00s"), fmt(60));
+  }
+
+  void testSecondsRolloverToMinutes() {
+    // 80 seconds must NOT produce 00m:80s — it must roll over to 01m:20s.
+    CPPUNIT_ASSERT_EQUAL(std::string("00h:01m:20s"), fmt(80));
+  }
+
+  void testMinutesAndSeconds() {
+    CPPUNIT_ASSERT_EQUAL(std::string("00h:03m:08s"), fmt(188));
+    CPPUNIT_ASSERT_EQUAL(std::string("00h:20m:55s"), fmt(1255));
+  }
+
+  void testExactlyOneHour() {
+    CPPUNIT_ASSERT_EQUAL(std::string("01h:00m:00s"), fmt(3600));
+  }
+
+  void testHoursMinutesSeconds() {
+    CPPUNIT_ASSERT_EQUAL(std::string("01h:01m:01s"), fmt(3661));
+    CPPUNIT_ASSERT_EQUAL(std::string("02h:30m:15s"), fmt(9015));
+  }
+
+  void testSecondsBoundary59() {
+    CPPUNIT_ASSERT_EQUAL(std::string("00h:00m:59s"), fmt(59));
+  }
+
+  void testSecondsBoundary60RollsOver() {
+    CPPUNIT_ASSERT_EQUAL(std::string("00h:01m:00s"), fmt(60));
+  }
+
+  void testMinutesBoundary59() {
+    CPPUNIT_ASSERT_EQUAL(std::string("00h:59m:00s"), fmt(59 * 60));
+  }
+
+  void testMinutesBoundary60RollsOver() {
+    CPPUNIT_ASSERT_EQUAL(std::string("01h:00m:00s"), fmt(60 * 60));
+  }
+
+  void testBugReportValue188() {
+    // The bug report showed 30m:80s for ~188s elapsed.
+    // Correct output is 00h:03m:08s.
+    CPPUNIT_ASSERT_EQUAL(std::string("00h:03m:08s"), fmt(188));
+    // Seconds component must never exceed 59.
+    std::ostringstream ss;
+    fmtElapsed(ss, 188);
+    std::string result = ss.str();
+    // Extract seconds field: last two chars before 's'
+    int secs = std::stoi(result.substr(result.size() - 3, 2));
+    CPPUNIT_ASSERT_MESSAGE("Seconds must be <= 59", secs <= 59);
+  }
+
+  void testLargeValue() {
+    // 99 hours + some — hours field must not be clamped.
+    CPPUNIT_ASSERT_EQUAL(std::string("99h:59m:59s"), fmt(99 * 3600 + 59 * 60 + 59));
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(FmtElapsedTest);
 
 } // namespace imagestore
 

@@ -9,21 +9,9 @@
 #include <sstream>
 
 #include "Output.h"
+#include "TimeFormat.h"
 
 namespace imagestore {
-
-namespace {
-
-// Format elapsed seconds as HH:MM:SS into the stream.
-void fmtElapsed(std::ostream& out, int64_t totalSeconds) {
-  int64_t h = totalSeconds / 3600;
-  int64_t m = (totalSeconds % 3600) / 60;
-  int64_t s = totalSeconds % 60;
-  out << std::setfill('0') << std::setw(2) << h << "h:" << std::setw(2) << m << "m:" << std::setw(2) << s << "s"
-      << std::setfill(' ');
-}
-
-} // namespace
 
 ProgressReporter::ProgressReporter(
   DisplayMode mode,
