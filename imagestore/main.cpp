@@ -25,6 +25,10 @@
 #include "SlotTracker.h"
 #include "Stats.h"
 
+#ifdef MEMORY_TRACE
+  #include "MemoryTrace.h"
+#endif
+
 namespace fs = std::filesystem;
 
 // ---------------------------------------------------------------------------
@@ -88,6 +92,9 @@ static imagestore::PipelineStage mapStage(imager::ProcessingStage stage) {
 // ---------------------------------------------------------------------------
 
 int main(int argc, char* argv[]) {
+#ifdef MEMORY_TRACE
+  imagestore::memoryTraceInit();
+#endif
   // Defaults
   std::string configPath;
   std::string errorsPath;

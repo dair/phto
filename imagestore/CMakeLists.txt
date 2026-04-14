@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.28)
 
 add_executable(imagestore main.cpp ErrorFile.cpp ProgressReporter.cpp ResultLog.cpp SlotTracker.cpp)
 
+option(MEMORY_TRACE "Enable memory allocation tracing (OFF by default)" OFF)
+if(MEMORY_TRACE)
+    target_sources(imagestore PRIVATE MemoryTrace.cpp)
+    target_compile_definitions(imagestore PRIVATE MEMORY_TRACE)
+endif()
+
 target_include_directories(imagestore PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(imagestore PRIVATE libimager config_lib)
