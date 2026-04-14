@@ -89,7 +89,9 @@ void tracedFree(void* ptr) noexcept {
   std::size_t blockSize = malloc_usable_size(ptr);
 
   g_currentAllocated.fetch_sub(blockSize, std::memory_order_relaxed);
-  std::size_t total = g_totalAllocated.load(std::memory_order_relaxed);
+  // Decrement g_totalAllocated so the logged total reflects live bytes, not
+  // cumulative bytes ever allocated (which would always grow and obscure leaks).
+  std::size_t total = g_totalAllocated.fetch_sub(blockSize, std::memory_order_relaxed) - blockSize;
 
   if (!g_inTrace) {
     g_inTrace = true;
