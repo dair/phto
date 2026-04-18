@@ -4,6 +4,7 @@
 #include <coro/ThreadPool.h>
 #include <imager/types/Blob.h>
 #include <metrics/Metrics.h>
+#include <sys/stat.h>
 
 #include <filesystem>
 #include <string>
@@ -37,6 +38,21 @@ public:
 
   /// Delete from all roots (best-effort, errors ignored).
   void deleteFile(const std::string& id, const std::string& ext);
+
+  /// Apply pre-read timestamps to the stored file on every root.
+  /// times[0] = atime, times[1] = mtime (same layout as utimensat).
+  /// Errors on individual roots are silently skipped (best-effort).
+  /// Prefer this overload when the caller has already read the source file
+  /// (which would update its atime); read timestamps BEFORE opening the source.
+  void applyTimestamps(const std::string& id, const std::string& ext, const struct timespec times[2]);
+
+  /// Copy mtime and atime from sourcePath to the stored file on every root.
+  /// Called after a successful write so that stored copies carry the original
+  /// file's timestamps rather than the write time.
+  /// Errors on individual roots are silently skipped (best-effort).
+  void applyTimestampsFromSource(
+    const std::string& id, const std::string& ext, const std::filesystem::path& sourcePath
+  );
 
   // --- Async coroutine API ---
 

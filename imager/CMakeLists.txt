@@ -4,6 +4,7 @@ add_library(libimager
     Hasher.cpp
     StreamHasher.cpp
     FileStorage.cpp
+    FileTimestamp.cpp
     Validators.cpp
     JpegValidatorImpl.cpp
     PngValidatorImpl.cpp

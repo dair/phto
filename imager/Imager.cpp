@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "FileStorage.h"
+#include "FileTimestamp.h"
 #include "Hasher.h"
 #include "MultiDatabase.h"
 #include "StreamHasher.h"
@@ -110,6 +111,24 @@ struct Imager::Impl {
   AddResult addFileLarge(
     const std::filesystem::path& path, const std::string& displayName, uint64_t fileSize, StageCallback onStage
   );
+
+  /// Result of reading + hashing a file from disk.
+  struct ReadHashResult {
+    std::string id; ///< Hex SHA256; empty on error
+    uint64_t fileSize{0};
+    std::string error;
+    ErrorCode errCode{ErrorCode::Ok};
+  };
+
+  /// Read `path` from disk and compute its SHA256 (streaming for large files).
+  /// Invokes onStage at Reading and Hashing transitions.
+  /// On failure returns a ReadHashResult with empty id and errCode set.
+  ReadHashResult readAndHash(const std::filesystem::path& path, StageCallback onStage);
+
+  /// Delete the record for `id` from all databases and storage roots.
+  /// MUST be called with writeMutex already held.
+  /// Returns Ok, FileNotFound, DatabaseError, or StorageError.
+  ErrorCode deleteByIdLocked(const std::string& id);
 
   static bool isVideoExtension(const std::string& /* ext */) {
     return false; // All previously extension-only formats now have validators
@@ -580,6 +599,17 @@ AddResult Imager::addFile(const std::filesystem::path& path, const std::string& 
     onStage(ProcessingStage::Reading);
   }
 
+  // Read source timestamps BEFORE opening the file.
+  // Opening/reading the file updates atime; capturing here preserves the original.
+  struct timespec srcTimes[2]{};
+  bool haveTimestamps = false;
+  try {
+    readTimestamps(path, srcTimes);
+    haveTimestamps = true;
+  } catch (...) {
+    // Non-fatal: proceed without timestamps if stat fails for any reason.
+  }
+
   // Stage 0: file read — tracked by metrics.
   // inflight_reading (file count) is incremented immediately.
   // inflight_reading_bytes is incremented after stat (once we know the size).
@@ -615,7 +645,16 @@ AddResult Imager::addFile(const std::filesystem::path& path, const std::string& 
   m_impl->metrics.stage_read.add(1);
   m_impl->metrics.stage_read_bytes.add(blob.size());
 
-  return m_impl->addImageImpl(blob, displayName, std::move(onStage));
+  AddResult result = m_impl->addImageImpl(blob, displayName, std::move(onStage));
+
+  // Preserve original file timestamps on the stored copy.
+  // Use the pre-read timestamps captured before file open (which would have updated atime).
+  // Applied only on success; skipped for DuplicateFile and error cases.
+  if (result.code == ErrorCode::Ok && haveTimestamps) {
+    m_impl->storage.applyTimestamps(result.id, ext, srcTimes);
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +669,16 @@ AddResult Imager::Impl::addFileLarge(
   if (ext.empty()) {
     metrics.images_failed.add(1);
     return {ErrorCode::UnsupportedFormat, "", "Filename has no extension"};
+  }
+
+  // Read source timestamps BEFORE opening the file (open updates atime).
+  struct timespec srcTimes[2]{};
+  bool haveTimestamps = false;
+  try {
+    readTimestamps(path, srcTimes);
+    haveTimestamps = true;
+  } catch (...) {
+    // Non-fatal.
   }
 
   const auto* streamValidator = findStreamValidator(ext);
@@ -675,7 +724,11 @@ AddResult Imager::Impl::addFileLarge(
     metrics.inflight_reading_bytes.add(-blobSz);
     metrics.stage_read.add(1);
     metrics.stage_read_bytes.add(blob.size());
-    return addImageImpl(blob, displayName, std::move(onStage));
+    AddResult result = addImageImpl(blob, displayName, std::move(onStage));
+    if (result.code == ErrorCode::Ok && haveTimestamps) {
+      storage.applyTimestamps(result.id, ext, srcTimes);
+    }
+    return result;
   }
 
   // ----- Pass 1: Hash + Validate in parallel (streamed) -----
@@ -849,6 +902,13 @@ AddResult Imager::Impl::addFileLarge(
   }
 
   metrics.images_added.add(1);
+
+  // Preserve original file timestamps on all stored copies.
+  // Use pre-read timestamps captured before any file open (which would update atime).
+  if (haveTimestamps) {
+    storage.applyTimestamps(id, ext, srcTimes);
+  }
+
   return {ErrorCode::Ok, id, ""};
 }
 
@@ -1095,15 +1155,13 @@ std::vector<ImageInfo> Imager::getImagesByTags(const std::vector<std::string>& t
 }
 
 // ---------------------------------------------------------------------------
-// deleteImage — parallel storage cleanup after DB delete
+// Impl::deleteByIdLocked — core delete logic (writeMutex must be held)
 // ---------------------------------------------------------------------------
 
-ErrorCode Imager::deleteImage(const std::string& id) {
-  std::lock_guard<std::mutex> lock(m_impl->writeMutex);
-
+ErrorCode Imager::Impl::deleteByIdLocked(const std::string& id) {
   std::optional<db::File> file;
   try {
-    file = m_impl->dbs.getFile(id);
+    file = dbs.getFile(id);
   } catch (const db::DatabaseException&) {
     return ErrorCode::DatabaseError;
   }
@@ -1117,7 +1175,7 @@ ErrorCode Imager::deleteImage(const std::string& id) {
   // Cascade: collect all sidecars of this parent before deleting
   std::vector<db::Database::CompanionInfo> companions;
   try {
-    companions = m_impl->dbs.getCompanionsForParent(id);
+    companions = dbs.getCompanionsForParent(id);
   } catch (const db::DatabaseException&) {
     // Best-effort; proceed with deletion
   }
@@ -1125,19 +1183,19 @@ ErrorCode Imager::deleteImage(const std::string& id) {
   // Delete each sidecar's DB record (cascades file_companion, original_name)
   // and its storage file (using storage_id to find the correct disk path)
   for (const auto& comp : companions) {
-    auto sidecarFile = m_impl->dbs.getFile(comp.fileId);
+    auto sidecarFile = dbs.getFile(comp.fileId);
     if (sidecarFile) {
       try {
-        m_impl->dbs.deleteFile(comp.fileId);
+        dbs.deleteFile(comp.fileId);
       } catch (const db::DatabaseException&) {
         // Best-effort
       }
-      coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(comp.storageId, sidecarFile->ext));
+      coro::blockOn(pool, storage.deleteFileAsync(comp.storageId, sidecarFile->ext));
     }
   }
 
   try {
-    m_impl->dbs.deleteFile(id);
+    dbs.deleteFile(id);
   } catch (const db::DatabaseException& e) {
     if (e.code() == db::DatabaseErrorCode::NotFound) {
       return ErrorCode::FileNotFound;
@@ -1146,8 +1204,163 @@ ErrorCode Imager::deleteImage(const std::string& id) {
   }
 
   // Storage cleanup in parallel (best-effort)
-  coro::blockOn(m_impl->pool, m_impl->storage.deleteFileAsync(id, ext));
+  coro::blockOn(pool, storage.deleteFileAsync(id, ext));
   return ErrorCode::Ok;
+}
+
+// ---------------------------------------------------------------------------
+// deleteImage — thin wrapper: lock + delegate to deleteByIdLocked
+// ---------------------------------------------------------------------------
+
+ErrorCode Imager::deleteImage(const std::string& id) {
+  std::lock_guard<std::mutex> lock(m_impl->writeMutex);
+  return m_impl->deleteByIdLocked(id);
+}
+
+// ---------------------------------------------------------------------------
+// Impl::readAndHash — read file + compute SHA256 (streaming for large files)
+// ---------------------------------------------------------------------------
+
+Imager::Impl::ReadHashResult Imager::Impl::readAndHash(const std::filesystem::path& path, StageCallback onStage) {
+  std::error_code ec;
+  auto fileSize = std::filesystem::file_size(path, ec);
+  if (ec) {
+    return {"", 0, "Cannot stat: " + path.string() + ": " + ec.message(), ErrorCode::FileNotFound};
+  }
+
+  if (onStage) {
+    onStage(ProcessingStage::Reading);
+  }
+
+  if (fileSize <= kStreamingThreshold) {
+    // Small file: read into Blob, hash single-shot
+    Blob blob;
+    try {
+      blob = Blob(fileSize, &metrics);
+    } catch (const std::bad_alloc&) {
+      return {"", 0, "Allocation failed for: " + path.string(), ErrorCode::StorageError};
+    }
+    if (fileSize > 0) {
+      std::ifstream in(path, std::ios::binary);
+      if (!in) {
+        return {"", 0, "Cannot open: " + path.string(), ErrorCode::FileNotFound};
+      }
+      in.read(reinterpret_cast<char*>(blob.writableData()), static_cast<std::streamsize>(fileSize));
+      if (in.fail() && !in.eof()) {
+        return {"", 0, "Read error: " + path.string(), ErrorCode::StorageError};
+      }
+    }
+    blob.freeze();
+
+    if (onStage) {
+      onStage(ProcessingStage::Hashing);
+    }
+
+    std::string id;
+    try {
+      id = computeSha256(blob);
+    } catch (const std::exception& e) {
+      return {"", 0, std::string("Hashing failed: ") + e.what(), ErrorCode::StorageError};
+    }
+    return {std::move(id), fileSize, "", ErrorCode::Ok};
+  }
+
+  // Large file: stream 4 MB chunks through StreamHasher
+  if (onStage) {
+    onStage(ProcessingStage::Hashing);
+  }
+
+  std::string id;
+  try {
+    id = coro::blockOn(pool, [](coro::ThreadPool& p, std::filesystem::path fp) -> coro::Task<std::string> {
+      co_await p.schedule();
+      static constexpr size_t CHUNK = 4ULL * 1024ULL * 1024ULL;
+      std::ifstream in(fp, std::ios::binary);
+      if (!in) {
+        throw std::runtime_error("Cannot open for hashing: " + fp.string());
+      }
+      StreamHasher hasher;
+      std::vector<uint8_t> buf(CHUNK);
+      while (in) {
+        in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+        auto n = static_cast<size_t>(in.gcount());
+        if (n > 0) {
+          hasher.update(buf.data(), n);
+        }
+      }
+      if (in.bad()) {
+        throw std::runtime_error("Read error while hashing: " + fp.string());
+      }
+      co_return hasher.finalize();
+    }(pool, path));
+  } catch (const std::exception& e) {
+    return {"", 0, std::string("Streaming hash failed: ") + e.what(), ErrorCode::StorageError};
+  }
+  return {std::move(id), fileSize, "", ErrorCode::Ok};
+}
+
+// ---------------------------------------------------------------------------
+// hashOnlyBlob / hashOnlyFile
+// ---------------------------------------------------------------------------
+
+std::string Imager::hashOnlyBlob(const Blob& blob) {
+  try {
+    return computeSha256(blob);
+  } catch (...) {
+    return {};
+  }
+}
+
+std::string Imager::hashOnlyFile(const std::filesystem::path& path, StageCallback onStage) {
+  auto r = m_impl->readAndHash(path, std::move(onStage));
+  return r.id;
+}
+
+// ---------------------------------------------------------------------------
+// deleteBlob / deleteFile
+// ---------------------------------------------------------------------------
+
+DeleteResult Imager::deleteBlob(const Blob& blob) {
+  std::string id;
+  try {
+    id = computeSha256(blob);
+  } catch (const std::exception& e) {
+    return {ErrorCode::StorageError, "", std::string("Hashing failed: ") + e.what()};
+  }
+
+  std::lock_guard<std::mutex> lock(m_impl->writeMutex);
+  auto ec = m_impl->deleteByIdLocked(id);
+  std::string msg;
+  if (ec == ErrorCode::FileNotFound) {
+    msg = "Not found: " + id;
+  } else if (ec != ErrorCode::Ok) {
+    msg = "Delete failed for: " + id;
+  }
+  return {ec, id, std::move(msg)};
+}
+
+DeleteResult Imager::deleteFile(const std::filesystem::path& path, StageCallback onStage) {
+  auto r = m_impl->readAndHash(path, onStage);
+  if (r.id.empty()) {
+    return {r.errCode, "", r.error};
+  }
+
+  if (onStage) {
+    onStage(ProcessingStage::WaitingMutex);
+  }
+  std::lock_guard<std::mutex> lock(m_impl->writeMutex);
+  if (onStage) {
+    onStage(ProcessingStage::DedupChecking);
+  }
+
+  auto ec = m_impl->deleteByIdLocked(r.id);
+  std::string msg;
+  if (ec == ErrorCode::FileNotFound) {
+    msg = "Not found: " + r.id;
+  } else if (ec != ErrorCode::Ok) {
+    msg = "Delete failed for: " + r.id;
+  }
+  return {ec, r.id, std::move(msg)};
 }
 
 // ---------------------------------------------------------------------------

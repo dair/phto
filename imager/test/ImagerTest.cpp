@@ -926,6 +926,235 @@ public:
 CPPUNIT_TEST_SUITE_REGISTRATION(SidecarTest);
 
 // ---------------------------------------------------------------------------
+// Test: deleteFile / deleteBlob / hashOnlyFile / hashOnlyBlob
+// ---------------------------------------------------------------------------
+
+class DeleteByFileTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(DeleteByFileTest);
+  CPPUNIT_TEST(testDeleteFileRoundTrip);
+  CPPUNIT_TEST(testDeleteFileIdempotent);
+  CPPUNIT_TEST(testDeleteBlobRoundTrip);
+  CPPUNIT_TEST(testDeleteFileContentIdentityRename);
+  CPPUNIT_TEST(testDeleteFileSidecarCascade);
+  CPPUNIT_TEST(testHashOnlyFileAndBlob);
+  CPPUNIT_TEST(testDeleteFileNotFound);
+  CPPUNIT_TEST(testDeleteFileMissingPath);
+  CPPUNIT_TEST_SUITE_END();
+
+  config::AppConfig m_cfg;
+  fs::path m_base;
+
+public:
+  void setUp() override {
+    std::string s = uniqueSuffix();
+    m_base = fs::temp_directory_path() / ("imager_test_dfile_" + s);
+    fs::create_directories(m_base / "storage");
+    m_cfg.targets.push_back({m_base / "storage", m_base / "imager.db"});
+  }
+
+  void tearDown() override {
+    fs::remove_all(m_base);
+  }
+
+  // Write bytes to a temp file and return its path.
+  fs::path writeTempFile(const std::string& name, const std::vector<uint8_t>& data) {
+    fs::path p = m_base / name;
+    std::ofstream f(p, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    return p;
+  }
+
+  // --- testDeleteFileRoundTrip ---------------------------------------------
+  // addFile then deleteFile the same path -> Ok; count drops to 0.
+  void testDeleteFileRoundTrip() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent
+    }
+    fs::path p = writeTempFile("round_trip.mov", mov);
+
+    Imager img(m_cfg);
+    auto r = img.addFile(p);
+    if (r.code != ErrorCode::Ok) {
+      return;
+    }
+
+    CPPUNIT_ASSERT_EQUAL(uint64_t(1), img.imageCount());
+
+    auto dr = img.deleteFile(p);
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, dr.code);
+    CPPUNIT_ASSERT_EQUAL(r.id, dr.id);
+    CPPUNIT_ASSERT_EQUAL(uint64_t(0), img.imageCount());
+    CPPUNIT_ASSERT(!img.getImage(r.id).has_value());
+  }
+
+  // --- testDeleteFileIdempotent --------------------------------------------
+  // Second deleteFile on the same path after first succeeds -> FileNotFound.
+  void testDeleteFileIdempotent() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return;
+    }
+    fs::path p = writeTempFile("idem.mov", mov);
+
+    Imager img(m_cfg);
+    auto r = img.addFile(p);
+    if (r.code != ErrorCode::Ok) {
+      return;
+    }
+
+    auto dr1 = img.deleteFile(p);
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, dr1.code);
+
+    // Second delete: same content, same hash, nothing left -> FileNotFound
+    auto dr2 = img.deleteFile(p);
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::FileNotFound, dr2.code);
+    // id is still populated even on miss
+    CPPUNIT_ASSERT_EQUAL(r.id, dr2.id);
+  }
+
+  // --- testDeleteBlobRoundTrip ---------------------------------------------
+  // addImage(blob) then deleteBlob(blob) -> Ok.
+  void testDeleteBlobRoundTrip() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return;
+    }
+    auto blob = Blob::fromVector(std::vector<uint8_t>(mov));
+
+    Imager img(m_cfg);
+    auto r = img.addImage(blob, "clip.mov");
+    if (r.code != ErrorCode::Ok) {
+      return;
+    }
+
+    auto dr = img.deleteBlob(blob);
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, dr.code);
+    CPPUNIT_ASSERT_EQUAL(r.id, dr.id);
+    CPPUNIT_ASSERT_EQUAL(uint64_t(0), img.imageCount());
+  }
+
+  // --- testDeleteFileContentIdentityRename ---------------------------------
+  // Add a file, copy its bytes under a different extension (e.g. .bin),
+  // deleteFile the renamed copy -> still deletes (same SHA256).
+  void testDeleteFileContentIdentityRename() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return;
+    }
+    fs::path orig = writeTempFile("identity.mov", mov);
+    fs::path renamed = writeTempFile("identity.bin", mov); // same content, different ext
+
+    Imager img(m_cfg);
+    auto r = img.addFile(orig);
+    if (r.code != ErrorCode::Ok) {
+      return;
+    }
+
+    // deleteFile the .bin copy — identity is pure SHA256, so extension doesn't matter
+    auto dr = img.deleteFile(renamed);
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, dr.code);
+    CPPUNIT_ASSERT_EQUAL(r.id, dr.id);
+    CPPUNIT_ASSERT_EQUAL(uint64_t(0), img.imageCount());
+  }
+
+  // --- testDeleteFileSidecarCascade ----------------------------------------
+  // addFile JPEG + addImage AAE, then deleteFile(JPEG path) -> both gone.
+  void testDeleteFileSidecarCascade() {
+    auto jpeg = makeMinimalJpeg();
+    fs::path jpgPath = writeTempFile("IMG_7890.jpg", jpeg);
+
+    Imager img(m_cfg);
+    auto r1 = img.addFile(jpgPath, "IMG_7890.JPG");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r1.code);
+
+    auto aae = makeAaeBlob();
+    auto r2 = img.addImage(aae, "IMG_7890.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r2.code);
+    const std::string aaeId = r2.id;
+
+    CPPUNIT_ASSERT_EQUAL(uint64_t(2), img.imageCount());
+
+    // deleteFile with the path to the JPEG (hashes the bytes, finds parent)
+    auto dr = img.deleteFile(jpgPath, nullptr);
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, dr.code);
+
+    // Both parent and sidecar should be gone
+    CPPUNIT_ASSERT_EQUAL(uint64_t(0), img.imageCount());
+    CPPUNIT_ASSERT(!img.getImage(r1.id).has_value());
+    CPPUNIT_ASSERT(!img.getImage(aaeId).has_value());
+  }
+
+  // --- testHashOnlyFileAndBlob ---------------------------------------------
+  // hashOnlyFile / hashOnlyBlob returns the same id as addFile without mutating state.
+  void testHashOnlyFileAndBlob() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return;
+    }
+    fs::path p = writeTempFile("hashonly.mov", mov);
+    auto blob = Blob::fromVector(std::vector<uint8_t>(mov));
+
+    Imager img(m_cfg);
+
+    // Hash before add: returns a non-empty 64-char hex string
+    std::string hFile = img.hashOnlyFile(p);
+    CPPUNIT_ASSERT(!hFile.empty());
+    CPPUNIT_ASSERT_EQUAL(size_t(64), hFile.size());
+
+    std::string hBlob = img.hashOnlyBlob(blob);
+    CPPUNIT_ASSERT_EQUAL(hFile, hBlob);
+
+    // No mutation
+    CPPUNIT_ASSERT_EQUAL(uint64_t(0), img.imageCount());
+
+    // After addFile: id matches hash
+    auto r = img.addFile(p);
+    if (r.code != ErrorCode::Ok) {
+      return;
+    }
+    CPPUNIT_ASSERT_EQUAL(hFile, r.id);
+
+    // hashOnly with file imported: still same id, getImage succeeds
+    std::string hAfter = img.hashOnlyFile(p);
+    CPPUNIT_ASSERT_EQUAL(hFile, hAfter);
+    CPPUNIT_ASSERT(img.getImage(hAfter).has_value());
+  }
+
+  // --- testDeleteFileNotFound ----------------------------------------------
+  // deleteFile on a file whose content was never imported -> FileNotFound.
+  // id is still populated in the result.
+  void testDeleteFileNotFound() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return;
+    }
+    fs::path p = writeTempFile("notimported.mov", mov);
+
+    Imager img(m_cfg);
+    auto dr = img.deleteFile(p);
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::FileNotFound, dr.code);
+    // id should be the SHA256 of the file bytes even on miss
+    CPPUNIT_ASSERT_EQUAL(size_t(64), dr.id.size());
+  }
+
+  // --- testDeleteFileMissingPath -------------------------------------------
+  // deleteFile on a path that does not exist on disk -> error (not FileNotFound
+  // from DB — rather StorageError or FileNotFound from the read phase).
+  void testDeleteFileMissingPath() {
+    Imager img(m_cfg);
+    fs::path absent = m_base / "does_not_exist.mov";
+    auto dr = img.deleteFile(absent);
+    // Any error code except Ok is acceptable
+    CPPUNIT_ASSERT(dr.code != ErrorCode::Ok);
+    // id should be empty (hashing never succeeded)
+    CPPUNIT_ASSERT(dr.id.empty());
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(DeleteByFileTest);
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 

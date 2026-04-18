@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# Memory regression test for imagestore
+#
+# Runs two Valgrind scenarios that exercise every coroutine path where
+# definite leaks were previously observed (Leaks A, B, C):
+#
+#   Scenario 1 — new-file import:
+#     Exercises addImageImpl validate+hash (Leak A), parallelWriteAll for
+#     addFile + addOriginalName (Leak B), and FileStorage::writeFileAsync
+#     (Leak C). All three leak sites are activated.
+#
+#   Scenario 2 — duplicate import:
+#     Same file already stored → returns DuplicateFile after hashing.
+#     Exercises Leak A (addImageImpl coroutine frame). Skips B and C
+#     (no write path taken).
+#
+# Any definite or indirect leak → non-zero exit → CTest FAIL.
+#
+# Valgrind flags:
+#   --leak-check=full           full heap scan at exit
+#   --errors-for-leak-kinds=definite,indirect
+#                               only these leak kinds set the error count
+#   --error-exitcode=1          non-zero exit on any counted error
+#   --show-leak-kinds=definite,indirect
+#                               only show actionable leaks in output
+#   --suppressions=<file>       suppress third-party still-reachable noise
+#
+# ---------------------------------------------------------------------------
+
+set -euo pipefail
+
+VALGRIND="@VALGRIND_BIN@"
+BIN="@IMAGESTORE_BIN@"
+SUPP="@VALGRIND_SUPP@"
+JPEG="@JPEG_FIXTURE@"
+
+PASS=0
+FAIL=0
+
+# ---------------------------------------------------------------------------
+# Set up a temporary store
+# ---------------------------------------------------------------------------
+TESTDIR=$(mktemp -d /tmp/imagestore-memcheck-XXXXXX)
+trap 'rm -rf "$TESTDIR"' EXIT
+
+STORE_ROOT="$TESTDIR/root"
+STORE_DB="$TESTDIR/imager.db"
+CONFIG="$TESTDIR/config.toml"
+
+mkdir -p "$STORE_ROOT"
+
+cat > "$CONFIG" <<EOF
+[[targets]]
+root = "$STORE_ROOT"
+database = "$STORE_DB"
+EOF
+
+# ---------------------------------------------------------------------------
+# Helper
+# ---------------------------------------------------------------------------
+run_valgrind() {
+    local name="$1"
+    shift
+    local rc=0
+
+    "$VALGRIND" \
+        --leak-check=full \
+        --errors-for-leak-kinds=definite,indirect \
+        --show-leak-kinds=definite,indirect \
+        --error-exitcode=1 \
+        --suppressions="$SUPP" \
+        "$BIN" --config "$CONFIG" "$@" \
+        < /dev/null \
+        2>&1 || rc=$?
+
+    # Reset the store so each scenario starts fresh when needed.
+    # (duplicate test intentionally reuses the populated store)
+
+    if [ "$rc" -eq 0 ]; then
+        echo "PASS: $name"
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL: $name — Valgrind reported definite/indirect leaks (exit $rc)"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 1: new-file import
+# Exercises Leaks A (addImageImpl coroutine frame),
+#            B (parallelWriteAll for addFile + addOriginalName),
+#            C (FileStorage::writeFileAsync)
+# ---------------------------------------------------------------------------
+echo "$JPEG" | \
+    "$VALGRIND" \
+        --leak-check=full \
+        --errors-for-leak-kinds=definite,indirect \
+        --show-leak-kinds=definite,indirect \
+        --error-exitcode=1 \
+        --suppressions="$SUPP" \
+        "$BIN" --config "$CONFIG" \
+        2>&1 && rc_new=0 || rc_new=$?
+
+if [ "${rc_new:-0}" -eq 0 ]; then
+    echo "PASS: new-file import (Leaks A+B+C path)"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: new-file import — Valgrind reported definite/indirect leaks (exit ${rc_new})"
+    FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 2: duplicate import (same file, already stored)
+# Exercises Leak A (addImageImpl coroutine frame); write path not taken.
+# ---------------------------------------------------------------------------
+echo "$JPEG" | \
+    "$VALGRIND" \
+        --leak-check=full \
+        --errors-for-leak-kinds=definite,indirect \
+        --show-leak-kinds=definite,indirect \
+        --error-exitcode=1 \
+        --suppressions="$SUPP" \
+        "$BIN" --config "$CONFIG" \
+        2>&1 && rc_dup=0 || rc_dup=$?
+
+if [ "${rc_dup:-0}" -eq 0 ]; then
+    echo "PASS: duplicate import (Leak A path)"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: duplicate import — Valgrind reported definite/indirect leaks (exit ${rc_dup})"
+    FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 3: delete-mode — file imported then deleted via --delete
+# Exercises deleteByIdLocked, readAndHash small-file path, deleteFileAsync,
+# and the imagestore --delete task branch.
+# ---------------------------------------------------------------------------
+
+# Re-import the JPEG so there is something to delete
+echo "$JPEG" | \
+    "$VALGRIND" \
+        --leak-check=full \
+        --errors-for-leak-kinds=definite,indirect \
+        --show-leak-kinds=definite,indirect \
+        --error-exitcode=1 \
+        --suppressions="$SUPP" \
+        "$BIN" --config "$CONFIG" \
+        2>&1 && rc_reimport=0 || rc_reimport=$?
+
+# Now delete it via --delete mode
+echo "$JPEG" | \
+    "$VALGRIND" \
+        --leak-check=full \
+        --errors-for-leak-kinds=definite,indirect \
+        --show-leak-kinds=definite,indirect \
+        --error-exitcode=1 \
+        --suppressions="$SUPP" \
+        "$BIN" --config "$CONFIG" --delete \
+        2>&1 && rc_del=0 || rc_del=$?
+
+if [ "${rc_del:-0}" -eq 0 ]; then
+    echo "PASS: delete-mode import-then-delete (readAndHash + deleteByIdLocked path)"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: delete-mode — Valgrind reported definite/indirect leaks (exit ${rc_del})"
+    FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 4: delete-mode MISS (file not in store) — hash path only
+# ---------------------------------------------------------------------------
+echo "$JPEG" | \
+    "$VALGRIND" \
+        --leak-check=full \
+        --errors-for-leak-kinds=definite,indirect \
+        --show-leak-kinds=definite,indirect \
+        --error-exitcode=1 \
+        --suppressions="$SUPP" \
+        "$BIN" --config "$CONFIG" --delete \
+        2>&1 && rc_miss=0 || rc_miss=$?
+
+if [ "${rc_miss:-0}" -eq 0 ]; then
+    echo "PASS: delete-mode MISS (readAndHash + FileNotFound path)"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: delete-mode MISS — Valgrind reported definite/indirect leaks (exit ${rc_miss})"
+    FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+
+if [ "$FAIL" -gt 0 ]; then
+    exit 1
+fi

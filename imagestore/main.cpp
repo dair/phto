@@ -19,6 +19,7 @@
 
 #include "DisplayMode.h"
 #include "ErrorFile.h"
+#include "MemoryReporter.h"
 #include "Output.h"
 #include "ProgressReporter.h"
 #include "ResultLog.h"
@@ -43,22 +44,29 @@ static void printUsage(const char* prog) {
                "\n"
                "Options:\n"
                "  -c, --config PATH    Configuration file (default: ~/.imagestore.toml)\n"
+               "  -d, --delete         Delete mode: treat stdin paths as files to delete from the\n"
+               "                       collection (file is read, hashed, and the matching id is\n"
+               "                       removed from all databases and storage). No validation is\n"
+               "                       performed.\n"
                "  -e, --errors PATH    Error file: skip paths listed here, append new failures\n"
                "  -j, --jobs N         Concurrent image processing limit (default: nproc)\n"
                "  -n, --dry-run        Validate and hash only, do not write to storage or DB\n"
                "  -v, --verbose        Real-time slot display (TTY) or per-file lines (non-TTY)\n"
                "  -q, --quiet          Suppress all output\n"
+               "      --memory-report  Periodically log RSS + libimager memory gauges to stderr\n"
+               "      --memory-interval N  Seconds between memory reports (default: 5)\n"
                "  -h, --help           Show usage and exit\n"
                "\n"
                "Exit codes:\n"
-               "  0   All files processed successfully (duplicates are not errors)\n"
+               "  0   All files processed successfully (duplicates/missing are not errors)\n"
                "  1   Usage error or configuration failure\n"
                "  2   Some files failed\n"
                "\n"
                "Notes:\n"
                "  --quiet and --verbose are mutually exclusive.\n"
                "  In verbose mode, stderr must be a TTY for real-time display;\n"
-               "  otherwise falls back to per-file line output.\n";
+               "  otherwise falls back to per-file line output.\n"
+               "  In delete mode, --dry-run computes hashes and checks existence without deleting.\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -104,25 +112,37 @@ int main(int argc, char* argv[]) {
   }
   jobs = std::min(jobs, 256u);
   bool dryRun = false;
+  bool deleteMode = false;
   bool verbose = false;
   bool quiet = false;
+  bool memoryReport = false;
+  unsigned int memoryIntervalSec = 5;
+
+  static constexpr int OPT_MEMORY_REPORT = 1000;
+  static constexpr int OPT_MEMORY_INTERVAL = 1001;
 
   static const option longOpts[] = {
     {"config", required_argument, nullptr, 'c'},
+    {"delete", no_argument, nullptr, 'd'},
     {"errors", required_argument, nullptr, 'e'},
     {"jobs", required_argument, nullptr, 'j'},
     {"dry-run", no_argument, nullptr, 'n'},
     {"verbose", no_argument, nullptr, 'v'},
     {"quiet", no_argument, nullptr, 'q'},
+    {"memory-report", no_argument, nullptr, OPT_MEMORY_REPORT},
+    {"memory-interval", required_argument, nullptr, OPT_MEMORY_INTERVAL},
     {"help", no_argument, nullptr, 'h'},
     {nullptr, 0, nullptr, 0}
   };
 
   int opt;
-  while ((opt = getopt_long(argc, argv, "c:e:j:nvqh", longOpts, nullptr)) != -1) {
+  while ((opt = getopt_long(argc, argv, "c:de:j:nvqh", longOpts, nullptr)) != -1) {
     switch (opt) {
       case 'c':
         configPath = optarg;
+        break;
+      case 'd':
+        deleteMode = true;
         break;
       case 'e':
         errorsPath = optarg;
@@ -145,6 +165,18 @@ int main(int argc, char* argv[]) {
       case 'q':
         quiet = true;
         break;
+      case OPT_MEMORY_REPORT:
+        memoryReport = true;
+        break;
+      case OPT_MEMORY_INTERVAL: {
+        int n = std::atoi(optarg);
+        if (n <= 0) {
+          std::cerr << "Invalid --memory-interval value: " << optarg << '\n';
+          return 1;
+        }
+        memoryIntervalSec = static_cast<unsigned int>(n);
+        break;
+      }
       case 'h':
         printUsage(argv[0]);
         return 0;
@@ -157,6 +189,10 @@ int main(int argc, char* argv[]) {
   // Validate mutually exclusive flag combinations
   if (quiet && verbose) {
     std::cerr << "--quiet and --verbose are mutually exclusive\n";
+    return 1;
+  }
+  if (quiet && memoryReport) {
+    std::cerr << "--quiet and --memory-report are mutually exclusive\n";
     return 1;
   }
 
@@ -217,7 +253,14 @@ int main(int argc, char* argv[]) {
     resultLog.setEnabled(false);
   }
 
-  imagestore::ProgressReporter progress(mode, stats, slots, resultLog, jobs, dryRun, startTime);
+  imagestore::ProgressReporter progress(mode, stats, slots, resultLog, jobs, dryRun, startTime, deleteMode);
+  imagestore::MemoryReporter memoryReporter(
+    memoryReport,
+    std::chrono::seconds(memoryIntervalSec),
+    stats,
+    img.metrics(),
+    resultLog
+  );
 
   // Bounded semaphore — caps files in-flight at `jobs`
   std::counting_semaphore<256> sem(static_cast<std::ptrdiff_t>(jobs));
@@ -275,6 +318,7 @@ int main(int argc, char* argv[]) {
          &resultLog,
          &errorFile,
          dryRun,
+         deleteMode,
          capturedPath = std::move(absPath),
          capturedStr = std::move(absStr)]() mutable {
           // Acquire a slot tracker slot — semaphore guarantees a free slot exists
@@ -301,6 +345,56 @@ int main(int argc, char* argv[]) {
             slots.setStage(slot, mapStage(stage));
           };
 
+          // ---- Delete mode ----
+          if (deleteMode) {
+            if (dryRun) {
+              // Dry-run delete: hash only, check existence, do not mutate
+              std::string id = img.hashOnlyFile(capturedPath, onStage);
+              stats.processed.fetch_add(1, std::memory_order_relaxed);
+              if (id.empty()) {
+                resultLog.append("ERR  " + capturedStr + ": failed to hash file");
+                stats.errors.fetch_add(1, std::memory_order_relaxed);
+                if (errorFile) {
+                  errorFile->recordError(capturedStr);
+                }
+                return;
+              }
+              std::string idPfx = id.size() >= 12 ? id.substr(0, 12) : id;
+              if (img.getImage(id)) {
+                resultLog.append("DRY  " + capturedStr + "  " + idPfx);
+                stats.added.fetch_add(1, std::memory_order_relaxed);
+              } else {
+                resultLog.append("DRY? " + capturedStr + "  " + idPfx);
+                stats.duplicates.fetch_add(1, std::memory_order_relaxed);
+              }
+            } else {
+              // Real delete
+              imager::DeleteResult res = img.deleteFile(capturedPath, onStage);
+              stats.processed.fetch_add(1, std::memory_order_relaxed);
+              std::string idPfx = res.id.size() >= 12 ? res.id.substr(0, 12) : res.id;
+              switch (res.code) {
+                case imager::ErrorCode::Ok:
+                  stats.added.fetch_add(1, std::memory_order_relaxed);
+                  resultLog.append("DEL  " + capturedStr + "  " + idPfx);
+                  break;
+                case imager::ErrorCode::FileNotFound:
+                  // Not an error — idempotent
+                  stats.duplicates.fetch_add(1, std::memory_order_relaxed);
+                  resultLog.append("MISS " + capturedStr + "  " + idPfx);
+                  break;
+                default:
+                  stats.errors.fetch_add(1, std::memory_order_relaxed);
+                  resultLog.append("ERR  " + capturedStr + ": " + res.message);
+                  if (errorFile) {
+                    errorFile->recordError(capturedStr);
+                  }
+                  break;
+              }
+            }
+            return;
+          }
+
+          // ---- Import mode ----
           imager::AddResult result;
 
           if (dryRun) {
@@ -418,6 +512,7 @@ int main(int argc, char* argv[]) {
   }
 
   progress.stop();
+  memoryReporter.stop();
 
   auto endTime = std::chrono::steady_clock::now();
   double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count() / 1000.0;

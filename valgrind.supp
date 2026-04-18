@@ -1,0 +1,126 @@
+# Valgrind suppression file for imagestore
+#
+# Suppresses "still reachable" memory that originates from third-party
+# shared libraries loaded transitively by libheif and libav*.
+#
+# These are intentional process-global singletons (GLib type system,
+# GObject type registry, OpenMP thread pool) that are never freed before
+# process exit — this is their documented behaviour. They are NOT bugs
+# in imagestore or libimager.
+#
+# Only "reachable" leaks are suppressed here. "definite" and "indirect"
+# leaks are left fully visible so that real application leaks surface
+# immediately in CI.
+#
+# Baseline (empty-stdin run): 35,000–38,000 bytes still-reachable,
+# constant across all invocations regardless of input.
+#
+# -------------------------------------------------------------------------
+# libglib-2.0 — string interning, hash tables, memory pools
+# -------------------------------------------------------------------------
+{
+   libglib_init_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/libglib-2.0.so*
+}
+{
+   libglib_realloc_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:realloc
+   fun:g_realloc
+   ...
+}
+{
+   libglib_malloc_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   fun:g_malloc
+   ...
+}
+{
+   libglib_malloc0_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:calloc
+   fun:g_malloc0
+   ...
+}
+# -------------------------------------------------------------------------
+# libgobject-2.0 — type registration, value transforms
+# -------------------------------------------------------------------------
+{
+   libgobject_init_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/libgobject-2.0.so*
+}
+{
+   libgobject_type_register_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:realloc
+   fun:g_realloc
+   ...
+   fun:g_type_register_static
+   ...
+}
+# -------------------------------------------------------------------------
+# libgomp — OpenMP thread pool (pulled in by libheif/libav*)
+# -------------------------------------------------------------------------
+{
+   libgomp_init_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/libgomp.so*
+}
+# -------------------------------------------------------------------------
+# libheif — HEIC/HEIF validator (pulls in libglib/libgobject)
+# -------------------------------------------------------------------------
+{
+   libheif_init_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/libheif.so*
+}
+# -------------------------------------------------------------------------
+# libav* — MOV/MP4 validator (ffmpeg, may pull in libgomp)
+# -------------------------------------------------------------------------
+{
+   libavformat_init_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/libavformat.so*
+}
+{
+   libavcodec_init_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/libavcodec.so*
+}
+{
+   libavutil_init_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/libavutil.so*
+}
+# -------------------------------------------------------------------------
+# dl-init / dynamic linker — library constructor reachable memory
+# -------------------------------------------------------------------------
+{
+   dlinit_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:_dl_init
+   ...
+}

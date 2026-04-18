@@ -4,6 +4,7 @@
 
 #include "types/AddResult.h"
 #include "types/Blob.h"
+#include "types/DeleteResult.h"
 #include "types/ErrorCode.h"
 #include "types/ImageInfo.h"
 

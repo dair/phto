@@ -20,7 +20,8 @@ ProgressReporter::ProgressReporter(
   ResultLog& resultLog,
   unsigned int jobs,
   bool dryRun,
-  std::chrono::steady_clock::time_point startTime
+  std::chrono::steady_clock::time_point startTime,
+  bool deleteMode
 )
   : m_mode(mode),
     m_stats(stats),
@@ -28,6 +29,7 @@ ProgressReporter::ProgressReporter(
     m_resultLog(resultLog),
     m_jobs(jobs),
     m_dryRun(dryRun),
+    m_deleteMode(deleteMode),
     m_startTime(startTime) {
   if (m_mode == DisplayMode::Verbose) {
     if (!isatty(STDERR_FILENO)) {
@@ -110,7 +112,15 @@ void ProgressReporter::printFinalSummary(double elapsedSeconds) const {
 
   std::lock_guard<std::mutex> lk(g_outputMutex);
   std::cerr << std::fixed;
-  if (m_dryRun) {
+  if (m_deleteMode) {
+    if (m_dryRun) {
+      std::cerr << added << " would delete, " << duplicates << " not found, " << errors << " errors, " << skipped
+                << " skipped in " << std::setprecision(1) << elapsedSeconds << "s  [dry run]\n";
+    } else {
+      std::cerr << added << " deleted, " << duplicates << " not found, " << errors << " errors, " << skipped
+                << " skipped in " << std::setprecision(1) << elapsedSeconds << "s\n";
+    }
+  } else if (m_dryRun) {
     std::cerr << processed << " processed, " << added << " valid, " << duplicates << " would-be-duplicates, " << errors
               << " errors"
               << " — " << std::setprecision(1) << elapsedSeconds << "s (dry run, no writes)\n";
@@ -197,8 +207,13 @@ void ProgressReporter::renderVerbose() {
 
   // Stats line 1: counters
   out << std::fixed << std::setprecision(0);
-  out << " Processed: " << processed << "  Written: " << added << "  Skipped: " << skipped << "  Errors: " << errors
-      << "  DUP: " << duplicates << "\033[K\n";
+  if (m_deleteMode) {
+    out << " Processed: " << processed << "  Deleted: " << added << "  Skipped: " << skipped << "  Errors: " << errors
+        << "  MISS: " << duplicates << "\033[K\n";
+  } else {
+    out << " Processed: " << processed << "  Written: " << added << "  Skipped: " << skipped << "  Errors: " << errors
+        << "  DUP: " << duplicates << "\033[K\n";
+  }
 
   // Stats line 2: throughput
   out << " Throughput: " << std::setprecision(0) << filesPerSec << " files/s  " << std::setprecision(1) << mbps

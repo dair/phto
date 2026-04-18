@@ -20,7 +20,8 @@ public:
     ResultLog& resultLog,
     unsigned int jobs,
     bool dryRun,
-    std::chrono::steady_clock::time_point startTime
+    std::chrono::steady_clock::time_point startTime,
+    bool deleteMode = false
   );
   ~ProgressReporter();
 
@@ -42,6 +43,7 @@ private:
   ResultLog& m_resultLog;
   unsigned int m_jobs;
   bool m_dryRun;
+  bool m_deleteMode;
   std::chrono::steady_clock::time_point m_startTime;
   bool m_tty{false};
   int m_termWidth{80};

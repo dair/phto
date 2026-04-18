@@ -65,6 +65,27 @@ public:
   /// Delete an image by ID (removes from DB and all storage roots).
   ErrorCode deleteImage(const std::string& id);
 
+  /// Compute SHA256 of `blob` bytes (no validation, no extension check) and delete
+  /// whatever record matches from all databases, all storage roots, and all sidecars.
+  /// Returns Ok + computed id on success, FileNotFound + id if nothing matched.
+  DeleteResult deleteBlob(const Blob& blob);
+
+  /// Read `path` from disk, compute its SHA256 (streaming if over the size threshold),
+  /// and delete the matching record. No validation, no extension check.
+  /// The optional stage callback receives Reading -> Hashing -> WaitingMutex ->
+  /// DedupChecking (repurposed as "looking up id").
+  /// Returns Ok + id on success, FileNotFound + id if nothing matched.
+  DeleteResult deleteFile(const std::filesystem::path& path, StageCallback onStage = nullptr);
+
+  /// Compute SHA256 of `blob` without mutating any state. Useful for dry-run checks.
+  /// Returns the hex SHA256 string, or empty string on error.
+  std::string hashOnlyBlob(const Blob& blob);
+
+  /// Read `path` and compute its SHA256 without mutating any state.
+  /// Respects the streaming threshold (256 MB). Useful for dry-run checks.
+  /// Returns the hex SHA256 string, or empty string on error.
+  std::string hashOnlyFile(const std::filesystem::path& path, StageCallback onStage = nullptr);
+
   /// Add a tag to an image.
   ErrorCode tagImage(const std::string& id, const std::string& tag);
 

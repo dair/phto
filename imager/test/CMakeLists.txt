@@ -46,3 +46,21 @@ endif()
 
 include(CTest)
 add_test(NAME ImagerTests COMMAND imager_tests)
+
+add_executable(timestamp_tests TimestampTest.cpp)
+
+target_include_directories(timestamp_tests
+    PRIVATE ${CPPUNIT_INCLUDE_DIRS}
+)
+
+target_link_libraries(timestamp_tests
+    PRIVATE
+        libimager
+        ${CPPUNIT_LIBRARIES}
+)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(timestamp_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_test(NAME TimestampTests COMMAND timestamp_tests)

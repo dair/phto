@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <system_error>
 
+#include "FileTimestamp.h"
+
 namespace imager {
 
 FileStorage::FileStorage(std::vector<std::filesystem::path> roots, coro::ThreadPool& pool, metrics::Metrics& metrics)
@@ -134,6 +136,13 @@ coro::Task<void> FileStorage::relocateFileAsync(
           if (ec) {
             throw std::runtime_error("relocate copy failed: " + ec.message());
           }
+          // Best-effort: preserve timestamps from old path to new path after cross-device copy.
+          // oldPath still exists here (removed below), so stat is safe.
+          try {
+            copyTimestamps(oldPath, newPath);
+          } catch (...) {
+            // Non-fatal — relocation must not fail just because timestamps could not be set.
+          }
           std::filesystem::remove(oldPath, ec);
         }
       }(m_pool, filePath(root, oldId, ext), filePath(root, newId, ext))
@@ -230,6 +239,34 @@ coro::Task<void> FileStorage::writeFileFromDiskAsync(
   }
 
   std::rethrow_exception(firstError);
+}
+
+// ---------------------------------------------------------------------------
+// applyTimestamps / applyTimestampsFromSource — set mtime+atime on all copies
+// ---------------------------------------------------------------------------
+
+void FileStorage::applyTimestamps(const std::string& id, const std::string& ext, const struct timespec times[2]) {
+  for (const auto& root : m_roots) {
+    std::filesystem::path destPath = filePath(root, id, ext);
+    try {
+      imager::applyTimestamps(destPath, times);
+    } catch (...) {
+      // Best-effort: skip roots where timestamps cannot be applied.
+    }
+  }
+}
+
+void FileStorage::applyTimestampsFromSource(
+  const std::string& id, const std::string& ext, const std::filesystem::path& sourcePath
+) {
+  for (const auto& root : m_roots) {
+    std::filesystem::path destPath = filePath(root, id, ext);
+    try {
+      copyTimestamps(sourcePath, destPath);
+    } catch (...) {
+      // Best-effort: skip roots where timestamps cannot be applied.
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
