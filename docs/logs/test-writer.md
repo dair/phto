@@ -23,3 +23,17 @@
 - **Task**: Write Phase B integration tests (B6, B7, B8, B10) for the imager project in a new file `MultiTargetTest.cpp`; register in CMakeLists.
 - **Outcome**: Created `/home/vibe/src/imager/imager/test/MultiTargetTest.cpp` with 3 test classes and 5 tests. Updated CMakeLists.txt to include the new file. All 42 tests pass (0 warnings). Created `docs/testing/phase-b-multi-target.md` and `docs/testing/README.md`.
 - **Next Step**: Additional Phase B criteria (B1–B5, B9) not yet covered; consult `docs/plan/0015.GAPS.md` for remaining gaps.
+
+## [2026-04-14 16:30] - Memory regression test + Valgrind validation (Tasks #5, #7, #8)
+
+- **Agent**: test-spec-writer
+- **Task**: Phase 3 Valgrind validation, add Valgrind memory regression test to CTest, run full 15-suite test suite.
+- **Outcome**: (1) Confirmed WhenAll SubTask fix eliminated all definite/indirect leaks — all 5 original Valgrind scenarios (baseline, new-file, duplicate, mixed, dry-run) report 0 bytes definitely/indirectly lost, 0 errors. (2) Created `imager/valgrind.supp` suppressing 35,496 bytes of third-party still-reachable memory (libglib, libgobject, libgomp, libheif, libav*) via broad `obj:*` patterns. (3) Created `imagestore/test/test_memcheck.sh.in` and added `imagestore_memcheck` CTest entry (guarded by `find_program(VALGRIND)`, 120s timeout). Test exercises two Valgrind scenarios: new-file import (Leaks A+B+C path) and duplicate import (Leak A path). Any definite/indirect leak fails with exit 1. (4) Full 15-suite CTest run: 15/15 passed, 0 failures, 13s total.
+- **Next Step**: None — all tasks complete, zero regressions confirmed.
+
+## [2026-04-08 10:00] - CPPUnit tests for config parser
+
+- **Agent**: test-spec-writer
+- **Task**: Write CPPUnit unit tests for `config/Config.cpp` covering 10 specified test cases: valid single/two-target parsing, missing file, empty file, malformed TOML, missing `root`, missing `database`, empty targets array, duplicate root paths, duplicate database paths.
+- **Outcome**: Created `/home/vibe/src/imager/config/test/ConfigTest.cpp` (3 test fixtures, 10 tests total) and `/home/vibe/src/imager/config/test/CMakeLists.txt`. Updated `config/CMakeLists.txt` with `add_subdirectory(test)`. All 10 tests pass (`OK (10 tests)`, 0.01s).
+- **Next Step**: Update `docs/testing/` status files for the config feature if tracking is desired.

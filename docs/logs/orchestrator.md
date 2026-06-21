@@ -184,3 +184,98 @@
   - `troubleshooting.md` — common errors, diagnosis steps, recovery procedures
   - Updated `README.md` to add a Documentation section linking to all guides.
 - **Next Step**: Documentation complete.
+
+## [2026-04-17 12:00] - Plan 0020 TIMESTAMPS: Implementation + Tests + Validation — COMPLETE
+- **Agent**: Orchestrator (direct implementation across all phases)
+- **Task**: Implement, test, and validate timestamp preservation for imager file ingestion.
+- **Outcome**: All 16/16 ctest suites pass. Key bugs found and fixed: (1) small-file addFile path reads blob into memory then calls addImageImpl — FileStorage::writeToRootFromDisk hook never reached; fix: apply timestamps at Imager::addFile level after successful addImageImpl; (2) reading the source file updates its atime — capturing timestamps after file open picks up current time; fix: call readTimestamps() BEFORE std::ifstream open, store in srcTimes[2], apply via storage.applyTimestamps(id, ext, srcTimes) after success; (3) stale /tmp dirs from prior test run caused DuplicateFile returns — fix: include PID in uniqueSuffix().
+- **Files changed**: FileTimestamp.h/cpp (new — readTimestamps, applyTimestamps, copyTimestamps), FileStorage.h/cpp (new applyTimestamps + applyTimestampsFromSource), Imager.cpp (addFile + addFileLarge capture and apply timestamps), imager/CMakeLists.txt (FileTimestamp.cpp), test/TimestampTest.cpp (new — 8 CPPUnit cases), test/CMakeLists.txt (timestamp_tests target).
+- **Next Step**: None — feature complete.
+
+## [2026-04-17 10:00] - Plan 0020 TIMESTAMPS: Architecture and Design
+- **Agent**: Orchestrator (direct — explored codebase and authored plan)
+- **Task**: Design timestamp preservation feature. Explored FileStorage.h/cpp, Imager.h/cpp, CLAUDE.md, test dirs, existing plan structure. Identified two hook points: writeToRootFromDisk (after streaming copy) and relocateFileAsync copy+delete fallback branch. Authored plan to /home/vibe/imager/imager/docs/plan/0020/0020.TIMESTAMPS.md.
+- **Outcome**: Plan written. Key decisions: (1) utimensat(2) as the POSIX API — nanosecond precision, available on Linux and macOS; (2) new FileTimestamp.h header-only utility copyTimestamps(src, dst); (3) no public API changes; (4) blob ingest path (addImage/writeToRoot) explicitly excluded — no source file available; (5) relocateFileAsync rename branch needs no change (rename preserves timestamps atomically); (6) timestamp errors in writeToRootFromDisk propagate as StorageError (trigger existing rollback); (7) timestamp errors in relocate fallback swallowed (best-effort).
+- **Next Step**: Present plan to user for approval. On approval: cpp-spec-coder implements, test-spec-writer writes tests, cpp-debugger validates.
+
+## [2026-04-16 12:00] - Plan 0019 DELETE: Orchestration Start
+- **Agent**: Orchestrator
+- **Task**: Read plan 0019.DELETE.md and all relevant source files (Imager.h, Imager.cpp, Types.h, types/AddResult.h, types/ErrorCode.h, imagestore/main.cpp, imagestore/ProgressReporter.cpp, imagestore/Stats.h, test/ImagerTest.cpp, test/test_cli.sh.in, test/test_memcheck.sh.in). Designed agent split: cpp-spec-coder owns production code; test-spec-writer owns all test files. Sequencing: coder first (API must exist before tests can compile), then test-writer, then build+test.
+- **Outcome**: Full plan and source context gathered. Task list created (tasks #1, #2, #3).
+- **Next Step**: Dispatch cpp-spec-coder.
+
+## [2026-04-16 12:05] - Plan 0019 DELETE: cpp-spec-coder dispatched
+- **Agent**: cpp-spec-coder
+- **Task**: Implement all production C++ code: DeleteResult.h, Types.h include, Imager.h new declarations, Imager.cpp (deleteByIdLocked, readAndHash, deleteBlob, deleteFile, hashOnlyBlob, hashOnlyFile), imagestore main.cpp --delete branch, ProgressReporter.cpp header hint, Stats.h doc update.
+- **Outcome**: Completed.
+- **Next Step**: Dispatch test-spec-writer.
+
+## [2026-04-16 13:00] - Plan 0019 DELETE: Diagnostic test run
+- **Agent**: Orchestrator (direct — cpp-debugger skill unavailable)
+- **Task**: Configure + build imager project, run ctest --preset default, diagnose failures.
+- **Outcome**: Build CLEAN (all 15 targets). 14/15 test suites passed. 1 suite failed: imagestore_cli_tests (41 passed, 5 failed). All 5 failures are in the --delete section of test_cli.sh.in. Root causes: (1) GNU grep 3.12 treats `--delete` as an unrecognized CLI flag when passed as the pattern argument to `grep -qF "$pattern"` — the `output_contains` helper in the test script passes the pattern positionally and grep misinterprets it as an option; (2) `--delete` on a non-existent path emits MISS (exit 0) rather than ERR (exit 2) — test expects exit 2 and ERR token; (3) `--delete --errors` does not record MISS paths in the error file — test expects MISS paths written to --errors file.
+- **Next Step**: Report to user; user decides what to fix.
+
+
+## [2026-04-16 10:00] - Phase 1: File Deletion Feature — Architecture Plan
+- **Agent**: Orchestrator (direct plan authoring after codebase analysis)
+- **Task**: Design `imagedelete` CLI tool to expose the existing `Imager::deleteImage()` API to end users. Explored all relevant source files: `Imager.h`, `Imager.cpp` (deleteImage impl), `FileStorage.h`, `imagestore/main.cpp`, `imagestore/CMakeLists.txt`, top-level `CMakeLists.txt`, existing plan documents, and the Database schema.
+- **Outcome**: Plan written to `imager/docs/plan/0019.DELETE.md`. Key decisions: (1) new standalone binary `imagedelete` (not a subcommand of `imagestore` — clean separation of concerns); (2) sequential processing (no parallel fan-out — deleteImage holds writeMutex internally); (3) IDs accepted from both positional args and stdin; (4) MISS (not-found) is not an error — idempotent behavior; (5) dry-run uses `getImage()` to check existence without side effects; (6) shell-based CLI tests using same `test_cli.sh.in` pattern as `imagestore`; (7) full ID obtained in tests via `sqlite3` (system dep already present).
+- **Next Step**: Present plan to user for approval. On approval, proceed to Phase 2: spawn `cpp-spec-coder` for implementation and `test-spec-writer` for test script.
+
+## [2026-04-14 14:00] - Memory Leak Debugging Plan (Planning Phase)
+- **Agent**: Orchestrator (direct analysis — codebase review before delegating)
+- **Task**: Analyze current codebase state, history of prior fixes, and Valgrind report to produce a comprehensive memory leak debugging plan for the team
+- **Outcome**: Plan produced. Identified three known Valgrind-reported definite leaks (Leaks A/B/C in LEAKING.md) all tracing to `coro::blockOn` + `Task<T>` frame ownership pattern in `BlockOn.h`. These are bounded fixed-size per-call leaks (~6.3 KB per `addImageImpl` call). Plan covers: blockOn frame ownership fix via explicit destruction scope, Valgrind suppression file for third-party noise, debug symbol build, and re-validation test suite. Also noted that `MemoryTrace.cpp` now correctly decrements `g_totalAllocated` (fixed on 2026-04-14). Recommended Architect Agent for blockOn redesign, Developer Agent for implementation, Debugger Agent for post-fix Valgrind validation.
+- **Next Step**: Present plan to user; await approval before delegating to specialist agents.
+
+## [2026-04-14 12:30] - Memory Leak Root Cause Found and Fixed
+- **Agent**: Orchestrator (direct investigation + implementation)
+- **Task**: Analyze /tmp/worklog.txt MEMORY_TRACE log, identify root cause of 762MB leak, fix it, verify tests pass
+- **Outcome**: Root cause confirmed: `WhenAllState` in `coro/WhenAll.h` stored sub-tasks as `vector<Task<void>>`. Each sub-task coroutine frame captured a `shared_ptr<WhenAllState>` (to report results and signal completion). This created a reference cycle: state→subTasks→frames→state. Additionally, the naive fix of calling `state->subTasks.clear()` after `co_await` caused a use-after-free: the last-finishing sub-task called `s->continuation.resume()` (entering whenAll), then whenAll destroyed that sub-task's frame — while the pool thread was still returning through that frame's call stack. Fix: replaced `vector<Task<void>> subTasks` with a self-destroying `SubTask` coroutine type (`final_suspend = suspend_never`). Sub-tasks auto-destroy their own frames upon completion, releasing all captured values (including Blob shared_ptr copies) without any external RAII owner. Applied to all three whenAll variants. Secondary fix: `MemoryTrace.cpp::tracedFree()` now decrements `g_totalAllocated` via `fetch_sub`, making the logged total reflect live bytes rather than cumulative bytes ever allocated. All 14 tests pass (0 failures).
+- **Next Step**: None — fix complete and verified.
+
+## [2026-04-14 10:45] - Memory Leak Investigation: imagestore — Complete
+- **Agent**: Orchestrator (direct execution — all 5 valgrind runs + source analysis)
+- **Task**: Full valgrind investigation of imager/imagestore; produce docs/logs/LEAKING.md
+- **Outcome**: 5 valgrind runs completed. Run 1 (empty stdin) is perfectly clean. Runs 2–5 show 3 categories of definite leak totalling 6.3–9.1 KB per invocation — all trace to C++20 coroutine frame lifetime in the blockOn+Task<T> pattern in coro/BlockOn.h. 35,496 bytes of still-reachable is constant, all from libheif-pulled libglib/libgobject (expected, not a bug). No use-after-free or invalid reads found. Comprehensive report written to docs/logs/LEAKING.md.
+- **Next Step**: Optional: implement Recommendation 7.1 (explicit scope destruction in blockOn) and re-run to verify clean.
+
+
+
+## [2026-04-13 14:30] - Resume investigation: 10x timer bug in Slots display
+- **Agent**: Orchestrator (direct — specialist skills unavailable)
+- **Task**: Investigate why slot timer shows values 10x too large (e.g. "00h:00m:10s" when 1 second has elapsed). User confirmed `fmtElapsed` formatter is correct; bug is in the value passed to it.
+- **Outcome**: Thorough review of `ProgressReporter.cpp` line 166, `SlotTracker.h/cpp`, `TimeFormat.h`, `main.cpp`. The 10x bug would have been caused by `duration_cast<milliseconds>(...).count() / 100` (deciseconds) instead of `duration_cast<seconds>(...).count()` — a likely copy-paste error from the overall-elapsed pattern (`/ 1000`). The fix (`duration_cast<seconds>` directly) was already in place. Added 4 regression tests as `SlotTimerTest` in `test/OutputTest.cpp`: zero-duration gives 0s, 100ms gives 0s (not 1s which the 10x bug would produce), 1.1s gives 1-2s (not 11s), and end-to-end SlotTracker snapshot → fmtElapsed output is "00h:00m:0x" after 1.5s. Test count grew from 34 to 38. All 14 test suites pass (100%).
+- **Next Step**: None — regression tests in place; code is correct.
+
+## [2026-04-13 12:00] - Fix timing display bug in imagestore slot progress
+- **Agent**: Orchestrator (direct)
+- **Task**: Investigate and fix impossible time values (e.g. 80s) in `[hashing]` slot display; add tests for edge cases
+- **Outcome**: The `fmtElapsed` arithmetic was already correct in `ProgressReporter.cpp` but lived in an anonymous namespace making it untestable. Extracted to `imagestore/TimeFormat.h` as an `inline` function in the `imagestore` namespace. Added 13 `FmtElapsedTest` cases to `test/OutputTest.cpp` covering zero, second/minute/hour boundaries, the specific bug-report value (188s → `00h:03m:08s`), the impossible-seconds guard (80s must never appear), and large values. All 34 tests pass.
+- **Next Step**: None — complete.
+
+## [2026-04-11 00:00] - Write README.md for imager project
+- **Agent**: Orchestrator
+- **Task**: Explore the imager directory and write a well-balanced README.md covering description, installation, usage, features, and project structure
+- **Outcome**: Created `/home/vibe/src/imager/README.md`. Explored CLAUDE.md, CMakeLists.txt, CMakePresets.json, plan/README.md, Imager.h, Types.h, imagestore/main.cpp, and the sample CLI to gather accurate details about supported formats, the public API, configuration format, build steps, CLI tools, and storage layout. No agent delegation was needed — this was a documentation-only task.
+- **Next Step**: No follow-up required; README is complete.
+
+## [2026-04-11 15:00] - Diagnose cross-machine clang++ not found error
+
+- **Agent**: Orchestrator (direct investigation, no delegation needed)
+- **Task**: Identify why `cmake --preset default` fails with "clang++ not found" on a machine that only has g++
+- **Outcome**: Root cause confirmed as a **stale CMake cache** at `/tmp/imager-build/CMakeCache.txt` (the preset's `binaryDir`) that pins `CMAKE_CXX_COMPILER:STRING=/usr/bin/clang++` from a previous run on a different machine. The `cmake/SelectCompiler.cmake` logic already handles the g++ fallback correctly — it only fires when no compiler is already set (`NOT DEFINED CMAKE_CXX_COMPILER`). Once the cache exists with clang++ baked in, CMake re-uses it and fails when clang++ is absent. Fix: delete `/tmp/imager-build` before the first configure on a new machine. Alternative: set `CXX=g++` in the environment or pass `-DCMAKE_CXX_COMPILER=g++`. No code changes were needed.
+- **Next Step**: No further action required. Confirmed existing code is correct.
+
+## [2026-04-11 14:00] - Compiler flexibility: clang++ preferred, g++ fallback
+- **Agent**: Orchestrator
+- **Task**: Ensure the library builds with g++ as well as clang++; clang++ preferred when both are available
+- **Outcome**: Removed hardcoded `CMAKE_CXX_COMPILER: clang++` from `CMakePresets.json`. Created `cmake/SelectCompiler.cmake` (injected via `CMAKE_PROJECT_TOP_LEVEL_INCLUDES`) that auto-selects clang++ when found, falls back to g++ otherwise, and is silently skipped if the user has already set `CMAKE_CXX_COMPILER` or `CXX`. All 13 tests pass under g++ 15.2.0. Default preset still picks clang++ 21.1.8 on this system. Updated `CLAUDE.md` compiler note.
+- **Next Step**: No follow-up required.
+
+## [2026-04-16 17:30] - Align imagestore_cli_tests to MISS semantics + fix grep helpers
+- **Agent**: Orchestrator (direct edits)
+- **Task**: Fix 5 failing tests in `imagestore_cli_tests`. Two categories of change in `/home/vibe/imager/imager/imagestore/test/test_cli.sh.in`: (1) add `-- "$pattern"` separator to `output_contains`, `stderr_contains`, `stderr_not_contains` grep calls to prevent GNU grep 3.12 misinterpreting `--`-prefixed patterns as options; (2) update four tests that wrongly expected ERR/exit-2 for `--delete` on an unimported path — corrected to expect MISS/exit-0, the path not written to error file, and re-run also emitting MISS.
+- **Outcome**: All 15/15 ctest suites pass (0 failures). imagestore_cli_tests: Passed in 1.64 sec.
+- **Next Step**: None.
