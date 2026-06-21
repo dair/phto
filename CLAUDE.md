@@ -9,7 +9,7 @@ cmake --preset default && cmake --build --preset default
 ctest --preset default
 ```
 
-Build artifacts go to `/tmp/imager-build` (configured in `CMakePresets.json`).
+Build artifacts go to `build/imager-build` (configured in `CMakePresets.json`).
 
 - **Compiler**: clang++ preferred (auto-selected), g++ fallback — both supported; override with `-DCMAKE_CXX_COMPILER=...` or `CXX` env var
 - **Standard**: C++23

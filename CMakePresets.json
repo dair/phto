@@ -3,8 +3,8 @@
   "configurePresets": [
     {
       "name": "default",
-      "displayName": "Default (build in /tmp)",
-      "binaryDir": "/tmp/imager-build",
+      "displayName": "Default (build in build/)",
+      "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "${sourceDir}/cmake/SelectCompiler.cmake",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
