@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-06-23 14:00] - imageradmin: offline admin CLI (checkpoint C1)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement milestone M-C checkpoint C1 — create `imageradmin` executable (admin CLI for user provisioning) per §5.4 of 0022.SERVER.md.
+- **Outcome**: Created `imageradmin/main.cpp` (all 8 subcommands: add/del/passwd/enable/disable/promote/demote/list; password reading via termios no-echo TTY with double-prompt confirmation, or `--password-stdin` for single-line stdin; exit codes 0/1/2; table-formatted `user list` with login/fullName/admin/enabled/created columns; all exceptions caught → exit 2). Created `imageradmin/CMakeLists.txt` (links `auth_lib config_lib`, `-Wall -Wextra -Wpedantic`). Created `imageradmin/test/test_cli.sh.in` (shell test: temp config with dummy `[[targets]]` + `[auth]` section, exercises all subcommands non-interactively via `--password-stdin`; tests: add admin, list, duplicate add→exit 2, add second user, passwd, disable/enable, promote/demote, del, missing-user ops→exit 2, pagination). Added `add_subdirectory(imageradmin)` to top-level CMakeLists.txt. Final ctest: 20/20 pass (was 19).
+- **Next Step**: Checkpoint I1 (last-admin guard at REST layer) or next milestone.
+
 ## [2026-06-23 13:00] - auth/TokenService: cpp-jwt HS256 issue/verify (checkpoint B3)
 
 - **Agent**: cpp-spec-coder

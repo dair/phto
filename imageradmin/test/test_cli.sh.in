@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+
+BIN="@IMAGERADMIN_BIN@"
+
+PASS=0
+FAIL=0
+
+run_test() {
+  local name="$1"
+  shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "PASS: $name"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: $name"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+expect_exit() {
+  local expected="$1"
+  shift
+  local actual=0
+  "$@" >/dev/null 2>&1 || actual=$?
+  [ "$actual" -eq "$expected" ]
+}
+
+output_contains() {
+  local pattern="$1"
+  shift
+  local combined
+  combined=$( "$@" 2>&1 ) || true
+  echo "$combined" | grep -qF -- "$pattern"
+}
+
+output_not_contains() {
+  local pattern="$1"
+  shift
+  local combined
+  combined=$( "$@" 2>&1 ) || true
+  ! echo "$combined" | grep -qF -- "$pattern"
+}
+
+# ---------------------------------------------------------------------------
+# Temp config — must include [[targets]] and [auth] sections
+# ---------------------------------------------------------------------------
+TMPDIR_TEST=$(mktemp -d)
+AUTH_DB="$TMPDIR_TEST/auth.db"
+STORE_ROOT="$TMPDIR_TEST/storage"
+IMG_DB="$TMPDIR_TEST/imager.db"
+CFG_PATH="$TMPDIR_TEST/test.toml"
+mkdir -p "$STORE_ROOT"
+
+cat > "$CFG_PATH" <<EOF
+[[targets]]
+root = "$STORE_ROOT"
+database = "$IMG_DB"
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "test-secret-for-imageradmin-shell-test"
+pbkdf2_iterations = 1000
+EOF
+
+# ---------------------------------------------------------------------------
+# Test 1: no args exits 1
+# ---------------------------------------------------------------------------
+run_test "no args exits 1" \
+  expect_exit 1 "$BIN"
+
+# ---------------------------------------------------------------------------
+# Test 2: missing subcommand exits 1
+# ---------------------------------------------------------------------------
+run_test "missing subcommand exits 1" \
+  expect_exit 1 "$BIN" "$CFG_PATH" user
+
+# ---------------------------------------------------------------------------
+# Test 3: unknown command exits 1
+# ---------------------------------------------------------------------------
+run_test "unknown command exits 1" \
+  expect_exit 1 "$BIN" "$CFG_PATH" badcmd
+
+# ---------------------------------------------------------------------------
+# Test 4: unknown user subcommand exits 1
+# ---------------------------------------------------------------------------
+run_test "unknown user subcommand exits 1" \
+  expect_exit 1 "$BIN" "$CFG_PATH" user badop
+
+# ---------------------------------------------------------------------------
+# Test 5: missing config exits 2
+# ---------------------------------------------------------------------------
+run_test "missing config file exits 2" \
+  expect_exit 2 "$BIN" /tmp/nonexistent-imageradmin-cfg-xyz.toml user list
+
+# ---------------------------------------------------------------------------
+# Test 6: user add --admin --password-stdin creates admin user, exits 0
+# ---------------------------------------------------------------------------
+run_test "user add --admin --password-stdin exits 0" \
+  bash -c "echo 'adminpass1' | \"$BIN\" \"$CFG_PATH\" user add alice 'Alice Admin' --admin --password-stdin"
+
+# ---------------------------------------------------------------------------
+# Test 7: user list shows the added admin
+# ---------------------------------------------------------------------------
+run_test "user list shows alice as admin" \
+  output_contains "alice" "$BIN" "$CFG_PATH" user list
+
+run_test "user list shows admin=yes for alice" \
+  bash -c "
+    result=\$( \"$BIN\" \"$CFG_PATH\" user list 2>&1 )
+    echo \"\$result\" | grep -F 'alice' | grep -qF 'yes'
+  "
+
+# ---------------------------------------------------------------------------
+# Test 8: duplicate user add exits 2
+# ---------------------------------------------------------------------------
+run_test "duplicate user add exits 2" \
+  bash -c "echo 'somepass' | \"$BIN\" \"$CFG_PATH\" user add alice 'Alice Dup' --password-stdin; [ \$? -eq 2 ]"
+
+# ---------------------------------------------------------------------------
+# Test 9: add second non-admin user
+# ---------------------------------------------------------------------------
+run_test "user add bob non-admin exits 0" \
+  bash -c "echo 'bobpass1' | \"$BIN\" \"$CFG_PATH\" user add bob 'Bob User' --password-stdin"
+
+run_test "user list shows both users" \
+  bash -c "
+    result=\$( \"$BIN\" \"$CFG_PATH\" user list 2>&1 )
+    echo \"\$result\" | grep -qF 'alice' && echo \"\$result\" | grep -qF 'bob'
+  "
+
+# ---------------------------------------------------------------------------
+# Test 10: user passwd updates password, exits 0
+# ---------------------------------------------------------------------------
+run_test "user passwd --password-stdin exits 0" \
+  bash -c "echo 'bobpass2' | \"$BIN\" \"$CFG_PATH\" user passwd bob --password-stdin"
+
+# ---------------------------------------------------------------------------
+# Test 11: user disable / enable
+# ---------------------------------------------------------------------------
+run_test "user disable exits 0" \
+  bash -c "\"$BIN\" \"$CFG_PATH\" user disable bob"
+
+run_test "user list shows bob disabled" \
+  bash -c "
+    result=\$( \"$BIN\" \"$CFG_PATH\" user list 2>&1 )
+    echo \"\$result\" | grep -F 'bob' | grep -qF 'no'
+  "
+
+run_test "user enable exits 0" \
+  bash -c "\"$BIN\" \"$CFG_PATH\" user enable bob"
+
+run_test "user list shows bob enabled again" \
+  bash -c "
+    result=\$( \"$BIN\" \"$CFG_PATH\" user list 2>&1 )
+    echo \"\$result\" | grep -F 'bob' | grep -qF 'yes'
+  "
+
+# ---------------------------------------------------------------------------
+# Test 12: user promote / demote
+# ---------------------------------------------------------------------------
+run_test "user promote bob exits 0" \
+  bash -c "\"$BIN\" \"$CFG_PATH\" user promote bob"
+
+run_test "user list shows bob as admin after promote" \
+  bash -c "
+    result=\$( \"$BIN\" \"$CFG_PATH\" user list 2>&1 )
+    echo \"\$result\" | grep -F 'bob' | grep -qF 'yes'
+  "
+
+run_test "user demote bob exits 0" \
+  bash -c "\"$BIN\" \"$CFG_PATH\" user demote bob"
+
+run_test "user list shows bob not admin after demote" \
+  bash -c "
+    result=\$( \"$BIN\" \"$CFG_PATH\" user list 2>&1 )
+    line=\$( echo \"\$result\" | grep -F 'bob' )
+    # 'no' should appear in the admin column; check it appears after the name
+    echo \"\$line\" | grep -qF 'no'
+  "
+
+# ---------------------------------------------------------------------------
+# Test 13: user del
+# ---------------------------------------------------------------------------
+run_test "user del bob exits 0" \
+  bash -c "\"$BIN\" \"$CFG_PATH\" user del bob"
+
+run_test "user list no longer shows bob" \
+  output_not_contains "bob" "$BIN" "$CFG_PATH" user list
+
+# ---------------------------------------------------------------------------
+# Test 14: operations on missing user exit 2
+# ---------------------------------------------------------------------------
+run_test "user del missing exits 2" \
+  expect_exit 2 "$BIN" "$CFG_PATH" user del nonexistent_xyz
+
+run_test "user enable missing exits 2" \
+  expect_exit 2 "$BIN" "$CFG_PATH" user enable nonexistent_xyz
+
+run_test "user disable missing exits 2" \
+  expect_exit 2 "$BIN" "$CFG_PATH" user disable nonexistent_xyz
+
+run_test "user promote missing exits 2" \
+  expect_exit 2 "$BIN" "$CFG_PATH" user promote nonexistent_xyz
+
+run_test "user demote missing exits 2" \
+  expect_exit 2 "$BIN" "$CFG_PATH" user demote nonexistent_xyz
+
+run_test "user passwd missing exits 2" \
+  bash -c "echo 'pw' | \"$BIN\" \"$CFG_PATH\" user passwd nonexistent_xyz --password-stdin; [ \$? -eq 2 ]"
+
+# ---------------------------------------------------------------------------
+# Test 15: user list --limit pagination
+# ---------------------------------------------------------------------------
+run_test "user list --limit 1 exits 0" \
+  bash -c "\"$BIN\" \"$CFG_PATH\" user list --limit 1"
+
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
+rm -rf "$TMPDIR_TEST"
+
+# ---------------------------------------------------------------------------
+# Results
+# ---------------------------------------------------------------------------
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]
