@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-06-23 11:00] - auth/PasswordHash: PBKDF2-HMAC-SHA256 library (checkpoint B1)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement milestone M-B checkpoint B1 from 0022.SERVER.md — create the `auth/` library with `PasswordHash.h/.cpp` (PBKDF2-HMAC-SHA256 via OpenSSL), `auth/CMakeLists.txt`, `auth/test/CMakeLists.txt`, and `auth/test/PasswordHashTest.cpp`.
+- **Outcome**: Created `auth/` flat library (namespace `auth`) with `PasswordRecord` struct and two functions: `hashPassword` (uses `RAND_bytes` for 16-byte salt, `PKCS5_PBKDF2_HMAC`/`EVP_sha256()` for 32-byte hash, throws `std::runtime_error` on OpenSSL failure) and `verifyPassword` (re-derives and compares with `CRYPTO_memcmp`, `noexcept`, returns false on algo mismatch). CMakeLists links `OpenSSL::Crypto` (already found at top level). 7 CPPUnit test cases cover: output shape, correct-password verify, wrong-password reject, salt randomness (two hashes differ but both verify), hash tamper, wrong-iterations mismatch, unsupported algo (no throw). Added `add_subdirectory(auth)` to top-level CMakeLists.txt after `add_subdirectory(config)`. All 17 ctest entries pass (was 16 prior — auth_tests is the new 12th entry).
+- **Next Step**: Checkpoint B2 (auth/UserStore with SQLite).
+
 ## [2026-06-23 10:00] - Config: ServerConfig/AuthConfig structs + TOML parse (checkpoint A2)
 
 - **Agent**: cpp-spec-coder

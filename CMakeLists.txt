@@ -47,6 +47,7 @@ add_subdirectory(validations/nef)
 add_subdirectory(validations/mov)
 add_subdirectory(validations/aae)
 add_subdirectory(config)
+add_subdirectory(auth)
 add_subdirectory(imager)
 add_subdirectory(imagestore)
 
