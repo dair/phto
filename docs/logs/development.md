@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-06-23 23:30] - E2: server/Json.* + server_lib refactor
+
+- **Agent**: cpp-spec-coder
+- **Task**: Add `server/Json.h` and `server/Json.cpp` with uniform JSON error envelope and single-sourced `imager::ErrorCode→(HTTP, string)` mapping; refactor `server/CMakeLists.txt` to build a `server_lib` static library linking `App.cpp` + `Json.cpp`, with `imagerd` linking only `server_lib`.
+- **Outcome**: `server/Json.h`/`.cpp` created; `server/CMakeLists.txt` refactored to `add_library(server_lib STATIC ...)` + `add_executable(imagerd main.cpp)`; build succeeds with no errors (Crow deprecation warning pre-existing); 21/21 ctest green.
+- **Next Step**: Checkpoint E2 unit test (test-spec-writer adds JsonTest to server/test).
+
 ## [2026-06-23 22:45] - E1 CTest shell test: server_health_test
 
 - **Agent**: test-spec-writer

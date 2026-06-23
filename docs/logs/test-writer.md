@@ -1,5 +1,11 @@
 # Work Log
 
+## [2026-06-23 18:00] - E2 server/Json error utilities tests (0022.SERVER §7)
+- **Agent**: test-spec-writer
+- **Task**: Write CPPUnit tests for checkpoint E2: `server/Json.{h,cpp}` — `httpStatusFor`, `errorCodeName`, `jsonError`, `errorResponse`, `badRequest`, `unauthorized`, `forbidden`. Add coverage doc, update dashboard.
+- **Outcome**: Created `server/test/JsonTest.cpp` with 39 test cases across 5 fixtures (`HttpStatusForTest`, `ErrorCodeNameTest`, `JsonErrorTest`, `ErrorResponseTest`, `TransportHelpersTest`). Updated `server/test/CMakeLists.txt` to add `server_json_tests` target linking `server_lib` + CppUnit. Created `docs/testing/server-errors.md` (7/7 criteria, 100%). Updated `docs/testing/README.md` dashboard. Build clean (1 upstream deprecation warning from crow, no new warnings). All 22/22 CTest entries green; `server_json_tests` is entry #22.
+- **Next Step**: Server REST handler tests (M-E onward) remain pending further endpoint implementation.
+
 ## [2026-06-23 17:00] - D3 getImagePath / resolveStoredPath tests (0022.SERVER §8 item 3)
 - **Agent**: test-spec-writer
 - **Task**: Write CPPUnit tests for checkpoint D3: `FileStorage::resolveStoredPath` and `Imager::getImagePath`. Add coverage doc and update dashboard.

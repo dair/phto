@@ -36,3 +36,50 @@ add_test(
 
 # Allow enough time for daemon startup + poll + shutdown.
 set_tests_properties(server_health_test PROPERTIES TIMEOUT 60)
+
+# ---- server_json_tests — CPPUnit tests for server/Json.{h,cpp} (E2) --------
+
+find_package(PkgConfig QUIET)
+
+set(CPPUNIT_FOUND FALSE)
+
+if(PkgConfig_FOUND)
+    pkg_check_modules(CPPUNIT QUIET cppunit)
+    if(CPPUNIT_FOUND)
+        set(CPPUNIT_INCLUDE_DIRS ${CPPUNIT_INCLUDE_DIRS})
+        set(CPPUNIT_LIBRARIES    ${CPPUNIT_LIBRARIES})
+    endif()
+endif()
+
+if(NOT CPPUNIT_FOUND)
+    find_library(CPPUNIT_LIB NAMES cppunit)
+    find_path(CPPUNIT_INCLUDE_DIR cppunit/TestFixture.h)
+    if(CPPUNIT_LIB AND CPPUNIT_INCLUDE_DIR)
+        set(CPPUNIT_FOUND TRUE)
+        set(CPPUNIT_LIBRARIES    ${CPPUNIT_LIB})
+        set(CPPUNIT_INCLUDE_DIRS ${CPPUNIT_INCLUDE_DIR})
+    endif()
+endif()
+
+if(NOT CPPUNIT_FOUND)
+    message(STATUS "CppUnit not found — skipping server_json_tests target")
+else()
+    add_executable(server_json_tests "${CMAKE_CURRENT_SOURCE_DIR}/JsonTest.cpp")
+
+    target_include_directories(server_json_tests
+        PRIVATE ${CPPUNIT_INCLUDE_DIRS}
+    )
+
+    target_link_libraries(server_json_tests
+        PRIVATE
+            server_lib
+            ${CPPUNIT_LIBRARIES}
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(server_json_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    include(CTest)
+    add_test(NAME server_json_tests COMMAND server_json_tests)
+endif()
