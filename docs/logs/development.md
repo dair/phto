@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-06-23 12:00] - auth/UserStore: SQLite-backed user store (checkpoint B2)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement milestone M-B checkpoint B2 from 0022.SERVER.md — add `UserStore` (SQLite CRUD for user accounts), `auth/types/User.h`, `auth/types/AuthError.h`, and a CPPUnit suite (`auth_userstore_tests`).
+- **Outcome**: Created `auth/types/User.h` (`struct auth::User`), `auth/types/AuthError.h` (`enum class AuthErrorCode`, `class AuthException : std::runtime_error`), `auth/UserStore.h` (pimpl, 10 public methods), and `auth/UserStore.cpp` (RAII `DbPtr`/`StmtPtr`, 9 `constexpr string_view` SQL constants, `shared_mutex` for reads/unique_lock for writes, WAL+foreign-keys+busy-timeout pragmas, schema CREATE IF NOT EXISTS, salt/hash bound as BLOBs, `SQLITE_CONSTRAINT` mapped to `Duplicate`, `sqlite3_changes()==0` mapped to `NotFound`). Added `auth_userstore_tests` as a separate CTest entry (separate `main()` to avoid duplicate with B1's `auth_tests`). 16 test cases cover: create+get round-trip (all fields, timestamps), getPassword round-trip with `verifyPassword`, duplicate throws `Duplicate`, remove+gone, remove-missing throws `NotFound`, setEnabled/setAdmin/setPassword state changes + missing-login throws, list ordering (alpha), pagination (first/second page), offset-beyond-end (empty), count, and 8-thread concurrency (mixed reads+writes, no errors, data intact). Updated `auth/CMakeLists.txt` to add `UserStore.cpp` and `find_package(SQLite3)+SQLite::SQLite3 PUBLIC`; updated `auth/test/CMakeLists.txt` to add the new executable+test. All 18 ctest entries pass (was 17; auth_userstore_tests is the new #13).
+- **Next Step**: Checkpoint B3 (TokenService — cpp-jwt HS256 issue/verify).
+
 ## [2026-06-23 11:00] - auth/PasswordHash: PBKDF2-HMAC-SHA256 library (checkpoint B1)
 
 - **Agent**: cpp-spec-coder

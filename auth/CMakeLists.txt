@@ -1,13 +1,15 @@
 cmake_minimum_required(VERSION 3.28)
 
-add_library(auth_lib PasswordHash.cpp)
+find_package(SQLite3 REQUIRED)
+
+add_library(auth_lib PasswordHash.cpp UserStore.cpp)
 
 target_include_directories(auth_lib
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
 target_link_libraries(auth_lib
-    PUBLIC OpenSSL::Crypto
+    PUBLIC OpenSSL::Crypto SQLite::SQLite3
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")

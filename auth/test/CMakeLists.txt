@@ -46,3 +46,22 @@ endif()
 
 include(CTest)
 add_test(NAME auth_tests COMMAND auth_tests)
+
+# UserStore tests — separate executable (has its own main())
+add_executable(auth_userstore_tests UserStoreTest.cpp)
+
+target_include_directories(auth_userstore_tests
+    PRIVATE ${CPPUNIT_INCLUDE_DIRS}
+)
+
+target_link_libraries(auth_userstore_tests
+    PRIVATE
+        auth_lib
+        ${CPPUNIT_LIBRARIES}
+)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(auth_userstore_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_test(NAME auth_userstore_tests COMMAND auth_userstore_tests)
