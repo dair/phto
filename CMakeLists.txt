@@ -15,6 +15,25 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tomlplusplus)
 
+# --- Phase 2 (plan 0022): HTTP server + JWT auth ---
+# Dependency-acquisition policy: prefer Debian packages; FetchContent only where
+# no package exists.
+#   cpp-jwt : system package libcpp-jwt-dev (pulls OpenSSL + nlohmann_json).
+#   Crow    : no Debian package -> FetchContent (pinned). Uses standalone asio
+#             from libasio-dev, located by Crow's bundled Findasio.cmake.
+find_package(cpp-jwt CONFIG REQUIRED)
+
+set(CROW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CROW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(CROW_INSTALL        OFF CACHE BOOL "" FORCE)
+set(CROW_USE_BOOST      OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    crow
+    GIT_REPOSITORY https://github.com/CrowCpp/Crow.git
+    GIT_TAG v1.2.1.2
+)
+FetchContent_MakeAvailable(crow)
+
 enable_testing()
 
 add_subdirectory(metrics)
@@ -30,3 +49,7 @@ add_subdirectory(validations/aae)
 add_subdirectory(config)
 add_subdirectory(imager)
 add_subdirectory(imagestore)
+
+# TEMPORARY (plan 0022, checkpoint A1): dependency compile/link check for
+# Crow + cpp-jwt. Remove/replace when the server/ daemon lands in milestone M-E.
+add_subdirectory(depcheck)
