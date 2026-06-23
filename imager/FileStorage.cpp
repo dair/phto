@@ -323,4 +323,20 @@ Blob FileStorage::readFile(const std::string& id, const std::string& ext) {
   return {}; // not found
 }
 
+// ---------------------------------------------------------------------------
+// resolveStoredPath — return path of first available stored copy, or nullopt
+// ---------------------------------------------------------------------------
+
+std::optional<std::filesystem::path> FileStorage::resolveStoredPath(
+  const std::string& id, const std::string& ext
+) const {
+  for (const auto& root : m_roots) {
+    std::filesystem::path path = filePath(root, id, ext);
+    if (std::filesystem::exists(path)) {
+      return path;
+    }
+  }
+  return std::nullopt;
+}
+
 } // namespace imager

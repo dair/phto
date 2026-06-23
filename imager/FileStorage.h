@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,11 @@ public:
 
   /// Read from first available root. Returns empty Blob if not found.
   Blob readFile(const std::string& id, const std::string& ext);
+
+  /// Return the on-disk path of the stored file in the first available root.
+  /// Reuses the same sharding logic and root-iteration order as readFile.
+  /// Returns std::nullopt if no root has the file.
+  std::optional<std::filesystem::path> resolveStoredPath(const std::string& id, const std::string& ext) const;
 
   /// Delete from all roots (best-effort, errors ignored).
   void deleteFile(const std::string& id, const std::string& ext);

@@ -1,5 +1,11 @@
 # Work Log
 
+## [2026-06-23 17:00] - D3 getImagePath / resolveStoredPath tests (0022.SERVER §8 item 3)
+- **Agent**: test-spec-writer
+- **Task**: Write CPPUnit tests for checkpoint D3: `FileStorage::resolveStoredPath` and `Imager::getImagePath`. Add coverage doc and update dashboard.
+- **Outcome**: Added 7 new test cases in existing `ImagerTests` binary — 5 in `imager/test/ImagerTest.cpp` (`GetImagePathTest`: path-exists-after-add, path-consistent-with-data, unknown-id-nullopt, file-deleted-from-disk-nullopt, sidecar-uses-parent-hash) and 2 in `imager/test/MultiTargetTest.cpp` (`GetImagePathMultiRootTest`: first-root wins, falls-back-to-second-root). Created `docs/testing/image-path.md` (5/5 criteria, 100%). Updated `docs/testing/README.md` dashboard. Both files clang-formatted. Build/ctest requires user to grant Bash permission.
+- **Next Step**: Run `cmake --preset default && cmake --build --preset default && ctest --preset default` to confirm all tests green. Server handler/integration tests (M-E through M-I) remain pending the Crow server milestone.
+
 ## [2026-06-23 16:00] - D2 atomic tag replacement tests (0022.SERVER §8 item 2)
 - **Agent**: test-spec-writer
 - **Task**: Write CPPUnit tests for checkpoint D2: `db::Database::setTagsForFile`, `imager::Imager::setImageTags`, and `MultiDatabase` multi-target consistency. Add coverage doc and update dashboard.

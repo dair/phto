@@ -1408,6 +1408,147 @@ public:
 CPPUNIT_TEST_SUITE_REGISTRATION(SetImageTagsTest);
 
 // ---------------------------------------------------------------------------
+// Test: getImagePath (D3)
+// ---------------------------------------------------------------------------
+
+class GetImagePathTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(GetImagePathTest);
+  CPPUNIT_TEST(testPathExistsAfterAdd);
+  CPPUNIT_TEST(testPathConsistentWithData);
+  CPPUNIT_TEST(testUnknownIdReturnsNullopt);
+  CPPUNIT_TEST(testFileDeletedFromDiskReturnsNullopt);
+  CPPUNIT_TEST(testSidecarPathUsesParentHash);
+  CPPUNIT_TEST_SUITE_END();
+
+  config::AppConfig m_cfg;
+  fs::path m_base;
+
+public:
+  void setUp() override {
+    std::string s = uniqueSuffix();
+    m_base = fs::temp_directory_path() / ("imager_test_gip_" + s);
+    fs::create_directories(m_base / "storage");
+    m_cfg.targets.push_back({m_base / "storage", m_base / "imager.db"});
+  }
+
+  void tearDown() override {
+    fs::remove_all(m_base);
+  }
+
+  // After adding a real image, getImagePath returns a present path and the
+  // bytes at that path match what getImageData returns.
+  void testPathExistsAfterAdd() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
+    Imager img(m_cfg);
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), "video.mov");
+    if (r.code != ErrorCode::Ok) {
+      return; // storage unavailable — skip
+    }
+
+    auto path = img.getImagePath(r.id);
+    CPPUNIT_ASSERT_MESSAGE("getImagePath must return a value after successful add", path.has_value());
+    CPPUNIT_ASSERT_MESSAGE("returned path must exist on disk", fs::exists(*path));
+  }
+
+  // Bytes at the path returned by getImagePath equal those returned by getImageData.
+  void testPathConsistentWithData() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
+    Imager img(m_cfg);
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), "video.mov");
+    if (r.code != ErrorCode::Ok) {
+      return;
+    }
+
+    auto path = img.getImagePath(r.id);
+    CPPUNIT_ASSERT(path.has_value());
+
+    // Read bytes at the path directly.
+    std::ifstream in(*path, std::ios::binary | std::ios::ate);
+    CPPUNIT_ASSERT_MESSAGE("path must be readable", in.is_open());
+    auto fileSize = static_cast<size_t>(in.tellg());
+    in.seekg(0);
+    std::vector<uint8_t> diskBytes(fileSize);
+    in.read(reinterpret_cast<char*>(diskBytes.data()), static_cast<std::streamsize>(fileSize));
+    CPPUNIT_ASSERT(in.good() || in.eof());
+
+    // Compare with getImageData.
+    auto blob = img.getImageData(r.id);
+    CPPUNIT_ASSERT_EQUAL(fileSize, blob.size());
+    CPPUNIT_ASSERT(std::equal(diskBytes.begin(), diskBytes.end(), reinterpret_cast<const uint8_t*>(blob.data())));
+  }
+
+  // getImagePath on an unknown / garbage id returns std::nullopt.
+  void testUnknownIdReturnsNullopt() {
+    Imager img(m_cfg);
+    auto path = img.getImagePath("nosuchid");
+    CPPUNIT_ASSERT_MESSAGE("unknown id must return nullopt", !path.has_value());
+  }
+
+  // File present in DB but absent on disk -> nullopt (exercises the
+  // resolveStoredPath "no root has it" branch).
+  void testFileDeletedFromDiskReturnsNullopt() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
+    Imager img(m_cfg);
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), "video.mov");
+    if (r.code != ErrorCode::Ok) {
+      return;
+    }
+
+    // Verify path is present initially.
+    auto path = img.getImagePath(r.id);
+    CPPUNIT_ASSERT(path.has_value());
+    CPPUNIT_ASSERT(fs::exists(*path));
+
+    // Delete the on-disk file; DB record remains.
+    std::error_code ec;
+    fs::remove(*path, ec);
+    CPPUNIT_ASSERT_MESSAGE("on-disk removal must succeed", !ec);
+    CPPUNIT_ASSERT(!fs::exists(*path));
+
+    // Now getImagePath must return nullopt because no root has the file.
+    auto pathAfter = img.getImagePath(r.id);
+    CPPUNIT_ASSERT_MESSAGE("getImagePath must return nullopt when file absent from all roots", !pathAfter.has_value());
+  }
+
+  // A sidecar (AAE) getImagePath returns the parent-hash-prefixed path that
+  // exists on disk (exercises the companion storageId indirection).
+  void testSidecarPathUsesParentHash() {
+    Imager img(m_cfg);
+
+    // Add parent JPEG first.
+    auto jpeg = Blob::fromVector(makeMinimalJpeg());
+    auto r1 = img.addImage(jpeg, "vacation/IMG_1234.JPG");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r1.code);
+    const std::string jpgHash = r1.id;
+
+    // Add AAE sidecar — stored under jpgHash as prefix.
+    auto aae = makeAaeBlob();
+    auto r2 = img.addImage(aae, "vacation/IMG_1234.AAE");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r2.code);
+
+    // getImagePath for the AAE must return a non-null, existing path.
+    auto aePath = img.getImagePath(r2.id);
+    CPPUNIT_ASSERT_MESSAGE("AAE getImagePath must return a value", aePath.has_value());
+    CPPUNIT_ASSERT_MESSAGE("AAE path must exist on disk", fs::exists(*aePath));
+
+    // The filename part must be prefixed with the parent's hash (not the AAE's own hash).
+    const std::string stem = aePath->stem().string();
+    CPPUNIT_ASSERT_EQUAL_MESSAGE("AAE storage filename must equal the parent's hash", jpgHash, stem);
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(GetImagePathTest);
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 

@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-06-23 17:30] - FileStorage::resolveStoredPath + Imager::getImagePath (checkpoint D3)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Add zero-copy path accessor — `FileStorage::resolveStoredPath` and `Imager::getImagePath` — so the future HTTP server can stream files without buffering them into a Blob.
+- **Outcome**: `resolveStoredPath(id, ext)` iterates `m_roots` in order, calls the existing private `filePath()` helper to build the sharded path (`<root>/<id[0:2]>/<id>.<ext>`), and returns the first path where `std::filesystem::exists` is true, or `std::nullopt`. `getImagePath` mirrors `getImageData` exactly for DB lookup (incl. companion/storageId resolution for sidecars) then delegates to `resolveStoredPath`. Unknown id or no copy on disk both map to `std::nullopt`. All 20 existing tests stay green.
+- **Next Step**: D4 / server implementation (checkpoint M-D complete)
+
 ## [2026-06-23 16:00] - DB/facade: setTagsForFile + setImageTags atomic replace (checkpoint D2)
 
 - **Agent**: cpp-spec-coder

@@ -493,4 +493,94 @@ public:
 
 CPPUNIT_TEST_SUITE_REGISTRATION(SetTagsMultiTargetTest);
 
+// ---------------------------------------------------------------------------
+// Group 5 — getImagePath multi-root fallthrough (D3)
+// ---------------------------------------------------------------------------
+
+class GetImagePathMultiRootTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(GetImagePathMultiRootTest);
+  CPPUNIT_TEST(testPathFromFirstRoot);
+  CPPUNIT_TEST(testPathFallsBackToSecondRoot);
+  CPPUNIT_TEST_SUITE_END();
+
+  config::AppConfig m_cfg;
+  fs::path m_base;
+  fs::path m_root1;
+  fs::path m_root2;
+
+public:
+  void setUp() override {
+    std::string s = uniqueSuffix();
+    m_base = fs::temp_directory_path() / ("imager_gip_mr_" + s);
+    m_root1 = m_base / "root1";
+    m_root2 = m_base / "root2";
+    fs::create_directories(m_root1);
+    fs::create_directories(m_root2);
+    m_cfg.targets.push_back({m_root1, m_base / "imager1.db"});
+    m_cfg.targets.push_back({m_root2, m_base / "imager2.db"});
+  }
+
+  void tearDown() override {
+    fs::remove_all(m_base);
+  }
+
+  // With 2 roots, getImagePath returns a path under the FIRST root when both
+  // copies are present (resolveStoredPath iterates roots in declaration order).
+  void testPathFromFirstRoot() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
+
+    Imager img(m_cfg);
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), "video.mov");
+    if (r.code != ErrorCode::Ok) {
+      return; // storage unavailable — skip
+    }
+
+    auto path = img.getImagePath(r.id);
+    CPPUNIT_ASSERT_MESSAGE("getImagePath must return a value", path.has_value());
+    CPPUNIT_ASSERT_MESSAGE("returned path must exist on disk", fs::exists(*path));
+
+    // The path must be rooted inside root1, not root2.
+    const std::string pathStr = path->string();
+    const std::string root1Str = m_root1.string();
+    CPPUNIT_ASSERT_MESSAGE("path should be under root1 when both roots have the file", pathStr.find(root1Str) == 0);
+  }
+
+  // After removing root1's copy, getImagePath falls back to root2's copy.
+  void testPathFallsBackToSecondRoot() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
+
+    Imager img(m_cfg);
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), "video.mov");
+    if (r.code != ErrorCode::Ok) {
+      return;
+    }
+
+    const std::string& id = r.id;
+    fs::path fileInRoot1 = m_root1 / id.substr(0, 2) / (id + ".mov");
+
+    CPPUNIT_ASSERT_MESSAGE("file must exist in root1 before removal", fs::exists(fileInRoot1));
+    std::error_code ec;
+    fs::remove(fileInRoot1, ec);
+    CPPUNIT_ASSERT_MESSAGE("root1 copy must be removable", !ec);
+    CPPUNIT_ASSERT(!fs::exists(fileInRoot1));
+
+    // Now getImagePath must fall back to root2.
+    auto path = img.getImagePath(id);
+    CPPUNIT_ASSERT_MESSAGE("getImagePath must return a value from root2 after root1 deleted", path.has_value());
+    CPPUNIT_ASSERT_MESSAGE("returned path must exist on disk", fs::exists(*path));
+
+    const std::string pathStr = path->string();
+    const std::string root2Str = m_root2.string();
+    CPPUNIT_ASSERT_MESSAGE("path should be under root2 after root1 copy removed", pathStr.find(root2Str) == 0);
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(GetImagePathMultiRootTest);
+
 // No main() here — ImagerTest.cpp owns the single main() for the shared binary.

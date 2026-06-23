@@ -106,6 +106,11 @@ public:
   /// Get raw image data (reads from first available storage root).
   Blob getImageData(const std::string& id);
 
+  /// Return the on-disk path of the stored file in the first available storage root.
+  /// Returns std::nullopt if the id is unknown or no copy exists on disk.
+  /// Use this for zero-copy streaming (sendfile / chunked); getImageData buffers into memory.
+  std::optional<std::filesystem::path> getImagePath(const std::string& id);
+
   /// Create a new tag.
   ErrorCode createTag(const std::string& name);
 

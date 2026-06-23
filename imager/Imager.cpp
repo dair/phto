@@ -1460,6 +1460,35 @@ Blob Imager::getImageData(const std::string& id) {
 }
 
 // ---------------------------------------------------------------------------
+// getImagePath
+// ---------------------------------------------------------------------------
+
+std::optional<std::filesystem::path> Imager::getImagePath(const std::string& id) {
+  std::optional<db::File> file;
+  try {
+    file = m_impl->dbs.getFile(id);
+  } catch (const db::DatabaseException&) {
+    return std::nullopt;
+  }
+  if (!file) {
+    return std::nullopt;
+  }
+
+  // For sidecar files, use storage_id to compute the correct disk path.
+  std::string storageId = id;
+  try {
+    auto companion = m_impl->dbs.getCompanion(id);
+    if (companion) {
+      storageId = companion->storageId;
+    }
+  } catch (const db::DatabaseException&) {
+    // Fall back to own id
+  }
+
+  return m_impl->storage.resolveStoredPath(storageId, file->ext);
+}
+
+// ---------------------------------------------------------------------------
 // System-level tag operations
 // ---------------------------------------------------------------------------
 
