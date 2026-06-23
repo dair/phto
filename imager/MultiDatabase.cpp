@@ -310,4 +310,8 @@ std::vector<db::File> MultiDatabase::getFilesByTags(
   return m_dbs[0]->getFilesByTags(tagNames, page);
 }
 
+std::vector<db::File> MultiDatabase::getUntaggedFiles(std::optional<db::Pagination> page) {
+  return m_dbs[0]->getUntaggedFiles(page);
+}
+
 } // namespace imager

@@ -1,16 +1,15 @@
 #pragma once
 
-#include <memory>
-#include <optional>
-#include <string>
-#include <vector>
-
-#include <metrics/Metrics.h>
-
 #include <config/Config.h>
 #include <coro/Task.h>
 #include <coro/ThreadPool.h>
 #include <database/Database.h>
+#include <metrics/Metrics.h>
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 namespace imager {
 
@@ -91,10 +90,12 @@ public:
     const std::vector<std::string>& tagNames, std::optional<db::Pagination> page = std::nullopt
   );
 
+  std::vector<db::File> getUntaggedFiles(std::optional<db::Pagination> page = std::nullopt);
+
 private:
   std::vector<std::unique_ptr<db::Database>> m_dbs;
-  coro::ThreadPool& m_pool;         // not owned — shared with Imager::Impl
-  metrics::Metrics& m_metrics;      // not owned — injected by Imager::Impl
+  coro::ThreadPool& m_pool;    // not owned — shared with Imager::Impl
+  metrics::Metrics& m_metrics; // not owned — injected by Imager::Impl
 
   template<typename Op, typename Compensate>
   void parallelWriteAll(Op&& op, Compensate&& compensate);

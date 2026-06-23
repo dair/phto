@@ -1155,6 +1155,24 @@ std::vector<ImageInfo> Imager::getImagesByTags(const std::vector<std::string>& t
 }
 
 // ---------------------------------------------------------------------------
+// getUntaggedImages — files with no tags (tags field always empty)
+// ---------------------------------------------------------------------------
+
+std::vector<ImageInfo> Imager::getUntaggedImages(uint32_t offset, uint32_t limit) {
+  try {
+    auto files = m_impl->dbs.getUntaggedFiles(db::Pagination{offset, limit});
+    std::vector<ImageInfo> result;
+    result.reserve(files.size());
+    for (const auto& f : files) {
+      result.push_back(Impl::toImageInfo(f));
+    }
+    return result;
+  } catch (const db::DatabaseException&) {
+    return {};
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Impl::deleteByIdLocked — core delete logic (writeMutex must be held)
 // ---------------------------------------------------------------------------
 

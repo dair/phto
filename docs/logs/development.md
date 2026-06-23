@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-06-23 15:30] - DB/facade: getUntaggedFiles + getUntaggedImages (checkpoint D1)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Add "untagged items" query per §8 item 1 of 0022.SERVER.md (milestone M-D checkpoint D1).
+- **Outcome**: Added `db::Database::getUntaggedFiles(std::optional<Pagination>)` with two SQL constants (`SQL_SELECT_UNTAGGED_FILES` / `_PAGE`) using `NOT IN (SELECT file_id FROM file_tag)` subquery. Added `MultiDatabase::getUntaggedFiles` read passthrough to primary DB (mirrors `getAllFiles`/`getFilesByTags`). Added `imager::Imager::getUntaggedImages(uint32_t offset, uint32_t limit)` — maps `db::File` to `ImageInfo` with empty tags vector (no per-file tag fetch). Database tests: 5 new cases (`UntaggedFilesTest`): files-with-no-tags returned, tagged excluded, unbind-makes-untagged, pagination, empty-when-all-tagged. Imager tests: 3 new cases (`UntaggedImagesTest`): returns-only-untagged-with-empty-tags, tagged-excluded, offset/limit. All 20 ctest entries pass.
+- **Next Step**: D2 (setImageTags atomic replace) or D3 (getImagePath zero-copy download).
+
 ## [2026-06-23 14:00] - imageradmin: offline admin CLI (checkpoint C1)
 
 - **Agent**: cpp-spec-coder

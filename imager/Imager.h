@@ -60,6 +60,9 @@ public:
     const std::vector<std::string>& tags, uint32_t offset = 0, uint32_t limit = 50
   );
 
+  /// Get images that have no tags, paginated.  Tags field in each ImageInfo is empty.
+  std::vector<ImageInfo> getUntaggedImages(uint32_t offset = 0, uint32_t limit = 50);
+
   // ---- Additional operations ----
 
   /// Delete an image by ID (removes from DB and all storage roots).

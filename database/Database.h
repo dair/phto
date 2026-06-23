@@ -170,6 +170,9 @@ public:
     const std::vector<std::string>& tagNames, std::optional<Pagination> page = std::nullopt
   );
 
+  /// Return all files that have no tags, optionally paginated.
+  std::vector<File> getUntaggedFiles(std::optional<Pagination> page = std::nullopt);
+
 private:
   struct Impl;
   std::unique_ptr<Impl> m_impl;

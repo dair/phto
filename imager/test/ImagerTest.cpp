@@ -1155,6 +1155,100 @@ public:
 CPPUNIT_TEST_SUITE_REGISTRATION(DeleteByFileTest);
 
 // ---------------------------------------------------------------------------
+// Test: getUntaggedImages
+// ---------------------------------------------------------------------------
+
+class UntaggedImagesTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(UntaggedImagesTest);
+  CPPUNIT_TEST(testReturnsOnlyUntaggedImages);
+  CPPUNIT_TEST(testTaggedImageExcluded);
+  CPPUNIT_TEST(testOffsetAndLimit);
+  CPPUNIT_TEST_SUITE_END();
+
+  config::AppConfig m_cfg;
+  fs::path m_base;
+
+  // Add a MOV file with unique trailing bytes so dedup does not squash it.
+  // Returns the file id, or empty if the fixture is unavailable.
+  std::string addUniqueFile(Imager& img, uint8_t salt1, uint8_t salt2, const std::string& name) {
+    auto mov = makeUniqueMovFixture(salt1, salt2);
+    if (mov.empty()) {
+      return {};
+    }
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), name + ".mp4");
+    return (r.code == ErrorCode::Ok) ? r.id : std::string{};
+  }
+
+public:
+  void setUp() override {
+    std::string s = uniqueSuffix();
+    m_base = fs::temp_directory_path() / ("imager_test_untag_" + s);
+    fs::create_directories(m_base / "storage");
+    m_cfg.targets.push_back({m_base / "storage", m_base / "imager.db"});
+  }
+
+  void tearDown() override {
+    fs::remove_all(m_base);
+  }
+
+  void testReturnsOnlyUntaggedImages() {
+    Imager img(m_cfg);
+    auto id = addUniqueFile(img, 0x01, 0x02, "clip_u1");
+    if (id.empty()) {
+      return; // fixture absent
+    }
+
+    auto result = img.getUntaggedImages();
+    CPPUNIT_ASSERT_EQUAL(size_t(1), result.size());
+    CPPUNIT_ASSERT_EQUAL(id, result[0].id);
+    // Tags field must be empty — these files have no tags by definition
+    CPPUNIT_ASSERT(result[0].tags.empty());
+  }
+
+  void testTaggedImageExcluded() {
+    Imager img(m_cfg);
+    auto id1 = addUniqueFile(img, 0x11, 0x12, "clip_tagged");
+    auto id2 = addUniqueFile(img, 0x13, 0x14, "clip_untagged");
+    if (id1.empty() || id2.empty()) {
+      return; // fixture absent
+    }
+
+    img.createTag("nature");
+    img.tagImage(id1, "nature");
+
+    // Only id2 (no tags) should be returned
+    auto result = img.getUntaggedImages();
+    CPPUNIT_ASSERT_EQUAL(size_t(1), result.size());
+    CPPUNIT_ASSERT_EQUAL(id2, result[0].id);
+    CPPUNIT_ASSERT(result[0].tags.empty());
+  }
+
+  void testOffsetAndLimit() {
+    Imager img(m_cfg);
+    auto id1 = addUniqueFile(img, 0x21, 0x22, "clip_page1");
+    auto id2 = addUniqueFile(img, 0x23, 0x24, "clip_page2");
+    auto id3 = addUniqueFile(img, 0x25, 0x26, "clip_page3");
+    if (id1.empty() || id2.empty() || id3.empty()) {
+      return; // fixture absent
+    }
+
+    // limit=2, offset=0
+    auto page0 = img.getUntaggedImages(0, 2);
+    CPPUNIT_ASSERT_EQUAL(size_t(2), page0.size());
+
+    // limit=2, offset=2  — should return exactly 1 remaining item
+    auto page1 = img.getUntaggedImages(2, 2);
+    CPPUNIT_ASSERT_EQUAL(size_t(1), page1.size());
+
+    // offset past end — empty
+    auto empty = img.getUntaggedImages(100, 10);
+    CPPUNIT_ASSERT(empty.empty());
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(UntaggedImagesTest);
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 

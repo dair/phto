@@ -118,6 +118,12 @@ static constexpr std::string_view SQL_SELECT_FILES_BY_SOURCE_BASENAME =
   "JOIN original_name on_ ON on_.file_id = f.id "
   "WHERE on_.source_dir = ? AND on_.base_name = ?";
 
+// untagged files
+static constexpr std::string_view SQL_SELECT_UNTAGGED_FILES =
+  "SELECT id, name, size, ext FROM file WHERE id NOT IN (SELECT file_id FROM file_tag) ORDER BY id";
+static constexpr std::string_view SQL_SELECT_UNTAGGED_FILES_PAGE =
+  "SELECT id, name, size, ext FROM file WHERE id NOT IN (SELECT file_id FROM file_tag) ORDER BY id LIMIT ? OFFSET ?";
+
 // file_companion
 static constexpr std::string_view SQL_INSERT_COMPANION =
   "INSERT INTO file_companion (file_id, parent_id, storage_id) VALUES (?, ?, ?)";
@@ -440,6 +446,24 @@ std::vector<std::string> Database::getTagsForFile(const std::string& fileId, std
   std::vector<std::string> result;
   while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
     result.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0)));
+  }
+  return result;
+}
+
+std::vector<File> Database::getUntaggedFiles(std::optional<Pagination> page) {
+  auto t = m_impl->readTimer();
+  std::shared_lock lock(m_impl->mutex);
+  StmtPtr stmt;
+  if (page) {
+    stmt = m_impl->prepare(SQL_SELECT_UNTAGGED_FILES_PAGE);
+    sqlite3_bind_int(stmt.get(), 1, static_cast<int>(page->limit));
+    sqlite3_bind_int(stmt.get(), 2, static_cast<int>(page->offset));
+  } else {
+    stmt = m_impl->prepare(SQL_SELECT_UNTAGGED_FILES);
+  }
+  std::vector<File> result;
+  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    result.push_back(rowToFile(stmt.get()));
   }
   return result;
 }

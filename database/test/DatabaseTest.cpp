@@ -750,6 +750,100 @@ public:
 CPPUNIT_TEST_SUITE_REGISTRATION(CompanionTest);
 
 // ============================================================================
+// Untagged file query tests
+// ============================================================================
+class UntaggedFilesTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(UntaggedFilesTest);
+  CPPUNIT_TEST(testUntaggedReturnsFilesWithNoTags);
+  CPPUNIT_TEST(testTaggedFileExcluded);
+  CPPUNIT_TEST(testUntagAfterRemovalBecomesUntagged);
+  CPPUNIT_TEST(testPagination);
+  CPPUNIT_TEST(testEmptyWhenAllTagged);
+  CPPUNIT_TEST_SUITE_END();
+
+  fs::path m_path;
+  std::unique_ptr<Database> m_db;
+
+public:
+  void setUp() override {
+    m_path = tempDbPath("untagged");
+    m_db = std::make_unique<Database>(m_path);
+  }
+
+  void tearDown() override {
+    m_db.reset();
+    fs::remove(m_path);
+    fs::remove(fs::path(m_path).string() + "-wal");
+    fs::remove(fs::path(m_path).string() + "-shm");
+  }
+
+  void testUntaggedReturnsFilesWithNoTags() {
+    m_db->addFile("f1", "a.jpg", 100, "jpg");
+    m_db->addFile("f2", "b.jpg", 200, "jpg");
+    auto result = m_db->getUntaggedFiles();
+    CPPUNIT_ASSERT_EQUAL(size_t(2), result.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("f1"), result[0].id);
+    CPPUNIT_ASSERT_EQUAL(std::string("f2"), result[1].id);
+  }
+
+  void testTaggedFileExcluded() {
+    m_db->addFile("f1", "a.jpg", 100, "jpg");
+    m_db->addFile("f2", "b.jpg", 200, "jpg");
+    m_db->addTag("nature");
+    m_db->bindTag("f1", "nature");
+    auto result = m_db->getUntaggedFiles();
+    CPPUNIT_ASSERT_EQUAL(size_t(1), result.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("f2"), result[0].id);
+  }
+
+  void testUntagAfterRemovalBecomesUntagged() {
+    m_db->addFile("f1", "a.jpg", 100, "jpg");
+    m_db->addTag("landscape");
+    m_db->bindTag("f1", "landscape");
+    // File is tagged — should not appear
+    CPPUNIT_ASSERT(m_db->getUntaggedFiles().empty());
+    // Remove the tag binding
+    m_db->unbindTag("f1", "landscape");
+    // Now the file has no tags and must appear
+    auto result = m_db->getUntaggedFiles();
+    CPPUNIT_ASSERT_EQUAL(size_t(1), result.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("f1"), result[0].id);
+  }
+
+  void testPagination() {
+    m_db->addFile("f1", "a.jpg", 10, "jpg");
+    m_db->addFile("f2", "b.jpg", 20, "jpg");
+    m_db->addFile("f3", "c.jpg", 30, "jpg");
+
+    // limit 2, offset 0
+    auto page0 = m_db->getUntaggedFiles(Pagination{0, 2});
+    CPPUNIT_ASSERT_EQUAL(size_t(2), page0.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("f1"), page0[0].id);
+    CPPUNIT_ASSERT_EQUAL(std::string("f2"), page0[1].id);
+
+    // limit 2, offset 2
+    auto page1 = m_db->getUntaggedFiles(Pagination{2, 2});
+    CPPUNIT_ASSERT_EQUAL(size_t(1), page1.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("f3"), page1[0].id);
+
+    // offset past end
+    auto empty = m_db->getUntaggedFiles(Pagination{10, 2});
+    CPPUNIT_ASSERT(empty.empty());
+  }
+
+  void testEmptyWhenAllTagged() {
+    m_db->addFile("f1", "a.jpg", 100, "jpg");
+    m_db->addFile("f2", "b.jpg", 200, "jpg");
+    m_db->addTag("travel");
+    m_db->bindTag("f1", "travel");
+    m_db->bindTag("f2", "travel");
+    CPPUNIT_ASSERT(m_db->getUntaggedFiles().empty());
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(UntaggedFilesTest);
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {
