@@ -1,5 +1,19 @@
 # Work Log
 
+## [2026-06-23 22:45] - E1 CTest shell test: server_health_test
+
+- **Agent**: test-spec-writer
+- **Task**: Write `server/test/test_health.sh.in` + replace placeholder `server/test/CMakeLists.txt` to register `server_health_test` (CTest #21). Write `docs/testing/server-daemon.md` coverage doc. Add dashboard row to `docs/testing/README.md`.
+- **Outcome**: `server_health_test` passes 3/3 assertions (GET /health → 200, body `{"status":"ok"}`, SIGTERM → exit 0). Full ctest count 21/21 (excluding valgrind). Key gotchas: `configure_file(@ONLY)` cannot expand generator expressions so binary path injected via `${CMAKE_BINARY_DIR}/server/imagerd`; SIGTERM assertion runs in parent shell (not subshell) so `wait <pid>` works; cleanup trap guards `DAEMON_PID=0` to avoid kill -0 0 matching process group.
+- **Next Step**: Checkpoint E2 (server/Json.*: error envelope + ErrorCode→HTTP table + unit test).
+
+## [2026-06-23 19:30] - Server skeleton: imagerd + GET /health (checkpoint E1)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Create `server/` directory with `App.h`, `App.cpp`, `main.cpp`, `CMakeLists.txt`, and `server/test/CMakeLists.txt` (placeholder). Delete `depcheck/` and its `add_subdirectory` line. Build and ctest green.
+- **Outcome**: `imagerd` executable builds cleanly. `server::App` owns `crow::SimpleApp`, references shared services, registers `GET /health` returning `{"status":"ok"}` with `Content-Type: application/json`. `main.cpp` loads config, validates JWT secret >= 32 bytes, constructs `imager::Imager`, `auth::UserStore`, `auth::TokenService`, installs SIGINT+SIGTERM handlers calling `app.stop()`, starts `app.run()`. All 20 ctest entries green. Smoke test of `/health` + SIGTERM blocked by bash sandbox — requires root to run (see next step).
+- **Next Step**: Root agent to verify `/health` returns 200 and SIGTERM exits cleanly (commands below), then checkpoint E2.
+
 ## [2026-06-23 17:30] - FileStorage::resolveStoredPath + Imager::getImagePath (checkpoint D3)
 
 - **Agent**: cpp-spec-coder

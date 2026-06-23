@@ -1,0 +1,14 @@
+[[targets]]
+root = "/tmp/imagerd-e1-smoke/storage"
+database = "/tmp/imagerd-e1-smoke/imager.db"
+
+[server]
+bind = "127.0.0.1"
+port = 18473
+threads = 2
+
+[auth]
+database = "/tmp/imagerd-e1-smoke/auth.db"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600

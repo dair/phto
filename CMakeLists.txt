@@ -51,7 +51,4 @@ add_subdirectory(auth)
 add_subdirectory(imager)
 add_subdirectory(imagestore)
 add_subdirectory(imageradmin)
-
-# TEMPORARY (plan 0022, checkpoint A1): dependency compile/link check for
-# Crow + cpp-jwt. Remove/replace when the server/ daemon lands in milestone M-E.
-add_subdirectory(depcheck)
+add_subdirectory(server)

@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# server/test/test_health.sh.in — E1 smoke test: GET /health + graceful SIGTERM
+#
+# Configured by CMake configure_file(@ONLY); @IMAGERD_BIN@ is injected.
+# Registered as CTest entry "server_health_test".
+
+set -uo pipefail
+
+BIN="@IMAGERD_BIN@"
+
+PASS=0
+FAIL=0
+
+run_test() {
+  local name="$1"
+  shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "PASS: $name"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: $name"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+record_pass() {
+  echo "PASS: $1"
+  PASS=$((PASS + 1))
+}
+
+record_fail() {
+  echo "FAIL: $1"
+  FAIL=$((FAIL + 1))
+}
+
+# ---------------------------------------------------------------------------
+# Guard: skip gracefully if curl is not available
+# ---------------------------------------------------------------------------
+if ! command -v curl >/dev/null 2>&1; then
+  echo "SKIP: curl not found — server_health_test skipped"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Pick a likely-free TCP port (try candidates to reduce collision risk)
+# ---------------------------------------------------------------------------
+pick_port() {
+  for port in 19473 19474 19475 19476 19477; do
+    if ! ss -tlnp 2>/dev/null | grep -q ":${port} "; then
+      echo "$port"
+      return 0
+    fi
+  done
+  echo "19473"
+}
+
+PORT=$(pick_port)
+
+# ---------------------------------------------------------------------------
+# Create a temp working dir with a minimal valid config
+# ---------------------------------------------------------------------------
+TMPDIR_TEST=$(mktemp -d)
+
+STORAGE_ROOT="$TMPDIR_TEST/storage"
+IMAGER_DB="$TMPDIR_TEST/imager.db"
+AUTH_DB="$TMPDIR_TEST/auth.db"
+CFG="$TMPDIR_TEST/test.toml"
+
+mkdir -p "$STORAGE_ROOT"
+
+# jwt_secret must be >= 32 chars; this dummy secret is exactly 32 bytes.
+cat > "$CFG" <<EOF
+[[targets]]
+root = "$STORAGE_ROOT"
+database = "$IMAGER_DB"
+
+[server]
+bind = "127.0.0.1"
+port = $PORT
+threads = 1
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+EOF
+
+# ---------------------------------------------------------------------------
+# Start daemon in background
+# ---------------------------------------------------------------------------
+"$BIN" "$CFG" >"$TMPDIR_TEST/daemon.stdout" 2>"$TMPDIR_TEST/daemon.stderr" &
+DAEMON_PID=$!
+
+# Ensure daemon is killed and temp dir cleaned up on any exit.
+# Guard against DAEMON_PID=0 (set after daemon is stopped) to avoid
+# kill -0 0 accidentally matching the whole process group.
+cleanup() {
+  if [ "${DAEMON_PID:-0}" -gt 0 ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Poll until the daemon is ready (max ~12 s)
+# curl --retry-connrefused retries connection-refused errors automatically.
+# ---------------------------------------------------------------------------
+HEALTH_URL="http://127.0.0.1:${PORT}/health"
+
+HTTP_STATUS=$(curl --silent \
+  --output "$TMPDIR_TEST/body.json" \
+  --write-out "%{http_code}" \
+  --retry 10 \
+  --retry-delay 1 \
+  --retry-connrefused \
+  --max-time 12 \
+  "$HEALTH_URL" 2>/dev/null) || HTTP_STATUS="000"
+
+# ---------------------------------------------------------------------------
+# Assert 1: /health returns HTTP 200
+# ---------------------------------------------------------------------------
+run_test "GET /health returns HTTP 200" \
+  bash -c "[ '$HTTP_STATUS' = '200' ]"
+
+# ---------------------------------------------------------------------------
+# Assert 2: response body contains "status":"ok"
+# ---------------------------------------------------------------------------
+BODY=""
+if [ -f "$TMPDIR_TEST/body.json" ]; then
+  BODY=$(cat "$TMPDIR_TEST/body.json")
+fi
+
+run_test 'GET /health body contains {"status":"ok"}' \
+  bash -c "echo '$BODY' | grep -qF '\"status\"' && echo '$BODY' | grep -qF '\"ok\"'"
+
+# ---------------------------------------------------------------------------
+# Assert 3: graceful SIGTERM — daemon exits 0 within 5 s
+#
+# wait() only works for children of the current shell, so we MUST run this
+# in the parent shell (not a subshell). We track pass/fail manually.
+# ---------------------------------------------------------------------------
+SIGTERM_OK=0
+
+if kill -TERM "$DAEMON_PID" 2>/dev/null; then
+  # Poll up to 5 s (50 x 0.1 s) for the process to exit
+  EXITED=0
+  for _i in $(seq 1 50); do
+    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+      EXITED=1
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ "$EXITED" -eq 1 ]; then
+    # Collect the exit status — wait() works here because DAEMON_PID is a
+    # child of THIS shell (the daemon was started with &).
+    DAEMON_EXIT=0
+    wait "$DAEMON_PID" 2>/dev/null || DAEMON_EXIT=$?
+    if [ "$DAEMON_EXIT" -eq 0 ]; then
+      SIGTERM_OK=1
+    else
+      echo "  (daemon exited with status $DAEMON_EXIT, expected 0)"
+    fi
+  else
+    # Process didn't exit — SIGKILL to unblock cleanup trap
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    echo "  (daemon did not exit within 5 s after SIGTERM)"
+  fi
+else
+  echo "  (kill -TERM failed — daemon not running?)"
+fi
+
+if [ "$SIGTERM_OK" -eq 1 ]; then
+  record_pass "SIGTERM causes clean exit (status 0)"
+else
+  record_fail "SIGTERM causes clean exit (status 0)"
+fi
+
+# Daemon is already stopped; clear PID so cleanup trap skips the kill step.
+DAEMON_PID=0
+
+# ---------------------------------------------------------------------------
+# Results
+# ---------------------------------------------------------------------------
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

@@ -17,3 +17,4 @@ Cross-cutting test structure, build/run commands, and conventions live in
 | Untagged items query — DB + facade (0022.SERVER §8 item 1, D1) | [untagged-query.md](untagged-query.md) | complete | 5/5 (100%) |
 | Atomic tag replacement — DB + facade + multi-target (0022.SERVER §8 item 2, D2) | [tag-replace.md](tag-replace.md) | complete | 7/7 (100%) |
 | Image path accessor — `getImagePath` + `resolveStoredPath` (0022.SERVER §8 item 3, D3) | [image-path.md](image-path.md) | complete | 5/5 (100%) |
+| imagerd daemon — health endpoint + graceful shutdown (0022.SERVER §6.6/§12, E1) | [server-daemon.md](server-daemon.md) | in-progress | 3/5 (60%) |
