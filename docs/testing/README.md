@@ -2,6 +2,9 @@
 
 Summary of all test coverage docs for the imager project.
 
+Cross-cutting test structure, build/run commands, and conventions live in
+[CONVENTIONS.md](CONVENTIONS.md).
+
 | Feature | Doc | Status | Coverage |
 |---------|-----|--------|----------|
 | Phase B multi-target integration (B6, B7, B8, B10) | [phase-b-multi-target.md](phase-b-multi-target.md) | complete | 5/5 (100%) |
