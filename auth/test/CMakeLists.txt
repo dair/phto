@@ -65,3 +65,23 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 
 add_test(NAME auth_userstore_tests COMMAND auth_userstore_tests)
+
+# TokenService tests — separate executable (has its own main())
+add_executable(auth_token_tests TokenServiceTest.cpp)
+
+target_include_directories(auth_token_tests
+    PRIVATE ${CPPUNIT_INCLUDE_DIRS}
+)
+
+target_link_libraries(auth_token_tests
+    PRIVATE
+        auth_lib
+        cpp-jwt::cpp-jwt
+        ${CPPUNIT_LIBRARIES}
+)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(auth_token_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_test(NAME auth_token_tests COMMAND auth_token_tests)

@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-06-23 13:00] - auth/TokenService: cpp-jwt HS256 issue/verify (checkpoint B3)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement milestone M-B checkpoint B3 from 0022.SERVER.md §5.3 — add `TokenService` (stateless JWT HS256 issue+verify) to the existing `auth_lib`, plus a CPPUnit suite (`auth_token_tests`).
+- **Outcome**: Created `auth/TokenService.h` (public header, cpp-jwt-free; exposes `issue(User)` and `verify(string_view)→optional<Claims>`), `auth/TokenService.cpp` (cpp-jwt HS256 sign via `jwt::jwt_object`; claims: iss, sub, name, role, iat, exp, jti; jti is 16 random bytes from `RAND_bytes`, hex-encoded; verify via `jwt::decode` with `p::algorithms`, `p::secret`, `p::issuer`, `p::verify(true)`; all exceptions caught → nullopt). Avoided `using namespace jwt::params` in `verify()` to sidestep a clang-21 compiler crash caused by `verify` name collision in variadic template deduction — used `namespace p = jwt::params` instead. Added `TokenService.cpp` to `auth_lib` sources; linked `cpp-jwt::cpp-jwt` PRIVATE (not exposed in public header). Created `auth/test/TokenServiceTest.cpp` with 7 CPPUnit tests: round-trip regular user, round-trip admin user, expired token rejected (deterministic — mint past-exp token directly via cpp-jwt, no sleep), wrong secret rejected, tampered token rejected (XOR one char in payload segment), wrong issuer rejected, garbage/empty/malformed input → nullopt. Added `auth_token_tests` executable+CTest entry mirroring `auth_userstore_tests`. Final ctest: 19/19 pass.
+- **Next Step**: Checkpoint B4 or next milestone.
+
 ## [2026-06-23 12:00] - auth/UserStore: SQLite-backed user store (checkpoint B2)
 
 - **Agent**: cpp-spec-coder
