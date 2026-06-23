@@ -1,5 +1,11 @@
 # Work Log
 
+## [2026-06-23 15:00] - Phase 2 / plan-0022 test coverage backfill
+- **Agent**: test-spec-writer
+- **Task**: Create missing `docs/testing/` coverage entries for all Phase 2 (0022.SERVER.md) components that landed without coverage docs: `[server]`/`[auth]` config parsing, auth library (PasswordHash, UserStore, TokenService), imageradmin CLI, and D1 untagged-query. Add targeted test hardening where coverage was thin.
+- **Outcome**: (1) Created four coverage docs: `server-config.md` (10/10 criteria), `auth-library.md` (21/21 criteria across three test classes), `imageradmin-cli.md` (9/9 criteria, 29 shell assertions), `untagged-query.md` (5/5 criteria). (2) Updated `docs/testing/README.md` dashboard with four new rows. (3) Added two targeted tests: `PasswordHashTest::testEmptyPasswordVerifies` (empty password is a valid PBKDF2 input — no prior test) and `TokenServiceTest::testJtiUniquenessAcrossIssues` (spec §5.3 mandates per-token random jti — not previously asserted). Both clang-formatted. (4) Full ctest run: 20/20 green.
+- **Next Step**: Server handler/integration tests (M-E through M-I) and the end-to-end shell test (`server/test/test_api.sh.in`) are not yet implemented — they depend on the Crow server milestone (M-E). Coverage docs for those components should be created when that milestone lands.
+
 ## [2026-04-12 11:00] - Verbose/Normal output modes tests (spec 0016)
 - **Agent**: test-spec-writer
 - **Task**: Write comprehensive tests for the verbose and normal output modes redesign (spec 0016). Task #4 from the imagestore-output-redesign team.

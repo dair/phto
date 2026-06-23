@@ -54,6 +54,7 @@ class TokenServiceTest: public CppUnit::TestFixture {
   CPPUNIT_TEST(testTamperedTokenRejected);
   CPPUNIT_TEST(testWrongIssuerRejected);
   CPPUNIT_TEST(testGarbageInputRejected);
+  CPPUNIT_TEST(testJtiUniquenessAcrossIssues);
   CPPUNIT_TEST_SUITE_END();
 
 public:
@@ -128,6 +129,15 @@ public:
     CPPUNIT_ASSERT(!m_svc->verify("not.a.jwt").has_value());
     CPPUNIT_ASSERT(!m_svc->verify("").has_value());
     CPPUNIT_ASSERT(!m_svc->verify("garbage!!@@##$$").has_value());
+  }
+
+  void testJtiUniquenessAcrossIssues() {
+    // The spec (§5.3) requires a per-token random jti.  Two tokens issued for
+    // the same user must differ — a proxy for jti entropy.
+    auto user = makeUser("zara", "Zara Z", false);
+    const std::string t1 = m_svc->issue(user);
+    const std::string t2 = m_svc->issue(user);
+    CPPUNIT_ASSERT(t1 != t2);
   }
 
 private:

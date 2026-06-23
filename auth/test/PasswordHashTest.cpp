@@ -23,6 +23,7 @@ class PasswordHashTest: public CppUnit::TestFixture {
   CPPUNIT_TEST(testTamperHashFails);
   CPPUNIT_TEST(testWrongIterationsFails);
   CPPUNIT_TEST(testUnsupportedAlgoFails);
+  CPPUNIT_TEST(testEmptyPasswordVerifies);
   CPPUNIT_TEST_SUITE_END();
 
 public:
@@ -76,6 +77,14 @@ public:
     bool result = false;
     CPPUNIT_ASSERT_NO_THROW(result = verifyPassword("test password", rec));
     CPPUNIT_ASSERT(!result);
+  }
+
+  void testEmptyPasswordVerifies() {
+    // PBKDF2 accepts empty passwords; hashPassword/verifyPassword must handle
+    // them without crashing or incorrectly returning false.
+    PasswordRecord rec = hashPassword("", 1000);
+    CPPUNIT_ASSERT(verifyPassword("", rec));
+    CPPUNIT_ASSERT(!verifyPassword("nonempty", rec));
   }
 };
 
