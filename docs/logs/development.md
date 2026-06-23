@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-06-23 10:00] - Config: ServerConfig/AuthConfig structs + TOML parse (checkpoint A2)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement milestone M-A checkpoint A2 from 0022.SERVER.md — extend `config` library with `ServerConfig` and `AuthConfig` structs, TOML parsing for optional `[server]` and `[auth]` sections, validation, and CPPUnit tests.
+- **Outcome**: Added `ServerConfig` and `AuthConfig` structs to `config/Config.h` (namespace `config`); added `server` and `auth` members to `AppConfig`. Extended `loadConfig` in `Config.cpp` to parse both optional sections using existing toml++ patterns — absent sections keep struct defaults. Validation throws `std::runtime_error` for: `port` out of 1..65535, `max_upload_mb <= 0`, `token_ttl_seconds <= 0`, `pbkdf2_iterations < 1000`, and type mismatches. Added 4 new CPPUnit fixture classes (20 total test cases) to `config/test/ConfigTest.cpp`: backward-compat defaults, fully-populated sections, partial sections, and invalid-value error cases. No new files, no CMakeLists changes. Full build clean; 16/16 test suites pass (100%).
+- **Next Step**: Checkpoint A3 (next M-A milestone per 0022.SERVER.md).
+
 ## [2026-04-13 09:00] - Large file streaming support (spec 0017)
 
 - **Agent**: cpp-spec-coder
