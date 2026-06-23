@@ -44,3 +44,9 @@ build*/
 resume.sh
 
 /build
+
+# Claude Code tooling lives at the workspace root (../.claude), never in this
+# shareable repo. A local symlink (.claude -> ../.claude) redirects any agent
+# that resolves .claude from here to the single workspace store; ignore it (and
+# any stray .claude/) so it can never be committed.
+/.claude
