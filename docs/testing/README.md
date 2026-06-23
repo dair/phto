@@ -15,3 +15,4 @@ Cross-cutting test structure, build/run commands, and conventions live in
 | Auth library: PasswordHash + UserStore + TokenService (0022.SERVER §5.1–5.3, B1–B3) | [auth-library.md](auth-library.md) | complete | 21/21 (100%) |
 | imageradmin admin CLI (0022.SERVER §5.4, C1) | [imageradmin-cli.md](imageradmin-cli.md) | complete | 9/9 (100%) |
 | Untagged items query — DB + facade (0022.SERVER §8 item 1, D1) | [untagged-query.md](untagged-query.md) | complete | 5/5 (100%) |
+| Atomic tag replacement — DB + facade + multi-target (0022.SERVER §8 item 2, D2) | [tag-replace.md](tag-replace.md) | complete | 7/7 (100%) |

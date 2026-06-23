@@ -1,5 +1,11 @@
 # Work Log
 
+## [2026-06-23 16:00] - D2 atomic tag replacement tests (0022.SERVER §8 item 2)
+- **Agent**: test-spec-writer
+- **Task**: Write CPPUnit tests for checkpoint D2: `db::Database::setTagsForFile`, `imager::Imager::setImageTags`, and `MultiDatabase` multi-target consistency. Add coverage doc and update dashboard.
+- **Outcome**: Added 15 new test cases across three existing files — 7 in `database/test/DatabaseTest.cpp` (`SetTagsForFileTest`: replace-from-empty, replace-existing, clear-to-empty, auto-create tags, deduplication, idempotence, exact-set result), 6 in `imager/test/ImagerTest.cpp` (`SetImageTagsTest`: round-trip, replace, clear, FileNotFound, untagged-after-clear, tag-query), 2 in `imager/test/MultiTargetTest.cpp` (`SetTagsMultiTargetTest`: parity after set, parity after replace). Created `docs/testing/tag-replace.md` (7/7 criteria, 100%). Updated `docs/testing/README.md` dashboard. All files clang-formatted. Full ctest run: 20/20 green.
+- **Next Step**: Server handler/integration tests (M-E through M-I) remain pending the Crow server milestone. The compensation/rollback path in `MultiDatabase::setTagsForFile` is a known untested gap (requires fault-injection seam).
+
 ## [2026-06-23 15:00] - Phase 2 / plan-0022 test coverage backfill
 - **Agent**: test-spec-writer
 - **Task**: Create missing `docs/testing/` coverage entries for all Phase 2 (0022.SERVER.md) components that landed without coverage docs: `[server]`/`[auth]` config parsing, auth library (PasswordHash, UserStore, TokenService), imageradmin CLI, and D1 untagged-query. Add targeted test hardening where coverage was thin.

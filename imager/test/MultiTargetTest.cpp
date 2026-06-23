@@ -2,13 +2,13 @@
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
+#include <unistd.h>
 
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <unistd.h>
 #include <vector>
 
 #include "config/Config.h"
@@ -184,8 +184,12 @@ public:
 
       // Collect IDs from each DB and verify they match as sets.
       std::vector<std::string> ids1, ids2;
-      for (auto& f : files1) ids1.push_back(f.id);
-      for (auto& f : files2) ids2.push_back(f.id);
+      for (auto& f : files1) {
+        ids1.push_back(f.id);
+      }
+      for (auto& f : files2) {
+        ids2.push_back(f.id);
+      }
       std::sort(ids1.begin(), ids1.end());
       std::sort(ids2.begin(), ids2.end());
       CPPUNIT_ASSERT(ids1 == ids2);
@@ -217,9 +221,9 @@ public:
 
     // root1 must be empty — rollback removed any partial write.
     bool foundAnyFile = false;
-    for (auto it = fs::recursive_directory_iterator(m_root1,
-                                                     fs::directory_options::skip_permission_denied);
-         it != fs::recursive_directory_iterator(); ++it) {
+    for (auto it = fs::recursive_directory_iterator(m_root1, fs::directory_options::skip_permission_denied);
+         it != fs::recursive_directory_iterator();
+         ++it) {
       if (it->is_regular_file()) {
         foundAnyFile = true;
         break;
@@ -382,10 +386,8 @@ public:
     CPPUNIT_ASSERT_MESSAGE("db2 should have companion record for AAE", companion2.has_value());
 
     // After orphan resolution, the companion's parentId should be the JPG's hash.
-    CPPUNIT_ASSERT_MESSAGE("db1 companion should have a parent_id after resolution",
-                           companion1->parentId.has_value());
-    CPPUNIT_ASSERT_MESSAGE("db2 companion should have a parent_id after resolution",
-                           companion2->parentId.has_value());
+    CPPUNIT_ASSERT_MESSAGE("db1 companion should have a parent_id after resolution", companion1->parentId.has_value());
+    CPPUNIT_ASSERT_MESSAGE("db2 companion should have a parent_id after resolution", companion2->parentId.has_value());
 
     CPPUNIT_ASSERT_EQUAL(jpgId, companion1->parentId.value());
     CPPUNIT_ASSERT_EQUAL(jpgId, companion2->parentId.value());
@@ -396,5 +398,99 @@ public:
 };
 
 CPPUNIT_TEST_SUITE_REGISTRATION(MultiTargetSidecarTest);
+
+// ---------------------------------------------------------------------------
+// Group 4 — setImageTags multi-target DB parity (D2)
+// ---------------------------------------------------------------------------
+
+class SetTagsMultiTargetTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(SetTagsMultiTargetTest);
+  CPPUNIT_TEST(testTagParityAfterSetImageTags);
+  CPPUNIT_TEST(testReplaceTagParityInBothDbs);
+  CPPUNIT_TEST_SUITE_END();
+
+  config::AppConfig m_cfg;
+  fs::path m_base;
+
+public:
+  void setUp() override {
+    std::string s = uniqueSuffix();
+    m_base = fs::temp_directory_path() / ("imager_settags_mt_" + s);
+    fs::create_directories(m_base / "root1");
+    fs::create_directories(m_base / "root2");
+    m_cfg.targets.push_back({m_base / "root1", m_base / "imager1.db"});
+    m_cfg.targets.push_back({m_base / "root2", m_base / "imager2.db"});
+  }
+
+  void tearDown() override {
+    fs::remove_all(m_base);
+  }
+
+  // After setImageTags, both target DBs carry identical tag sets for the file.
+  void testTagParityAfterSetImageTags() {
+    auto mov = loadMovFixture();
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
+
+    Imager img(m_cfg);
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), "multi_tag.mov");
+    if (r.code != ErrorCode::Ok) {
+      return; // storage unavailable — skip
+    }
+    const std::string id = r.id;
+
+    auto ec = img.setImageTags(id, {"alpha", "beta", "gamma"});
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, ec);
+
+    // Open each DB directly to bypass MultiDatabase read-from-first-only policy.
+    db::Database db1(m_base / "imager1.db");
+    db::Database db2(m_base / "imager2.db");
+
+    auto tags1 = db1.getTagsForFile(id);
+    auto tags2 = db2.getTagsForFile(id);
+
+    CPPUNIT_ASSERT_EQUAL(size_t(3), tags1.size());
+    CPPUNIT_ASSERT_EQUAL(size_t(3), tags2.size());
+    CPPUNIT_ASSERT(tags1 == tags2);
+  }
+
+  // After replacing the tag set, both DBs reflect only the new tags.
+  void testReplaceTagParityInBothDbs() {
+    auto mov = makeUniqueMovFixture(0xCC, 0xDD);
+    if (mov.empty()) {
+      return; // fixture absent — skip
+    }
+
+    Imager img(m_cfg);
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), "replace_mt.mov");
+    if (r.code != ErrorCode::Ok) {
+      return;
+    }
+    const std::string id = r.id;
+
+    // First set: {old1, old2}
+    img.setImageTags(id, {"old1", "old2"});
+
+    // Replace with: {new1}
+    auto ec = img.setImageTags(id, {"new1"});
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, ec);
+
+    db::Database db1(m_base / "imager1.db");
+    db::Database db2(m_base / "imager2.db");
+
+    auto tags1 = db1.getTagsForFile(id);
+    auto tags2 = db2.getTagsForFile(id);
+
+    // Only new1 remains in both DBs
+    CPPUNIT_ASSERT_EQUAL(size_t(1), tags1.size());
+    CPPUNIT_ASSERT_EQUAL(size_t(1), tags2.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("new1"), tags1[0]);
+    CPPUNIT_ASSERT_EQUAL(std::string("new1"), tags2[0]);
+    CPPUNIT_ASSERT(tags1 == tags2);
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(SetTagsMultiTargetTest);
 
 // No main() here — ImagerTest.cpp owns the single main() for the shared binary.

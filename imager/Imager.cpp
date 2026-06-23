@@ -1409,6 +1409,18 @@ ErrorCode Imager::untagImage(const std::string& id, const std::string& tag) {
   }
 }
 
+ErrorCode Imager::setImageTags(const std::string& id, const std::vector<std::string>& tags) {
+  if (!m_impl->dbs.fileExists(id)) {
+    return ErrorCode::FileNotFound;
+  }
+  try {
+    m_impl->dbs.setTagsForFile(id, tags);
+    return ErrorCode::Ok;
+  } catch (const db::DatabaseException&) {
+    return ErrorCode::DatabaseError;
+  }
+}
+
 std::vector<std::string> Imager::getImageTags(const std::string& id) {
   try {
     return m_impl->dbs.getTagsForFile(id);

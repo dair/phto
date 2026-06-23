@@ -1249,6 +1249,165 @@ public:
 CPPUNIT_TEST_SUITE_REGISTRATION(UntaggedImagesTest);
 
 // ---------------------------------------------------------------------------
+// Test: setImageTags — atomic tag replacement (D2)
+// ---------------------------------------------------------------------------
+
+class SetImageTagsTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(SetImageTagsTest);
+  CPPUNIT_TEST(testRoundTrip);
+  CPPUNIT_TEST(testReplaceExistingTags);
+  CPPUNIT_TEST(testClearToEmpty);
+  CPPUNIT_TEST(testFileNotFound);
+  CPPUNIT_TEST(testAfterClearAppearsUntagged);
+  CPPUNIT_TEST(testAfterAssignMatchesTagQuery);
+  CPPUNIT_TEST_SUITE_END();
+
+  config::AppConfig m_cfg;
+  fs::path m_base;
+  std::string m_id; // id of the single file added in setUp
+
+  // Add a MOV file with unique trailing bytes; stores result id in m_id.
+  void addFile(Imager& img, uint8_t salt1, uint8_t salt2, const std::string& name) {
+    auto mov = makeUniqueMovFixture(salt1, salt2);
+    if (mov.empty()) {
+      return; // fixture absent
+    }
+    auto r = img.addImage(Blob::fromVector(std::move(mov)), name + ".mp4");
+    if (r.code == ErrorCode::Ok) {
+      m_id = r.id;
+    }
+  }
+
+public:
+  void setUp() override {
+    std::string s = uniqueSuffix();
+    m_base = fs::temp_directory_path() / ("imager_test_settags_" + s);
+    fs::create_directories(m_base / "storage");
+    m_cfg.targets.push_back({m_base / "storage", m_base / "imager.db"});
+    m_id.clear();
+  }
+
+  void tearDown() override {
+    fs::remove_all(m_base);
+  }
+
+  // setImageTags round-trips: assigned tags are returned by getImageTags.
+  void testRoundTrip() {
+    Imager img(m_cfg);
+    addFile(img, 0xA1, 0xB1, "rt");
+    if (m_id.empty()) {
+      return; // fixture absent
+    }
+
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, img.setImageTags(m_id, {"nature", "urban"}));
+    auto tags = img.getImageTags(m_id);
+    CPPUNIT_ASSERT_EQUAL(size_t(2), tags.size());
+    // Sorted alphabetically
+    CPPUNIT_ASSERT_EQUAL(std::string("nature"), tags[0]);
+    CPPUNIT_ASSERT_EQUAL(std::string("urban"), tags[1]);
+  }
+
+  // Replace an existing tag set with a different one — old tags gone.
+  void testReplaceExistingTags() {
+    Imager img(m_cfg);
+    addFile(img, 0xA2, 0xB2, "rep");
+    if (m_id.empty()) {
+      return;
+    }
+
+    img.createTag("old_tag");
+    img.tagImage(m_id, "old_tag");
+    CPPUNIT_ASSERT_EQUAL(size_t(1), img.getImageTags(m_id).size());
+
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, img.setImageTags(m_id, {"new1", "new2"}));
+    auto tags = img.getImageTags(m_id);
+    CPPUNIT_ASSERT_EQUAL(size_t(2), tags.size());
+    for (const auto& t : tags) {
+      CPPUNIT_ASSERT(t != "old_tag");
+    }
+  }
+
+  // Setting to an empty list clears all tags.
+  void testClearToEmpty() {
+    Imager img(m_cfg);
+    addFile(img, 0xA3, 0xB3, "clr");
+    if (m_id.empty()) {
+      return;
+    }
+
+    img.setImageTags(m_id, {"a", "b", "c"});
+    CPPUNIT_ASSERT_EQUAL(size_t(3), img.getImageTags(m_id).size());
+
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, img.setImageTags(m_id, {}));
+    CPPUNIT_ASSERT(img.getImageTags(m_id).empty());
+  }
+
+  // setImageTags on a non-existent id returns FileNotFound.
+  void testFileNotFound() {
+    Imager img(m_cfg);
+    CPPUNIT_ASSERT_EQUAL(
+      ErrorCode::FileNotFound, img.setImageTags("nonexistentid000000000000000000000000000000000000000000000000", {"x"})
+    );
+  }
+
+  // After clearing all tags the image shows up as untagged.
+  void testAfterClearAppearsUntagged() {
+    Imager img(m_cfg);
+    addFile(img, 0xA4, 0xB4, "unt");
+    if (m_id.empty()) {
+      return;
+    }
+
+    img.setImageTags(m_id, {"landscape"});
+    // Tagged — must not appear in untagged list
+    auto before = img.getUntaggedImages();
+    for (const auto& info : before) {
+      CPPUNIT_ASSERT(info.id != m_id);
+    }
+
+    // Clear all tags
+    img.setImageTags(m_id, {});
+    // Now must appear as untagged
+    auto after = img.getUntaggedImages();
+    bool found = false;
+    for (const auto& info : after) {
+      if (info.id == m_id) {
+        found = true;
+        CPPUNIT_ASSERT(info.tags.empty());
+      }
+    }
+    CPPUNIT_ASSERT_MESSAGE("file should appear in untagged list after clearing tags", found);
+  }
+
+  // After assigning tags the image is matched by an AND tag query.
+  void testAfterAssignMatchesTagQuery() {
+    Imager img(m_cfg);
+    addFile(img, 0xA5, 0xB5, "qry");
+    if (m_id.empty()) {
+      return;
+    }
+
+    img.setImageTags(m_id, {"alpha", "beta"});
+
+    // AND query for both tags must include this file
+    auto results = img.getImagesByTags({"alpha", "beta"});
+    bool found = false;
+    for (const auto& info : results) {
+      if (info.id == m_id) {
+        found = true;
+      }
+    }
+    CPPUNIT_ASSERT_MESSAGE("file should match AND query for its assigned tags", found);
+
+    // Query for a tag not assigned must return empty (no other files)
+    auto none = img.getImagesByTags({"gamma"});
+    CPPUNIT_ASSERT(none.empty());
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(SetImageTagsTest);
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 

@@ -51,6 +51,9 @@ public:
 
   void unbindTag(const std::string& fileId, const std::string& tagName);
 
+  /// Atomically replace all tags for @p fileId across all target DBs (all-or-nothing).
+  void setTagsForFile(const std::string& fileId, const std::vector<std::string>& tags);
+
   // --- Original name tracking ---
 
   void addOriginalName(const std::string& sourceDir, const std::string& baseName, const std::string& fileId);

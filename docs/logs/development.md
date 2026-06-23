@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-06-23 16:00] - DB/facade: setTagsForFile + setImageTags atomic replace (checkpoint D2)
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement §8 item 2 of 0022.SERVER.md (milestone M-D checkpoint D2): atomic tag replacement across all per-target DBs.
+- **Outcome**: Added `db::Database::setTagsForFile(fileId, tags)` — acquires `unique_lock`, runs a manual `BEGIN`/`COMMIT` SQLite transaction (rolled back on any exception): deletes all existing `file_tag` rows for the file, then for each deduplicated tag does `INSERT OR IGNORE INTO tag(name)` followed by `INSERT INTO file_tag`. Two new SQL constants: `SQL_INSERT_TAG_OR_IGNORE` and `SQL_DELETE_ALL_FILE_TAGS_FOR_FILE`. De-duplication via `std::sort` + `std::unique` before entering the lock. Added `imager::MultiDatabase::setTagsForFile` — captures prior tags from DB[0] before the fan-out for compensation; uses `parallelWriteAll` with a compensate lambda that calls `setTagsForFile(fileId, priorTags)` on any DB that succeeded. Added `imager::Imager::setImageTags(id, tags) -> ErrorCode` — checks `fileExists` first (returns `FileNotFound` if missing), delegates to `MultiDatabase::setTagsForFile`, catches `db::DatabaseException` and returns `DatabaseError`, returns `Ok` on success. All 20 ctest entries still pass.
+- **Next Step**: D3 (getImagePath zero-copy download) or next milestone.
+
 ## [2026-06-23 15:30] - DB/facade: getUntaggedFiles + getUntaggedImages (checkpoint D1)
 
 - **Agent**: cpp-spec-coder

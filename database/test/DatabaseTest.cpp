@@ -844,6 +844,131 @@ public:
 CPPUNIT_TEST_SUITE_REGISTRATION(UntaggedFilesTest);
 
 // ============================================================================
+// setTagsForFile (atomic tag replacement) tests — D2
+// ============================================================================
+class SetTagsForFileTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(SetTagsForFileTest);
+  CPPUNIT_TEST(testReplaceFromEmpty);
+  CPPUNIT_TEST(testReplaceExistingSet);
+  CPPUNIT_TEST(testReplaceWithEmptyClears);
+  CPPUNIT_TEST(testAutoCreatesMissingTags);
+  CPPUNIT_TEST(testDeduplication);
+  CPPUNIT_TEST(testIdempotent);
+  CPPUNIT_TEST(testResultMatchesRequestedSet);
+  CPPUNIT_TEST_SUITE_END();
+
+  fs::path m_path;
+  std::unique_ptr<Database> m_db;
+
+public:
+  void setUp() override {
+    m_path = tempDbPath("settags");
+    m_db = std::make_unique<Database>(m_path);
+    m_db->addFile("f1", "a.jpg", 100, "jpg");
+    m_db->addFile("f2", "b.jpg", 200, "jpg");
+  }
+
+  void tearDown() override {
+    m_db.reset();
+    fs::remove(m_path);
+    fs::remove(fs::path(m_path).string() + "-wal");
+    fs::remove(fs::path(m_path).string() + "-shm");
+  }
+
+  // Replace an empty binding set with {nature, urban}.
+  void testReplaceFromEmpty() {
+    CPPUNIT_ASSERT(m_db->getTagsForFile("f1").empty());
+    m_db->setTagsForFile("f1", {"nature", "urban"});
+    auto tags = m_db->getTagsForFile("f1");
+    CPPUNIT_ASSERT_EQUAL(size_t(2), tags.size());
+    // Results are sorted alphabetically
+    CPPUNIT_ASSERT_EQUAL(std::string("nature"), tags[0]);
+    CPPUNIT_ASSERT_EQUAL(std::string("urban"), tags[1]);
+  }
+
+  // Replace an existing set {nature} with {bw, landscape} — old tag fully gone.
+  void testReplaceExistingSet() {
+    m_db->addTag("nature");
+    m_db->bindTag("f1", "nature");
+    CPPUNIT_ASSERT_EQUAL(size_t(1), m_db->getTagsForFile("f1").size());
+
+    m_db->setTagsForFile("f1", {"bw", "landscape"});
+    auto tags = m_db->getTagsForFile("f1");
+    CPPUNIT_ASSERT_EQUAL(size_t(2), tags.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("bw"), tags[0]);
+    CPPUNIT_ASSERT_EQUAL(std::string("landscape"), tags[1]);
+    // "nature" binding must be gone
+    for (const auto& t : tags) {
+      CPPUNIT_ASSERT(t != "nature");
+    }
+  }
+
+  // Replace with an empty list clears all bindings.
+  void testReplaceWithEmptyClears() {
+    m_db->setTagsForFile("f1", {"alpha", "beta"});
+    CPPUNIT_ASSERT(!m_db->getTagsForFile("f1").empty());
+
+    m_db->setTagsForFile("f1", {});
+    CPPUNIT_ASSERT(m_db->getTagsForFile("f1").empty());
+  }
+
+  // Tags that did not exist before are created automatically.
+  void testAutoCreatesMissingTags() {
+    CPPUNIT_ASSERT(!m_db->tagExists("brand_new_tag"));
+    m_db->setTagsForFile("f1", {"brand_new_tag", "another_new"});
+    CPPUNIT_ASSERT(m_db->tagExists("brand_new_tag"));
+    CPPUNIT_ASSERT(m_db->tagExists("another_new"));
+    auto all = m_db->getAllTags();
+    bool foundBrand = false;
+    bool foundAnother = false;
+    for (const auto& t : all) {
+      if (t == "brand_new_tag") {
+        foundBrand = true;
+      }
+      if (t == "another_new") {
+        foundAnother = true;
+      }
+    }
+    CPPUNIT_ASSERT(foundBrand);
+    CPPUNIT_ASSERT(foundAnother);
+  }
+
+  // Passing {"a","a","b"} results in exactly {a, b} with no error.
+  void testDeduplication() {
+    CPPUNIT_ASSERT_NO_THROW(m_db->setTagsForFile("f1", {"a", "a", "b"}));
+    auto tags = m_db->getTagsForFile("f1");
+    CPPUNIT_ASSERT_EQUAL(size_t(2), tags.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("a"), tags[0]);
+    CPPUNIT_ASSERT_EQUAL(std::string("b"), tags[1]);
+  }
+
+  // Applying the same set twice leaves the same result and does not error.
+  void testIdempotent() {
+    m_db->setTagsForFile("f1", {"x", "y"});
+    CPPUNIT_ASSERT_NO_THROW(m_db->setTagsForFile("f1", {"x", "y"}));
+    auto tags = m_db->getTagsForFile("f1");
+    CPPUNIT_ASSERT_EQUAL(size_t(2), tags.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("x"), tags[0]);
+    CPPUNIT_ASSERT_EQUAL(std::string("y"), tags[1]);
+  }
+
+  // getTagsForFile returns exactly the requested set after setTagsForFile.
+  void testResultMatchesRequestedSet() {
+    m_db->setTagsForFile("f1", {"z", "m", "a"});
+    auto tags = m_db->getTagsForFile("f1");
+    // Sorted: a, m, z
+    CPPUNIT_ASSERT_EQUAL(size_t(3), tags.size());
+    CPPUNIT_ASSERT_EQUAL(std::string("a"), tags[0]);
+    CPPUNIT_ASSERT_EQUAL(std::string("m"), tags[1]);
+    CPPUNIT_ASSERT_EQUAL(std::string("z"), tags[2]);
+    // Other file unaffected
+    CPPUNIT_ASSERT(m_db->getTagsForFile("f2").empty());
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(SetTagsForFileTest);
+
+// ============================================================================
 // main
 // ============================================================================
 int main() {

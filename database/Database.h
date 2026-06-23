@@ -173,6 +173,11 @@ public:
   /// Return all files that have no tags, optionally paginated.
   std::vector<File> getUntaggedFiles(std::optional<Pagination> page = std::nullopt);
 
+  /// Atomically replace all tag bindings for @p fileId with @p tags.
+  /// Auto-creates any missing tags. Deduplicates input. All changes occur in
+  /// a single SQLite transaction; throws QueryFailed on failure.
+  void setTagsForFile(const std::string& fileId, const std::vector<std::string>& tags);
+
 private:
   struct Impl;
   std::unique_ptr<Impl> m_impl;

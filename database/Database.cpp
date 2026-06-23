@@ -4,6 +4,7 @@
 #include <metrics/Timer.h>
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -103,6 +104,8 @@ static constexpr std::string_view SQL_TAG_EXISTS = "SELECT 1 FROM tag WHERE name
 static constexpr std::string_view SQL_TAG_COUNT = "SELECT COUNT(*) FROM tag";
 
 static constexpr std::string_view SQL_INSERT_FILE_TAG = "INSERT INTO file_tag (file_id, tag_name) VALUES (?, ?)";
+static constexpr std::string_view SQL_INSERT_TAG_OR_IGNORE = "INSERT OR IGNORE INTO tag (name) VALUES (?)";
+static constexpr std::string_view SQL_DELETE_ALL_FILE_TAGS_FOR_FILE = "DELETE FROM file_tag WHERE file_id = ?";
 static constexpr std::string_view SQL_DELETE_FILE_TAG = "DELETE FROM file_tag WHERE file_id = ? AND tag_name = ?";
 static constexpr std::string_view SQL_SELECT_TAGS_FOR_FILE =
   "SELECT tag_name FROM file_tag WHERE file_id = ? ORDER BY tag_name";
@@ -466,6 +469,52 @@ std::vector<File> Database::getUntaggedFiles(std::optional<Pagination> page) {
     result.push_back(rowToFile(stmt.get()));
   }
   return result;
+}
+
+void Database::setTagsForFile(const std::string& fileId, const std::vector<std::string>& tags) {
+  auto t = m_impl->writeTimer();
+
+  // De-duplicate while preserving order (sorted unique).
+  std::vector<std::string> unique_tags = tags;
+  std::sort(unique_tags.begin(), unique_tags.end());
+  unique_tags.erase(std::unique(unique_tags.begin(), unique_tags.end()), unique_tags.end());
+
+  std::unique_lock lock(m_impl->mutex);
+
+  // Single transaction: delete existing bindings, upsert tags, insert new bindings.
+  m_impl->execScript("BEGIN");
+  try {
+    // 1. Delete all existing file_tag rows for this file.
+    {
+      auto del = m_impl->prepare(SQL_DELETE_ALL_FILE_TAGS_FOR_FILE);
+      sqlite3_bind_text(del.get(), 1, fileId.c_str(), -1, SQLITE_STATIC);
+      m_impl->mustDone(del.get(), DatabaseErrorCode::QueryFailed, "setTagsForFile: delete failed");
+    }
+
+    // 2. For each tag: ensure it exists, then bind it.
+    for (const auto& tagName : unique_tags) {
+      {
+        auto ins = m_impl->prepare(SQL_INSERT_TAG_OR_IGNORE);
+        sqlite3_bind_text(ins.get(), 1, tagName.c_str(), -1, SQLITE_STATIC);
+        m_impl->mustDone(ins.get(), DatabaseErrorCode::QueryFailed, "setTagsForFile: insert tag failed");
+      }
+      {
+        auto bind = m_impl->prepare(SQL_INSERT_FILE_TAG);
+        sqlite3_bind_text(bind.get(), 1, fileId.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(bind.get(), 2, tagName.c_str(), -1, SQLITE_STATIC);
+        m_impl->mustDone(
+          bind.get(), DatabaseErrorCode::ConstraintViolation, "setTagsForFile: bind failed for tag '" + tagName + "'"
+        );
+      }
+    }
+
+    m_impl->execScript("COMMIT");
+  } catch (...) {
+    try {
+      m_impl->execScript("ROLLBACK");
+    } catch (...) {}
+    throw;
+  }
 }
 
 // ---------------------------------------------------------------------------

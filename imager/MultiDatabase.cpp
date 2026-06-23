@@ -222,6 +222,20 @@ void MultiDatabase::unbindTag(const std::string& fileId, const std::string& tagN
   );
 }
 
+void MultiDatabase::setTagsForFile(const std::string& fileId, const std::vector<std::string>& tags) {
+  // Capture prior tag set from the primary DB for rollback compensation.
+  const std::vector<std::string> priorTags = m_dbs[0]->getTagsForFile(fileId);
+
+  parallelWriteAll(
+    [&](db::Database& db) { db.setTagsForFile(fileId, tags); },
+    [&](db::Database& db, size_t) {
+      try {
+        db.setTagsForFile(fileId, priorTags);
+      } catch (...) {}
+    }
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Original name operations
 // ---------------------------------------------------------------------------

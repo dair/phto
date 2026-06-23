@@ -95,6 +95,11 @@ public:
   /// Remove a tag from an image.
   ErrorCode untagImage(const std::string& id, const std::string& tag);
 
+  /// Atomically replace the entire tag set for an image.
+  /// Auto-creates any tags that do not yet exist.
+  /// Returns FileNotFound if @p id does not exist, DatabaseError on failure, Ok on success.
+  ErrorCode setImageTags(const std::string& id, const std::vector<std::string>& tags);
+
   /// Get all tags for an image.
   std::vector<std::string> getImageTags(const std::string& id);
 
