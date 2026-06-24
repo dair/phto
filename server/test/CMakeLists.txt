@@ -37,6 +37,31 @@ add_test(
 # Allow enough time for daemon startup + poll + shutdown.
 set_tests_properties(server_health_test PROPERTIES TIMEOUT 60)
 
+# ---- server_auth_test — F1 Bearer-token auth end-to-end (shell script) ----
+
+set(IMAGERADMIN_BIN "${CMAKE_BINARY_DIR}/imageradmin/imageradmin")
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_auth.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_auth.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_auth.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_auth_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_auth.sh"
+)
+
+# Allow time for daemon startup + all auth round-trips + shutdown.
+set_tests_properties(server_auth_test PROPERTIES TIMEOUT 90)
+
 # ---- server_json_tests — CPPUnit tests for server/Json.{h,cpp} (E2) --------
 
 find_package(PkgConfig QUIET)

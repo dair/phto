@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-06-24 10:00] - F1: Bearer auth middleware + /auth/login + /auth/me
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement milestone F1 — Crow `AuthMiddleware`, switch `App` from `SimpleApp` to `crow::App<AuthMiddleware>`, add `POST /auth/login` and `GET /auth/me` routes.
+- **Outcome**: Created `server/AuthMiddleware.h` (global middleware; `context::claims` holds `optional<Claims>`; never rejects), `server/AuthRoutes.h`/`.cpp` (`registerAuthRoutes`, `requireAuth` helper internal to .cpp), updated `App.h`/`.cpp` to use `crow::App<AuthMiddleware>` + pass `tokenTtlSeconds`, updated `main.cpp` constructor call, `CMakeLists.txt` adds `AuthRoutes.cpp` to `server_lib`. Build clean; 22/22 ctest green; manual curl: login 200 + token, /me 200 with valid token, /me 401 without token, /me 401 with garbage token, login 401 wrong password, login 400 missing field.
+- **Next Step**: F1 test suite (test-spec-writer).
+
 ## [2026-06-23 23:30] - E2: server/Json.* + server_lib refactor
 
 - **Agent**: cpp-spec-coder

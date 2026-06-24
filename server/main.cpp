@@ -1,5 +1,3 @@
-#include "App.h"
-
 #include <auth/TokenService.h>
 #include <auth/UserStore.h>
 #include <config/Config.h>
@@ -11,6 +9,8 @@
 #include <future>
 #include <iostream>
 #include <string>
+
+#include "App.h"
 
 namespace {
 
@@ -73,7 +73,7 @@ int main(int argc, char* argv[]) {
   auth::TokenService tokenService{jwtSecret, cfg.auth.issuer, cfg.auth.tokenTtlSeconds};
 
   // --- Build App + register routes ---
-  server::App app{cfg.server, imager, userStore, tokenService};
+  server::App app{cfg.server, imager, userStore, tokenService, cfg.auth.tokenTtlSeconds};
   app.registerRoutes();
 
   // --- Install signal handlers ---

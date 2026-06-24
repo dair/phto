@@ -1,5 +1,11 @@
 # Work Log
 
+## [2026-06-24 10:00] - F1 Bearer-token auth end-to-end test (0022.SERVER §6.1)
+- **Agent**: test-spec-writer
+- **Task**: Write a shell E2E test for checkpoint F1: `POST /auth/login`, `GET /auth/me`, 400/401/403 error paths, disabled-account flow. Register as CTest `server_auth_test`. Add `docs/testing/auth-endpoints.md` and update README dashboard.
+- **Outcome**: Created `server/test/test_auth.sh.in` with 13 assertions: correct login → 200 + token/login/isAdmin fields; `/auth/me` with valid token → 200 + fields; `/auth/me` without token → 401; tampered token → 401; wrong password → 401; missing field → 400; disabled account → 403; SIGTERM clean exit. Uses python3 for JSON parsing. Updated `server/test/CMakeLists.txt` with `server_auth_test` entry (90 s timeout, ports 19483–19487, injects `IMAGERADMIN_BIN`). Created `docs/testing/auth-endpoints.md` (7/7 criteria, 100%). Updated README dashboard. Full suite: 23/23 green.
+- **Next Step**: F2 (requireAdmin, brute-force throttle, self password change) pending implementation.
+
 ## [2026-06-23 18:00] - E2 server/Json error utilities tests (0022.SERVER §7)
 - **Agent**: test-spec-writer
 - **Task**: Write CPPUnit tests for checkpoint E2: `server/Json.{h,cpp}` — `httpStatusFor`, `errorCodeName`, `jsonError`, `errorResponse`, `badRequest`, `unauthorized`, `forbidden`. Add coverage doc, update dashboard.

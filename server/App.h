@@ -6,6 +6,8 @@
 #include <atomic>
 #include <thread>
 
+#include "AuthMiddleware.h"
+
 namespace auth {
 
 class TokenService;
@@ -27,7 +29,8 @@ public:
     const config::ServerConfig& cfg,
     imager::Imager& imager,
     auth::UserStore& userStore,
-    auth::TokenService& tokenService
+    auth::TokenService& tokenService,
+    uint32_t tokenTtlSeconds
   );
   ~App();
 
@@ -46,13 +49,18 @@ public:
   /// std::atomic_flag / app.stop().
   void stop();
 
+  crow::App<AuthMiddleware>& crow() {
+    return m_crow;
+  }
+
 private:
   const config::ServerConfig& m_cfg;
   imager::Imager& m_imager;
   auth::UserStore& m_userStore;
   auth::TokenService& m_tokenService;
+  uint32_t m_tokenTtlSeconds;
 
-  crow::SimpleApp m_crow;
+  crow::App<AuthMiddleware> m_crow;
 };
 
 } // namespace server

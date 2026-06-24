@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+# server/test/test_auth.sh.in — F1 auth end-to-end test
+#
+# Covers: POST /auth/login, GET /auth/me with Bearer token, 401/403/400 paths,
+# disabled-account rejection via imageradmin user disable.
+#
+# Configured by CMake configure_file(@ONLY); @IMAGERD_BIN@ and
+# @IMAGERADMIN_BIN@ are injected.
+# Registered as CTest entry "server_auth_test".
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+
+PASS=0
+FAIL=0
+
+run_test() {
+  local name="$1"
+  shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "PASS: $name"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: $name"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+record_pass() {
+  echo "PASS: $1"
+  PASS=$((PASS + 1))
+}
+
+record_fail() {
+  echo "FAIL: $1"
+  FAIL=$((FAIL + 1))
+}
+
+# ---------------------------------------------------------------------------
+# Guard: skip gracefully if curl is not available
+# ---------------------------------------------------------------------------
+if ! command -v curl >/dev/null 2>&1; then
+  echo "SKIP: curl not found — server_auth_test skipped"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Pick a likely-free TCP port (use a different range from server_health_test)
+# ---------------------------------------------------------------------------
+pick_port() {
+  for port in 19483 19484 19485 19486 19487; do
+    if ! ss -tlnp 2>/dev/null | grep -q ":${port} "; then
+      echo "$port"
+      return 0
+    fi
+  done
+  echo "19483"
+}
+
+PORT=$(pick_port)
+
+# ---------------------------------------------------------------------------
+# Create a temp working dir with a minimal valid config
+# ---------------------------------------------------------------------------
+TMPDIR_TEST=$(mktemp -d)
+
+STORAGE_ROOT="$TMPDIR_TEST/storage"
+IMAGER_DB="$TMPDIR_TEST/imager.db"
+AUTH_DB="$TMPDIR_TEST/auth.db"
+CFG="$TMPDIR_TEST/test.toml"
+
+mkdir -p "$STORAGE_ROOT"
+
+# jwt_secret must be >= 32 chars; this dummy secret is exactly 32 bytes.
+cat > "$CFG" <<EOF
+[[targets]]
+root = "$STORAGE_ROOT"
+database = "$IMAGER_DB"
+
+[server]
+bind = "127.0.0.1"
+port = $PORT
+threads = 1
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+EOF
+
+# ---------------------------------------------------------------------------
+# Seed alice (regular user) via imageradmin --password-stdin
+# ---------------------------------------------------------------------------
+echo "hunter2" | "$IMAGERADMIN_BIN" "$CFG" user add alice "Alice Smith" --password-stdin
+if [ $? -ne 0 ]; then
+  echo "FATAL: imageradmin user add alice failed — aborting test"
+  rm -rf "$TMPDIR_TEST"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Start daemon in background
+# ---------------------------------------------------------------------------
+"$IMAGERD_BIN" "$CFG" >"$TMPDIR_TEST/daemon.stdout" 2>"$TMPDIR_TEST/daemon.stderr" &
+DAEMON_PID=$!
+
+# Ensure daemon is killed and temp dir cleaned up on any exit.
+cleanup() {
+  if [ "${DAEMON_PID:-0}" -gt 0 ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Poll until the daemon is ready (max ~12 s)
+# ---------------------------------------------------------------------------
+HEALTH_URL="http://127.0.0.1:${PORT}/health"
+BASE_URL="http://127.0.0.1:${PORT}"
+
+# Wait for /health to respond — this also validates the daemon started
+READY_STATUS=$(curl --silent \
+  --output /dev/null \
+  --write-out "%{http_code}" \
+  --retry 10 \
+  --retry-delay 1 \
+  --retry-connrefused \
+  --max-time 12 \
+  "$HEALTH_URL" 2>/dev/null) || READY_STATUS="000"
+
+if [ "$READY_STATUS" != "200" ]; then
+  echo "FATAL: daemon did not become ready (health returned $READY_STATUS)"
+  echo "--- daemon stderr ---"
+  cat "$TMPDIR_TEST/daemon.stderr" || true
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Assertion 1: POST /auth/login with correct credentials → 200, token present
+# ---------------------------------------------------------------------------
+LOGIN_BODY='{"login":"alice","password":"hunter2"}'
+LOGIN_RESPONSE=$(curl --silent \
+  --write-out "\n%{http_code}" \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --data "$LOGIN_BODY" \
+  "${BASE_URL}/auth/login" 2>/dev/null)
+
+LOGIN_STATUS=$(printf '%s' "$LOGIN_RESPONSE" | tail -n1)
+LOGIN_JSON=$(printf '%s' "$LOGIN_RESPONSE" | head -n -1)
+
+# Extract token using python3 (guaranteed available; avoids jq dependency)
+TOKEN=$(python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d['token'])" <<< "$LOGIN_JSON" 2>/dev/null || true)
+
+run_test "POST /auth/login correct credentials → HTTP 200" \
+  bash -c "[ '$LOGIN_STATUS' = '200' ]"
+
+run_test "POST /auth/login response contains token field" \
+  bash -c "[ -n '$TOKEN' ]"
+
+run_test "POST /auth/login response isAdmin is false for regular user" \
+  bash -c "python3 -c \"import sys,json; d=json.loads(sys.stdin.read()); exit(0 if d['isAdmin']==False else 1)\" <<< '$LOGIN_JSON'"
+
+run_test "POST /auth/login response login matches alice" \
+  bash -c "python3 -c \"import sys,json; d=json.loads(sys.stdin.read()); exit(0 if d['login']=='alice' else 1)\" <<< '$LOGIN_JSON'"
+
+# ---------------------------------------------------------------------------
+# Assertion 2: GET /auth/me with valid Bearer token → 200, correct fields
+# ---------------------------------------------------------------------------
+ME_RESPONSE=$(curl --silent \
+  --write-out "\n%{http_code}" \
+  --header "Authorization: Bearer $TOKEN" \
+  "${BASE_URL}/auth/me" 2>/dev/null)
+
+ME_STATUS=$(printf '%s' "$ME_RESPONSE" | tail -n1)
+ME_JSON=$(printf '%s' "$ME_RESPONSE" | head -n -1)
+
+run_test "GET /auth/me with valid Bearer token → HTTP 200" \
+  bash -c "[ '$ME_STATUS' = '200' ]"
+
+run_test "GET /auth/me response login is alice" \
+  bash -c "python3 -c \"import sys,json; d=json.loads(sys.stdin.read()); exit(0 if d['login']=='alice' else 1)\" <<< '$ME_JSON'"
+
+run_test "GET /auth/me response isAdmin is false" \
+  bash -c "python3 -c \"import sys,json; d=json.loads(sys.stdin.read()); exit(0 if d['isAdmin']==False else 1)\" <<< '$ME_JSON'"
+
+# ---------------------------------------------------------------------------
+# Assertion 3: GET /auth/me with NO Authorization header → 401
+# ---------------------------------------------------------------------------
+NO_AUTH_STATUS=$(curl --silent \
+  --write-out "%{http_code}" \
+  --output /dev/null \
+  "${BASE_URL}/auth/me" 2>/dev/null) || NO_AUTH_STATUS="000"
+
+run_test "GET /auth/me without Authorization header → HTTP 401" \
+  bash -c "[ '$NO_AUTH_STATUS' = '401' ]"
+
+# ---------------------------------------------------------------------------
+# Assertion 4: GET /auth/me with a tampered token → 401
+# ---------------------------------------------------------------------------
+# Append a character to the token signature to invalidate it
+TAMPERED_TOKEN="${TOKEN}X"
+
+TAMPERED_STATUS=$(curl --silent \
+  --write-out "%{http_code}" \
+  --output /dev/null \
+  --header "Authorization: Bearer $TAMPERED_TOKEN" \
+  "${BASE_URL}/auth/me" 2>/dev/null) || TAMPERED_STATUS="000"
+
+run_test "GET /auth/me with tampered token → HTTP 401" \
+  bash -c "[ '$TAMPERED_STATUS' = '401' ]"
+
+# ---------------------------------------------------------------------------
+# Assertion 5: POST /auth/login with wrong password → 401
+# ---------------------------------------------------------------------------
+WRONG_PW_BODY='{"login":"alice","password":"wrongpassword"}'
+WRONG_PW_STATUS=$(curl --silent \
+  --write-out "%{http_code}" \
+  --output /dev/null \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --data "$WRONG_PW_BODY" \
+  "${BASE_URL}/auth/login" 2>/dev/null) || WRONG_PW_STATUS="000"
+
+run_test "POST /auth/login wrong password → HTTP 401" \
+  bash -c "[ '$WRONG_PW_STATUS' = '401' ]"
+
+# ---------------------------------------------------------------------------
+# Assertion 6: POST /auth/login with missing password field → 400
+# ---------------------------------------------------------------------------
+MISSING_PW_BODY='{"login":"alice"}'
+MISSING_PW_STATUS=$(curl --silent \
+  --write-out "%{http_code}" \
+  --output /dev/null \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --data "$MISSING_PW_BODY" \
+  "${BASE_URL}/auth/login" 2>/dev/null) || MISSING_PW_STATUS="000"
+
+run_test "POST /auth/login missing password field → HTTP 400" \
+  bash -c "[ '$MISSING_PW_STATUS' = '400' ]"
+
+# ---------------------------------------------------------------------------
+# Assertion 7: Disabled account → POST /auth/login correct creds → 403
+# ---------------------------------------------------------------------------
+"$IMAGERADMIN_BIN" "$CFG" user disable alice
+if [ $? -ne 0 ]; then
+  record_fail "imageradmin user disable alice"
+else
+  DISABLED_LOGIN_BODY='{"login":"alice","password":"hunter2"}'
+  DISABLED_STATUS=$(curl --silent \
+    --write-out "%{http_code}" \
+    --output /dev/null \
+    --request POST \
+    --header "Content-Type: application/json" \
+    --data "$DISABLED_LOGIN_BODY" \
+    "${BASE_URL}/auth/login" 2>/dev/null) || DISABLED_STATUS="000"
+
+  run_test "POST /auth/login disabled account correct creds → HTTP 403" \
+    bash -c "[ '$DISABLED_STATUS' = '403' ]"
+fi
+
+# ---------------------------------------------------------------------------
+# Graceful SIGTERM — run in parent shell so wait() works
+# ---------------------------------------------------------------------------
+SIGTERM_OK=0
+
+if kill -TERM "$DAEMON_PID" 2>/dev/null; then
+  EXITED=0
+  for _i in $(seq 1 50); do
+    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+      EXITED=1
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ "$EXITED" -eq 1 ]; then
+    DAEMON_EXIT=0
+    wait "$DAEMON_PID" 2>/dev/null || DAEMON_EXIT=$?
+    if [ "$DAEMON_EXIT" -eq 0 ]; then
+      SIGTERM_OK=1
+    else
+      echo "  (daemon exited with status $DAEMON_EXIT, expected 0)"
+    fi
+  else
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    echo "  (daemon did not exit within 5 s after SIGTERM)"
+  fi
+else
+  echo "  (kill -TERM failed — daemon not running?)"
+fi
+
+if [ "$SIGTERM_OK" -eq 1 ]; then
+  record_pass "SIGTERM causes clean exit (status 0)"
+else
+  record_fail "SIGTERM causes clean exit (status 0)"
+fi
+
+DAEMON_PID=0
+
+# ---------------------------------------------------------------------------
+# Results
+# ---------------------------------------------------------------------------
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

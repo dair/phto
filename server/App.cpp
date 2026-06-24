@@ -6,19 +6,25 @@
 
 #include <thread>
 
+#include "AuthRoutes.h"
+
 namespace server {
 
 App::App(
-  const config::ServerConfig& cfg, imager::Imager& imager, auth::UserStore& userStore, auth::TokenService& tokenService
+  const config::ServerConfig& cfg,
+  imager::Imager& imager,
+  auth::UserStore& userStore,
+  auth::TokenService& tokenService,
+  uint32_t tokenTtlSeconds
 )
   : m_cfg(cfg),
     m_imager(imager),
     m_userStore(userStore),
-    m_tokenService(tokenService) {
-  // m_imager, m_userStore, m_tokenService are used in later route-handler checkpoints.
+    m_tokenService(tokenService),
+    m_tokenTtlSeconds(tokenTtlSeconds) {
+  // Wire TokenService into the middleware so it can verify tokens.
+  m_crow.get_middleware<AuthMiddleware>().service = &m_tokenService;
   (void)m_imager;
-  (void)m_userStore;
-  (void)m_tokenService;
 }
 
 App::~App() = default;
@@ -30,6 +36,8 @@ void App::registerRoutes() {
     res.add_header("Content-Type", "application/json");
     return res;
   });
+
+  registerAuthRoutes(m_crow, m_userStore, m_tokenService, m_tokenTtlSeconds);
 }
 
 void App::run() {
