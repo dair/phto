@@ -1,5 +1,11 @@
 # Work Log
 
+## [2026-06-24 14:00] - F2 requireAdmin / GET /users / throttle / /auth/password e2e test (0022.SERVER §6.1/§6.5/§13)
+- **Agent**: test-spec-writer
+- **Task**: Write shell E2E test for checkpoint F2: `requireAdmin`+`GET /users`, login brute-force throttle (5 fails → 429 + Retry-After), `POST /auth/password` (self password change). Register as CTest `server_authz_test`. Add `docs/testing/auth-authz.md` and update README dashboard.
+- **Outcome**: Created `server/test/test_authz.sh.in` with 22 assertions spanning three concern groups (GET /users: 200/403/401; throttle: 5×401 then 429+Retry-After; /auth/password: 204/new-pw-200/old-pw-401/wrong-old-401/short-new-400/no-auth-401; SIGTERM). Seeded four isolated users (root/bob/eve/dave) so throttle lockout cannot bleed into other tests. Uses ports 19490–19494 (distinct from health/auth test ranges). Dump-header file used for Retry-After assertion. Updated `server/test/CMakeLists.txt` (120 s timeout). Created `docs/testing/auth-authz.md` (11/11 criteria, 100%). Updated README dashboard. Full suite: 24/24 green.
+- **Next Step**: I1 (GET /users full CRUD surface, pagination edge cases, throttle expiry recovery) when milestone M-I begins.
+
 ## [2026-06-24 10:00] - F1 Bearer-token auth end-to-end test (0022.SERVER §6.1)
 - **Agent**: test-spec-writer
 - **Task**: Write a shell E2E test for checkpoint F1: `POST /auth/login`, `GET /auth/me`, 400/401/403 error paths, disabled-account flow. Register as CTest `server_auth_test`. Add `docs/testing/auth-endpoints.md` and update README dashboard.

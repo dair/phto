@@ -1,0 +1,477 @@
+#!/usr/bin/env bash
+# server/test/test_authz.sh.in — F2 authorization + throttle + password change e2e test
+#
+# Covers:
+#   - requireAdmin / GET /users: 200 (admin), 403 (non-admin), 401 (no token)
+#   - Login brute-force throttle: 5 failures → 429 on 6th (even with correct password),
+#     Retry-After header present
+#   - POST /auth/password: 204 success; old password invalidated; new password works;
+#     wrong oldPassword → 401; too-short newPassword → 400; no token → 401
+#
+# Configured by CMake configure_file(@ONLY); @IMAGERD_BIN@ and
+# @IMAGERADMIN_BIN@ are injected.
+# Registered as CTest entry "server_authz_test".
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+
+PASS=0
+FAIL=0
+
+run_test() {
+  local name="$1"
+  shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "PASS: $name"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: $name"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+record_pass() {
+  echo "PASS: $1"
+  PASS=$((PASS + 1))
+}
+
+record_fail() {
+  echo "FAIL: $1"
+  FAIL=$((FAIL + 1))
+}
+
+# ---------------------------------------------------------------------------
+# Guard: skip gracefully if curl is not available
+# ---------------------------------------------------------------------------
+if ! command -v curl >/dev/null 2>&1; then
+  echo "SKIP: curl not found — server_authz_test skipped"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Pick a likely-free TCP port (use a range separate from health/auth tests)
+# ---------------------------------------------------------------------------
+pick_port() {
+  for port in 19490 19491 19492 19493 19494; do
+    if ! ss -tlnp 2>/dev/null | grep -q ":${port} "; then
+      echo "$port"
+      return 0
+    fi
+  done
+  echo "19490"
+}
+
+PORT=$(pick_port)
+
+# ---------------------------------------------------------------------------
+# Create a temp working dir with a minimal valid config
+# ---------------------------------------------------------------------------
+TMPDIR_TEST=$(mktemp -d)
+
+STORAGE_ROOT="$TMPDIR_TEST/storage"
+IMAGER_DB="$TMPDIR_TEST/imager.db"
+AUTH_DB="$TMPDIR_TEST/auth.db"
+CFG="$TMPDIR_TEST/test.toml"
+
+mkdir -p "$STORAGE_ROOT"
+
+# jwt_secret must be >= 32 chars; this dummy secret is exactly 32 bytes.
+cat > "$CFG" <<EOF
+[[targets]]
+root = "$STORAGE_ROOT"
+database = "$IMAGER_DB"
+
+[server]
+bind = "127.0.0.1"
+port = $PORT
+threads = 1
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+EOF
+
+# ---------------------------------------------------------------------------
+# Seed users via imageradmin --password-stdin
+#   root  — admin user (for GET /users admin path)
+#   bob   — regular user (for 403 path)
+#   eve   — dedicated throttle target (isolated from other logins)
+#   dave  — dedicated password-change target
+# ---------------------------------------------------------------------------
+seed_user() {
+  local login="$1"
+  local fullname="$2"
+  local password="$3"
+  local extra="${4:-}"
+  printf '%s' "$password" | "$IMAGERADMIN_BIN" "$CFG" user add "$login" "$fullname" $extra --password-stdin
+}
+
+seed_user root "Root Admin" "rootpass1" "--admin" || {
+  echo "FATAL: imageradmin user add root failed — aborting test"
+  rm -rf "$TMPDIR_TEST"
+  exit 1
+}
+
+seed_user bob "Bob Regular" "bobpass12" || {
+  echo "FATAL: imageradmin user add bob failed — aborting test"
+  rm -rf "$TMPDIR_TEST"
+  exit 1
+}
+
+seed_user eve "Eve Target" "evepass12" || {
+  echo "FATAL: imageradmin user add eve failed — aborting test"
+  rm -rf "$TMPDIR_TEST"
+  exit 1
+}
+
+seed_user dave "Dave User" "davepass1" || {
+  echo "FATAL: imageradmin user add dave failed — aborting test"
+  rm -rf "$TMPDIR_TEST"
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Start daemon in background
+# ---------------------------------------------------------------------------
+"$IMAGERD_BIN" "$CFG" >"$TMPDIR_TEST/daemon.stdout" 2>"$TMPDIR_TEST/daemon.stderr" &
+DAEMON_PID=$!
+
+# Ensure daemon is killed and temp dir cleaned up on any exit.
+cleanup() {
+  if [ "${DAEMON_PID:-0}" -gt 0 ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Poll until the daemon is ready (max ~12 s)
+# ---------------------------------------------------------------------------
+HEALTH_URL="http://127.0.0.1:${PORT}/health"
+BASE_URL="http://127.0.0.1:${PORT}"
+
+READY_STATUS=$(curl --silent \
+  --output /dev/null \
+  --write-out "%{http_code}" \
+  --retry 10 \
+  --retry-delay 1 \
+  --retry-connrefused \
+  --max-time 12 \
+  "$HEALTH_URL" 2>/dev/null) || READY_STATUS="000"
+
+if [ "$READY_STATUS" != "200" ]; then
+  echo "FATAL: daemon did not become ready (health returned $READY_STATUS)"
+  echo "--- daemon stderr ---"
+  cat "$TMPDIR_TEST/daemon.stderr" || true
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Helper: login and extract token; exits non-zero if login fails
+# ---------------------------------------------------------------------------
+do_login() {
+  local login="$1"
+  local password="$2"
+  local resp
+  resp=$(curl --silent \
+    --write-out "\n%{http_code}" \
+    --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"login\":\"${login}\",\"password\":\"${password}\"}" \
+    "${BASE_URL}/auth/login" 2>/dev/null)
+  local status
+  status=$(printf '%s' "$resp" | tail -n1)
+  local body
+  body=$(printf '%s' "$resp" | head -n -1)
+  if [ "$status" != "200" ]; then
+    echo "LOGIN_FAILED_$status"
+    return 1
+  fi
+  python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d['token'])" <<< "$body" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# requireAdmin / GET /users
+# ---------------------------------------------------------------------------
+
+# Login as admin (root) to get a token
+ADMIN_LOGIN_RESP=$(curl --silent \
+  --write-out "\n%{http_code}" \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --data '{"login":"root","password":"rootpass1"}' \
+  "${BASE_URL}/auth/login" 2>/dev/null)
+
+ADMIN_LOGIN_STATUS=$(printf '%s' "$ADMIN_LOGIN_RESP" | tail -n1)
+ADMIN_LOGIN_JSON=$(printf '%s' "$ADMIN_LOGIN_RESP" | head -n -1)
+ADMIN_TOKEN=$(python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d['token'])" <<< "$ADMIN_LOGIN_JSON" 2>/dev/null || true)
+
+# Login as regular user (bob) to get a token
+BOB_LOGIN_RESP=$(curl --silent \
+  --write-out "\n%{http_code}" \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --data '{"login":"bob","password":"bobpass12"}' \
+  "${BASE_URL}/auth/login" 2>/dev/null)
+
+BOB_LOGIN_STATUS=$(printf '%s' "$BOB_LOGIN_RESP" | tail -n1)
+BOB_LOGIN_JSON=$(printf '%s' "$BOB_LOGIN_RESP" | head -n -1)
+BOB_TOKEN=$(python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d['token'])" <<< "$BOB_LOGIN_JSON" 2>/dev/null || true)
+
+# Assertion 1a: admin login succeeds
+run_test "POST /auth/login as admin → HTTP 200" \
+  bash -c "[ '$ADMIN_LOGIN_STATUS' = '200' ]"
+
+# Assertion 1b: admin token is present
+run_test "Admin login response contains token" \
+  bash -c "[ -n '$ADMIN_TOKEN' ]"
+
+# Assertion 1c: GET /users with admin Bearer → 200, body has users array containing seeded users
+USERS_RESP=$(curl --silent \
+  --write-out "\n%{http_code}" \
+  --header "Authorization: Bearer $ADMIN_TOKEN" \
+  "${BASE_URL}/users" 2>/dev/null)
+
+USERS_STATUS=$(printf '%s' "$USERS_RESP" | tail -n1)
+USERS_JSON=$(printf '%s' "$USERS_RESP" | head -n -1)
+
+run_test "GET /users with admin Bearer → HTTP 200" \
+  bash -c "[ '$USERS_STATUS' = '200' ]"
+
+run_test "GET /users response body has users array" \
+  bash -c "python3 -c \"import sys,json; d=json.loads(sys.stdin.read()); assert isinstance(d['users'], list)\" <<< '$USERS_JSON'"
+
+run_test "GET /users response includes seeded users (root and bob present)" \
+  bash -c "python3 -c \"
+import sys, json
+d = json.loads(sys.stdin.read())
+logins = {u['login'] for u in d['users']}
+assert 'root' in logins, f'root not in {logins}'
+assert 'bob' in logins, f'bob not in {logins}'
+\" <<< '$USERS_JSON'"
+
+# Assertion 2: GET /users with non-admin Bearer → 403
+run_test "GET /users with non-admin Bearer → HTTP 403" \
+  bash -c "[ '$BOB_LOGIN_STATUS' = '200' ] && \
+    STATUS=\$(curl --silent \
+      --write-out '%{http_code}' \
+      --output /dev/null \
+      --header 'Authorization: Bearer $BOB_TOKEN' \
+      '${BASE_URL}/users' 2>/dev/null); \
+    [ \"\$STATUS\" = '403' ]"
+
+# Assertion 3: GET /users with no Authorization → 401
+USERS_NOAUTH_STATUS=$(curl --silent \
+  --write-out "%{http_code}" \
+  --output /dev/null \
+  "${BASE_URL}/users" 2>/dev/null) || USERS_NOAUTH_STATUS="000"
+
+run_test "GET /users with no Authorization → HTTP 401" \
+  bash -c "[ '$USERS_NOAUTH_STATUS' = '401' ]"
+
+# ---------------------------------------------------------------------------
+# Brute-force throttle (use eve — isolated from other logins)
+# ---------------------------------------------------------------------------
+
+# Assertions 4: 5x wrong password for eve → 401 each time
+THROTTLE_BODY='{"login":"eve","password":"wrongpassword"}'
+
+EVE_FAIL_1=$(curl --silent --write-out "%{http_code}" --output /dev/null \
+  --request POST --header "Content-Type: application/json" \
+  --data "$THROTTLE_BODY" "${BASE_URL}/auth/login" 2>/dev/null) || EVE_FAIL_1="000"
+
+EVE_FAIL_2=$(curl --silent --write-out "%{http_code}" --output /dev/null \
+  --request POST --header "Content-Type: application/json" \
+  --data "$THROTTLE_BODY" "${BASE_URL}/auth/login" 2>/dev/null) || EVE_FAIL_2="000"
+
+EVE_FAIL_3=$(curl --silent --write-out "%{http_code}" --output /dev/null \
+  --request POST --header "Content-Type: application/json" \
+  --data "$THROTTLE_BODY" "${BASE_URL}/auth/login" 2>/dev/null) || EVE_FAIL_3="000"
+
+EVE_FAIL_4=$(curl --silent --write-out "%{http_code}" --output /dev/null \
+  --request POST --header "Content-Type: application/json" \
+  --data "$THROTTLE_BODY" "${BASE_URL}/auth/login" 2>/dev/null) || EVE_FAIL_4="000"
+
+EVE_FAIL_5=$(curl --silent --write-out "%{http_code}" --output /dev/null \
+  --request POST --header "Content-Type: application/json" \
+  --data "$THROTTLE_BODY" "${BASE_URL}/auth/login" 2>/dev/null) || EVE_FAIL_5="000"
+
+run_test "Throttle: 5x wrong password for eve → 401 each (first)" \
+  bash -c "[ '$EVE_FAIL_1' = '401' ]"
+
+run_test "Throttle: 5x wrong password for eve → 401 each (second)" \
+  bash -c "[ '$EVE_FAIL_2' = '401' ]"
+
+run_test "Throttle: 5x wrong password for eve → 401 each (third)" \
+  bash -c "[ '$EVE_FAIL_3' = '401' ]"
+
+run_test "Throttle: 5x wrong password for eve → 401 each (fourth)" \
+  bash -c "[ '$EVE_FAIL_4' = '401' ]"
+
+run_test "Throttle: 5x wrong password for eve → 401 each (fifth)" \
+  bash -c "[ '$EVE_FAIL_5' = '401' ]"
+
+# Assertion 5: 6th attempt for eve with CORRECT password → 429 + Retry-After header
+EVE_LOCKOUT_RESP=$(curl --silent \
+  --write-out "\n%{http_code}" \
+  --dump-header "$TMPDIR_TEST/eve_lockout_headers.txt" \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --data '{"login":"eve","password":"evepass12"}' \
+  "${BASE_URL}/auth/login" 2>/dev/null)
+
+EVE_LOCKOUT_STATUS=$(printf '%s' "$EVE_LOCKOUT_RESP" | tail -n1)
+
+run_test "Throttle: 6th attempt for eve with correct password → HTTP 429 (locked out)" \
+  bash -c "[ '$EVE_LOCKOUT_STATUS' = '429' ]"
+
+run_test "Throttle: 429 response includes Retry-After header" \
+  bash -c "grep -qi 'Retry-After' '$TMPDIR_TEST/eve_lockout_headers.txt'"
+
+# ---------------------------------------------------------------------------
+# POST /auth/password — self-service password change (use dave)
+# ---------------------------------------------------------------------------
+
+# Login as dave to get a token
+DAVE_LOGIN_RESP=$(curl --silent \
+  --write-out "\n%{http_code}" \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --data '{"login":"dave","password":"davepass1"}' \
+  "${BASE_URL}/auth/login" 2>/dev/null)
+
+DAVE_LOGIN_STATUS=$(printf '%s' "$DAVE_LOGIN_RESP" | tail -n1)
+DAVE_LOGIN_JSON=$(printf '%s' "$DAVE_LOGIN_RESP" | head -n -1)
+DAVE_TOKEN=$(python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d['token'])" <<< "$DAVE_LOGIN_JSON" 2>/dev/null || true)
+
+run_test "POST /auth/login as dave (setup) → HTTP 200" \
+  bash -c "[ '$DAVE_LOGIN_STATUS' = '200' ]"
+
+# Assertion 6: POST /auth/password with correct oldPassword and valid newPassword → 204
+CHPW_STATUS=$(curl --silent \
+  --write-out "%{http_code}" \
+  --output /dev/null \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --header "Authorization: Bearer $DAVE_TOKEN" \
+  --data '{"oldPassword":"davepass1","newPassword":"newdavepass99"}' \
+  "${BASE_URL}/auth/password" 2>/dev/null) || CHPW_STATUS="000"
+
+run_test "POST /auth/password correct oldPassword, valid newPassword → HTTP 204" \
+  bash -c "[ '$CHPW_STATUS' = '204' ]"
+
+# Assertion 7a: login as dave with NEW password → 200
+DAVE_NEW_PW_STATUS=$(curl --silent \
+  --write-out "%{http_code}" \
+  --output /dev/null \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --data '{"login":"dave","password":"newdavepass99"}' \
+  "${BASE_URL}/auth/login" 2>/dev/null) || DAVE_NEW_PW_STATUS="000"
+
+run_test "POST /auth/login with dave's NEW password after change → HTTP 200" \
+  bash -c "[ '$DAVE_NEW_PW_STATUS' = '200' ]"
+
+# Assertion 7b: login as dave with OLD password → 401
+DAVE_OLD_PW_STATUS=$(curl --silent \
+  --write-out "%{http_code}" \
+  --output /dev/null \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --data '{"login":"dave","password":"davepass1"}' \
+  "${BASE_URL}/auth/login" 2>/dev/null) || DAVE_OLD_PW_STATUS="000"
+
+run_test "POST /auth/login with dave's OLD password after change → HTTP 401" \
+  bash -c "[ '$DAVE_OLD_PW_STATUS' = '401' ]"
+
+# Assertion 8a: POST /auth/password with wrong oldPassword → 401
+WRONG_OLD_PW_STATUS=$(curl --silent \
+  --write-out "%{http_code}" \
+  --output /dev/null \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --header "Authorization: Bearer $DAVE_TOKEN" \
+  --data '{"oldPassword":"wrongoldpass","newPassword":"anothernewpass"}' \
+  "${BASE_URL}/auth/password" 2>/dev/null) || WRONG_OLD_PW_STATUS="000"
+
+run_test "POST /auth/password wrong oldPassword → HTTP 401" \
+  bash -c "[ '$WRONG_OLD_PW_STATUS' = '401' ]"
+
+# Assertion 8b: POST /auth/password with too-short newPassword → 400
+SHORT_PW_STATUS=$(curl --silent \
+  --write-out "%{http_code}" \
+  --output /dev/null \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --header "Authorization: Bearer $DAVE_TOKEN" \
+  --data '{"oldPassword":"newdavepass99","newPassword":"short"}' \
+  "${BASE_URL}/auth/password" 2>/dev/null) || SHORT_PW_STATUS="000"
+
+run_test "POST /auth/password newPassword too short (< 8 chars) → HTTP 400" \
+  bash -c "[ '$SHORT_PW_STATUS' = '400' ]"
+
+# Assertion 8c: POST /auth/password with no Authorization → 401
+NOAUTH_PW_STATUS=$(curl --silent \
+  --write-out "%{http_code}" \
+  --output /dev/null \
+  --request POST \
+  --header "Content-Type: application/json" \
+  --data '{"oldPassword":"newdavepass99","newPassword":"anothernewpass"}' \
+  "${BASE_URL}/auth/password" 2>/dev/null) || NOAUTH_PW_STATUS="000"
+
+run_test "POST /auth/password with no Authorization → HTTP 401" \
+  bash -c "[ '$NOAUTH_PW_STATUS' = '401' ]"
+
+# ---------------------------------------------------------------------------
+# Graceful SIGTERM — run in parent shell so wait() works
+# ---------------------------------------------------------------------------
+SIGTERM_OK=0
+
+if kill -TERM "$DAEMON_PID" 2>/dev/null; then
+  EXITED=0
+  for _i in $(seq 1 50); do
+    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+      EXITED=1
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ "$EXITED" -eq 1 ]; then
+    DAEMON_EXIT=0
+    wait "$DAEMON_PID" 2>/dev/null || DAEMON_EXIT=$?
+    if [ "$DAEMON_EXIT" -eq 0 ]; then
+      SIGTERM_OK=1
+    else
+      echo "  (daemon exited with status $DAEMON_EXIT, expected 0)"
+    fi
+  else
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    echo "  (daemon did not exit within 5 s after SIGTERM)"
+  fi
+else
+  echo "  (kill -TERM failed — daemon not running?)"
+fi
+
+if [ "$SIGTERM_OK" -eq 1 ]; then
+  record_pass "SIGTERM causes clean exit (status 0)"
+else
+  record_fail "SIGTERM causes clean exit (status 0)"
+fi
+
+DAEMON_PID=0
+
+# ---------------------------------------------------------------------------
+# Results
+# ---------------------------------------------------------------------------
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

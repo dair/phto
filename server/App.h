@@ -30,7 +30,8 @@ public:
     imager::Imager& imager,
     auth::UserStore& userStore,
     auth::TokenService& tokenService,
-    uint32_t tokenTtlSeconds
+    uint32_t tokenTtlSeconds,
+    uint32_t pbkdf2Iterations
   );
   ~App();
 
@@ -59,6 +60,7 @@ private:
   auth::UserStore& m_userStore;
   auth::TokenService& m_tokenService;
   uint32_t m_tokenTtlSeconds;
+  uint32_t m_pbkdf2Iterations;
 
   crow::App<AuthMiddleware> m_crow;
 };

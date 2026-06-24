@@ -62,6 +62,29 @@ add_test(
 # Allow time for daemon startup + all auth round-trips + shutdown.
 set_tests_properties(server_auth_test PROPERTIES TIMEOUT 90)
 
+# ---- server_authz_test — F2 requireAdmin/GET /users, throttle, /auth/password ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_authz.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_authz.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_authz.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_authz_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_authz.sh"
+)
+
+# Allow time for daemon startup, 5 throttle requests, all assertion round-trips + shutdown.
+set_tests_properties(server_authz_test PROPERTIES TIMEOUT 120)
+
 # ---- server_json_tests — CPPUnit tests for server/Json.{h,cpp} (E2) --------
 
 find_package(PkgConfig QUIET)

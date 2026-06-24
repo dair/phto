@@ -15,13 +15,15 @@ App::App(
   imager::Imager& imager,
   auth::UserStore& userStore,
   auth::TokenService& tokenService,
-  uint32_t tokenTtlSeconds
+  uint32_t tokenTtlSeconds,
+  uint32_t pbkdf2Iterations
 )
   : m_cfg(cfg),
     m_imager(imager),
     m_userStore(userStore),
     m_tokenService(tokenService),
-    m_tokenTtlSeconds(tokenTtlSeconds) {
+    m_tokenTtlSeconds(tokenTtlSeconds),
+    m_pbkdf2Iterations(pbkdf2Iterations) {
   // Wire TokenService into the middleware so it can verify tokens.
   m_crow.get_middleware<AuthMiddleware>().service = &m_tokenService;
   (void)m_imager;
@@ -37,7 +39,8 @@ void App::registerRoutes() {
     return res;
   });
 
-  registerAuthRoutes(m_crow, m_userStore, m_tokenService, m_tokenTtlSeconds);
+  registerAuthRoutes(m_crow, m_userStore, m_tokenService, m_tokenTtlSeconds, m_pbkdf2Iterations);
+  registerUserRoutes(m_crow, m_userStore);
 }
 
 void App::run() {

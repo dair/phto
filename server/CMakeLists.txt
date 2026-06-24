@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-add_library(server_lib STATIC App.cpp Json.cpp AuthRoutes.cpp)
+add_library(server_lib STATIC App.cpp Json.cpp AuthRoutes.cpp LoginThrottle.cpp)
 
 target_include_directories(server_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 

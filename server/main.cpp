@@ -73,7 +73,7 @@ int main(int argc, char* argv[]) {
   auth::TokenService tokenService{jwtSecret, cfg.auth.issuer, cfg.auth.tokenTtlSeconds};
 
   // --- Build App + register routes ---
-  server::App app{cfg.server, imager, userStore, tokenService, cfg.auth.tokenTtlSeconds};
+  server::App app{cfg.server, imager, userStore, tokenService, cfg.auth.tokenTtlSeconds, cfg.auth.pbkdf2Iterations};
   app.registerRoutes();
 
   // --- Install signal handlers ---

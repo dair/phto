@@ -1,5 +1,12 @@
 # Work Log
 
+## [2026-06-24 14:30] - F2: requireAdmin + GET /users + login throttle + POST /auth/password
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement milestone F2 — `requireAdmin` helper, `GET /users` (admin-only), brute-force throttle on `POST /auth/login`, `POST /auth/password` (self password change).
+- **Outcome**: Added `server/LoginThrottle.h`/`.cpp` — mutex-guarded in-memory throttle keyed by login; N=5 failures within 15-minute window locks out all further attempts (even correct passwords) with HTTP 429 + `Retry-After: 900` header; success clears the counter. Moved `requireAuth` to public in `AuthRoutes.h`/`.cpp`. Added `requireAdmin` helper (internal to `.cpp`) writing 401/403 to `crow::response&` and returning nullopt on failure. Added `registerUserRoutes` with `GET /users` (pagination clamped ≤500). Added `POST /auth/password` handler (verifies old, rejects newPassword<8, hashes with `cfg.auth.pbkdf2Iterations`, calls `setPassword`, returns 204). Threaded `pbkdf2Iterations` through `registerAuthRoutes`, `App` constructor, and `main.cpp`. Updated `server/CMakeLists.txt` to include `LoginThrottle.cpp`. All 23 ctest entries remain green. Manual curl confirmed: GET /users 200/403/401 for admin/non-admin/none; password change 204 + new login 200 + old login 401; 5 bad logins → 429 with Retry-After.
+- **Next Step**: F2 test suite (test-spec-writer).
+
 ## [2026-06-24 10:00] - F1: Bearer auth middleware + /auth/login + /auth/me
 
 - **Agent**: cpp-spec-coder
