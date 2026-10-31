@@ -209,3 +209,9 @@
 - **Task**: Resolve Crow's missing 422 status line (user decision: option b, no Crow patch).
 - **Outcome**: `BrokenFile` → 400 in `server/Json.cpp` (envelope code unchanged); updated `JsonTest.cpp` assertions, plan 0022 §7 (with note), and docs/testing notes. g1-test asked to update `test_items.sh.in` to 400.
 - **Next Step**: g1-test rebuilds and reports full ctest to team-lead.
+
+## [2026-10-31 12:00] - M-G G3 content download + DELETE item
+- **Agent**: cpp-spec-coder
+- **Task**: `GET /items/{id}/content` (Range/ETag/304) and `DELETE /items/{id}` in `server/ItemRoutes.cpp`.
+- **Outcome**: 200 streams via `set_static_file_info_unsafe` (Crow has no Range support); 206 buffers a range clamped to 8 MiB (shorter 206 is legal); 416 with `Content-Range: bytes */size`; malformed/multi-range -> 200; strong ETag `"<id>"`, `If-None-Match` -> 304. DELETE is not admin-only (plan §6.2), 204/404/400.
+- **Next Step**: build + ctest, hand build to g3-test.

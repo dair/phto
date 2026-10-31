@@ -79,3 +79,10 @@
 - **Task**: Write CPPUnit unit tests for `config/Config.cpp` covering 10 specified test cases: valid single/two-target parsing, missing file, empty file, malformed TOML, missing `root`, missing `database`, empty targets array, duplicate root paths, duplicate database paths.
 - **Outcome**: Created `/home/vibe/src/imager/config/test/ConfigTest.cpp` (3 test fixtures, 10 tests total) and `/home/vibe/src/imager/config/test/CMakeLists.txt`. Updated `config/CMakeLists.txt` with `add_subdirectory(test)`. All 10 tests pass (`OK (10 tests)`, 0.01s).
 - **Next Step**: Update `docs/testing/` status files for the config feature if tracking is desired.
+
+## [2026-10-31 12:00] - G3 content download + DELETE shell test
+- **Agent**: test-spec-writer
+- **Task**: Write tests for checkpoint G3 (M-G): `GET /items/{id}/content` (Content-Type, Range/206/416, ETag/304) and `DELETE /items/{id}`.
+- **Outcome**: Added `server/test/test_content.sh.in` (52 assertions), registered `server_content_test` (ports 19510–14) in `server/test/CMakeLists.txt`, wrote `docs/testing/items-content.md` and README row. Not yet run — build owned by g3-dev.
+- **Next Step**: On "build is yours": regenerate, build, run `server_content_test` and the full suite; report server bugs to g3-dev.
+- **Update 2026-10-31**: Ran after handover: server_content_test 52 passed / 0 failed; full ctest result recorded in final report.

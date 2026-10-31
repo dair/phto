@@ -155,3 +155,27 @@ add_test(
 )
 
 set_tests_properties(server_items_test PROPERTIES TIMEOUT 90)
+
+# ---- server_content_test — G3 GET /items/{id}/content (Range/ETag) + DELETE (shell script) ----
+
+set(MOV_FIXTURE "${CMAKE_SOURCE_DIR}/validations/mov/test/fixtures/valid.mov")
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_content.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_content.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_content.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_content_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_content.sh"
+)
+
+set_tests_properties(server_content_test PROPERTIES TIMEOUT 90)

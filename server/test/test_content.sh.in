@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# server/test/test_content.sh.in — G3 GET /items/{id}/content + DELETE /items/{id} end-to-end test
+#
+# Covers (docs/plan/0022.SERVER.md §6.2, §7, §8, §14.2-14.3, §16 row G3):
+#   - full download byte-identical (SHA256) to the uploaded fixture; Content-Type,
+#     Content-Length, Accept-Ranges: bytes, strong ETag "<id>"
+#   - Content-Type for .jpg (image/jpeg) and .mov (video/*)
+#   - Range: bytes=a-b / a- / -n → 206 + Content-Range + exact slice; 416 + bytes */size
+#   - If-None-Match matching → 304 empty body; non-matching → 200
+#   - 400 malformed id, 404 unknown id, 401 no token (content and DELETE)
+#   - DELETE → 204; GET + content → 404; stored file gone from root; second DELETE → 404
+#
+# Configured by CMake configure_file(@ONLY); registered as "server_content_test".
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+MOV_FIXTURE="@MOV_FIXTURE@"
+
+PASS=0
+FAIL=0
+
+# check <name> <command...>: runs the command in a subshell; pass iff exit 0.
+check() {
+  local name="$1"; shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "PASS: $name"; PASS=$((PASS + 1))
+  else echo "FAIL: $name"; FAIL=$((FAIL + 1)); fi
+}
+
+for tool in curl python3; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_content_test skipped"
+    exit 0
+  fi
+done
+for f in "$JPEG_FIXTURE" "$MOV_FIXTURE"; do
+  [ -f "$f" ] || { echo "FATAL: fixture $f missing"; exit 1; }
+done
+
+pick_port() {
+  for port in 19510 19511 19512 19513 19514; do
+    if ! ss -tlnp 2>/dev/null | grep -q ":${port} "; then echo "$port"; return 0; fi
+  done
+  echo "19510"
+}
+PORT=$(pick_port)
+
+TMPDIR_TEST=$(mktemp -d)
+STORAGE_ROOT="$TMPDIR_TEST/storage"
+IMAGER_DB="$TMPDIR_TEST/imager.db"
+AUTH_DB="$TMPDIR_TEST/auth.db"
+CFG="$TMPDIR_TEST/test.toml"
+mkdir -p "$STORAGE_ROOT"
+
+cat > "$CFG" <<CFGEOF
+[[targets]]
+root = "$STORAGE_ROOT"
+database = "$IMAGER_DB"
+
+[server]
+bind = "127.0.0.1"
+port = $PORT
+threads = 2
+max_upload_mb = 8
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+CFGEOF
+
+printf '%s' "alicepass1" | "$IMAGERADMIN_BIN" "$CFG" user add alice "Alice User" --password-stdin || {
+  echo "FATAL: seeding user failed"; rm -rf "$TMPDIR_TEST"; exit 1; }
+
+"$IMAGERD_BIN" "$CFG" >"$TMPDIR_TEST/daemon.stdout" 2>"$TMPDIR_TEST/daemon.stderr" &
+DAEMON_PID=$!
+cleanup() {
+  if [ "${DAEMON_PID:-0}" -gt 0 ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
+
+BASE_URL="http://127.0.0.1:${PORT}"
+READY=$(curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 \
+  --retry-delay 1 --retry-connrefused --max-time 12 "$BASE_URL/health" 2>/dev/null) || READY="000"
+if [ "$READY" != "200" ]; then
+  echo "FATAL: daemon not ready ($READY)"; cat "$TMPDIR_TEST/daemon.stderr" || true; exit 1
+fi
+
+# json_get <file> <python-expr over d>: prints the value
+json_get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+
+# http <outfile-prefix> <curl args...>: writes <prefix>.body / <prefix>.status
+http() {
+  local prefix="$1"; shift
+  curl --silent --dump-header "$prefix.hdr" --output "$prefix.body" --write-out "%{http_code}" "$@" > "$prefix.status" 2>/dev/null || echo 000 > "$prefix.status"
+}
+
+LOGIN=$(curl --silent --request POST --header "Content-Type: application/json" \
+  --data '{"login":"alice","password":"alicepass1"}' "$BASE_URL/auth/login")
+TOKEN=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$LOGIN" 2>/dev/null || true)
+check "setup: login returns a token" test -n "$TOKEN"
+AUTH="Authorization: Bearer $TOKEN"
+
+EXPECTED_ID=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$JPEG_FIXTURE")
+SHARD="${EXPECTED_ID:0:2}"
+T="$TMPDIR_TEST"
+
+# hdr <file> <name>: prints the (case-insensitive) header value, CR stripped
+hdr() { python3 -c '
+import sys
+n = sys.argv[2].lower()
+for line in open(sys.argv[1], "rb").read().decode("latin1").splitlines():
+    if ":" in line and line.split(":", 1)[0].strip().lower() == n:
+        print(line.split(":", 1)[1].strip()); break
+' "$1" "$2"; }
+
+# slice_eq <fixture> <body> <start> <endInclusive>: body equals fixture[start:end+1]
+slice_eq() { python3 -c '
+import sys
+d = open(sys.argv[1], "rb").read()
+b = open(sys.argv[2], "rb").read()
+sys.exit(0 if b == d[int(sys.argv[3]):int(sys.argv[4]) + 1] and len(b) > 0 else 1)
+' "$1" "$2" "$3" "$4"; }
+
+sha() { python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
+
+# ---- setup: upload two items ------------------------------------------------
+T="$TMPDIR_TEST"
+ID=$(sha "$JPEG_FIXTURE"); SHARD="${ID:0:2}"; SIZE=$(stat -c %s "$JPEG_FIXTURE")
+MID=$(sha "$MOV_FIXTURE"); MSHARD="${MID:0:2}"
+http "$T/up1" -X PUT -H "$AUTH" -H "X-Filename: photo.jpg" --data-binary "@$JPEG_FIXTURE" "$BASE_URL/items"
+check "setup: JPEG upload accepted (201)" test "$(cat $T/up1.status)" = 201
+http "$T/up2" -X PUT -H "$AUTH" -H "X-Filename: clip.mov" --data-binary "@$MOV_FIXTURE" "$BASE_URL/items"
+check "setup: MOV upload accepted (201)" test "$(cat $T/up2.status)" = 201
+C="$BASE_URL/items/$ID/content"
+
+# ---- full download --------------------------------------------------------
+http "$T/full" -H "$AUTH" "$C"
+check "GET content → 200" test "$(cat $T/full.status)" = 200
+check "content: body SHA256 equals fixture" test "$(sha $T/full.body)" = "$ID"
+check "content: Content-Type image/jpeg" test "$(hdr $T/full.hdr Content-Type)" = "image/jpeg"
+check "content: Content-Length equals fixture size" test "$(hdr $T/full.hdr Content-Length)" = "$SIZE"
+check "content: Accept-Ranges bytes" test "$(hdr $T/full.hdr Accept-Ranges)" = "bytes"
+check "content: ETag is the quoted id" test "$(hdr $T/full.hdr ETag)" = "\"$ID\""
+
+http "$T/mfull" -H "$AUTH" "$BASE_URL/items/$MID/content"
+check "GET .mov content → 200" test "$(cat $T/mfull.status)" = 200
+check "mov content: body SHA256 equals fixture" test "$(sha $T/mfull.body)" = "$MID"
+check "mov content: Content-Type is video/*" test "$(hdr $T/mfull.hdr Content-Type | cut -d/ -f1)" = "video"
+
+# ---- ranges ---------------------------------------------------------------
+http "$T/r1" -H "$AUTH" -H "Range: bytes=0-99" "$C"
+check "Range bytes=0-99 → 206" test "$(cat $T/r1.status)" = 206
+check "Range 0-99: Content-Range bytes 0-99/size" test "$(hdr $T/r1.hdr Content-Range)" = "bytes 0-99/$SIZE"
+check "Range 0-99: Content-Length 100" test "$(hdr $T/r1.hdr Content-Length)" = "100"
+check "Range 0-99: body equals fixture slice" slice_eq "$JPEG_FIXTURE" $T/r1.body 0 99
+
+http "$T/r2" -H "$AUTH" -H "Range: bytes=1000-1099" "$C"
+check "Range bytes=1000-1099 (middle) → 206" test "$(cat $T/r2.status)" = 206
+check "Range middle: Content-Range correct" test "$(hdr $T/r2.hdr Content-Range)" = "bytes 1000-1099/$SIZE"
+check "Range middle: body equals fixture slice" slice_eq "$JPEG_FIXTURE" $T/r2.body 1000 1099
+
+http "$T/r3" -H "$AUTH" -H "Range: bytes=5000-" "$C"
+check "Range bytes=5000- (open-ended) → 206" test "$(cat $T/r3.status)" = 206
+check "Range open-ended: Content-Range correct" test "$(hdr $T/r3.hdr Content-Range)" = "bytes 5000-$((SIZE-1))/$SIZE"
+check "Range open-ended: body equals fixture tail" slice_eq "$JPEG_FIXTURE" $T/r3.body 5000 $((SIZE-1))
+
+http "$T/r4" -H "$AUTH" -H "Range: bytes=-200" "$C"
+check "Range bytes=-200 (suffix) → 206" test "$(cat $T/r4.status)" = 206
+check "Range suffix: Content-Range correct" test "$(hdr $T/r4.hdr Content-Range)" = "bytes $((SIZE-200))-$((SIZE-1))/$SIZE"
+check "Range suffix: body equals last 200 bytes" slice_eq "$JPEG_FIXTURE" $T/r4.body $((SIZE-200)) $((SIZE-1))
+
+http "$T/r5" -H "$AUTH" -H "Range: bytes=$SIZE-" "$C"
+check "Range start == size → 416" test "$(cat $T/r5.status)" = 416
+check "416: Content-Range bytes */size" test "$(hdr $T/r5.hdr Content-Range)" = "bytes */$SIZE"
+http "$T/r6" -H "$AUTH" -H "Range: bytes=999999-" "$C"
+check "Range start past size → 416" test "$(cat $T/r6.status)" = 416
+check "416 (past size): Content-Range bytes */size" test "$(hdr $T/r6.hdr Content-Range)" = "bytes */$SIZE"
+
+# ---- conditional requests -------------------------------------------------
+http "$T/inm" -H "$AUTH" -H "If-None-Match: \"$ID\"" "$C"
+check "If-None-Match matching ETag → 304" test "$(cat $T/inm.status)" = 304
+check "304: empty body" test ! -s "$T/inm.body"
+http "$T/inm2" -H "$AUTH" -H "If-None-Match: \"$(printf 'b%.0s' $(seq 1 64))\"" "$C"
+check "If-None-Match non-matching ETag → 200" test "$(cat $T/inm2.status)" = 200
+check "non-matching If-None-Match: full body returned" test "$(sha $T/inm2.body)" = "$ID"
+
+# ---- error cases (content) ------------------------------------------------
+UNKNOWN_ID=$(printf 'a%.0s' $(seq 1 64))
+http "$T/c404" -H "$AUTH" "$BASE_URL/items/$UNKNOWN_ID/content"
+check "content unknown id → 404" test "$(cat $T/c404.status)" = 404
+http "$T/c400" -H "$AUTH" "$BASE_URL/items/not-a-valid-id/content"
+check "content malformed id → 400" test "$(cat $T/c400.status)" = 400
+http "$T/c401" "$C"
+check "content without token → 401" test "$(cat $T/c401.status)" = 401
+
+# ---- DELETE errors --------------------------------------------------------
+http "$T/d401" -X DELETE "$BASE_URL/items/$ID"
+check "DELETE without token → 401" test "$(cat $T/d401.status)" = 401
+check "401 DELETE leaves the stored file in place" test -f "$STORAGE_ROOT/$SHARD/$ID.jpg"
+http "$T/d400" -X DELETE -H "$AUTH" "$BASE_URL/items/not-a-valid-id"
+check "DELETE malformed id → 400" test "$(cat $T/d400.status)" = 400
+http "$T/d404" -X DELETE -H "$AUTH" "$BASE_URL/items/$UNKNOWN_ID"
+check "DELETE unknown id → 404" test "$(cat $T/d404.status)" = 404
+
+# ---- DELETE success -------------------------------------------------------
+check "before delete: JPEG stored file exists" test -f "$STORAGE_ROOT/$SHARD/$ID.jpg"
+http "$T/del" -X DELETE -H "$AUTH" "$BASE_URL/items/$ID"
+check "DELETE existing item → 204" test "$(cat $T/del.status)" = 204
+check "DELETE 204: empty body" test ! -s "$T/del.body"
+check "DELETE: stored file removed from root" test ! -e "$STORAGE_ROOT/$SHARD/$ID.jpg"
+http "$T/after1" -H "$AUTH" "$BASE_URL/items/$ID"
+check "GET /items/{id} after delete → 404" test "$(cat $T/after1.status)" = 404
+http "$T/after2" -H "$AUTH" "$C"
+check "GET content after delete → 404" test "$(cat $T/after2.status)" = 404
+http "$T/del2" -X DELETE -H "$AUTH" "$BASE_URL/items/$ID"
+check "second DELETE → 404" test "$(cat $T/del2.status)" = 404
+
+# other item unaffected, then delete it too
+check "other item (mov) file untouched by delete" test -f "$STORAGE_ROOT/$MSHARD/$MID.mov"
+http "$T/mdel" -X DELETE -H "$AUTH" "$BASE_URL/items/$MID"
+check "DELETE mov item → 204" test "$(cat $T/mdel.status)" = 204
+check "DELETE mov: stored file removed" test ! -e "$STORAGE_ROOT/$MSHARD/$MID.mov"
+check "root holds no stored files after deleting everything" \
+  test "$(find "$STORAGE_ROOT" -type f | wc -l)" = 0
+
+# ---- graceful shutdown ----------------------------------------------------
+SIGTERM_OK=0
+if kill -TERM "$DAEMON_PID" 2>/dev/null; then
+  for _i in $(seq 1 50); do kill -0 "$DAEMON_PID" 2>/dev/null || break; sleep 0.1; done
+  if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+    EXIT=0; wait "$DAEMON_PID" 2>/dev/null || EXIT=$?
+    [ "$EXIT" -eq 0 ] && SIGTERM_OK=1
+  else kill -KILL "$DAEMON_PID" 2>/dev/null || true; fi
+fi
+if [ "$SIGTERM_OK" -eq 1 ]; then echo "PASS: SIGTERM causes clean exit (status 0)"; PASS=$((PASS+1))
+else echo "FAIL: SIGTERM causes clean exit (status 0)"; FAIL=$((FAIL+1)); fi
+DAEMON_PID=0
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]
