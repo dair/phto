@@ -201,3 +201,25 @@ add_test(
 )
 
 set_tests_properties(server_list_test PROPERTIES TIMEOUT 120)
+
+# ---- server_item_tags_test — H1 per-item tag routes (GET/PUT/POST/DELETE) ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_item_tags.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_item_tags.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_item_tags.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_item_tags_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_item_tags.sh"
+)
+
+set_tests_properties(server_item_tags_test PROPERTIES TIMEOUT 120)

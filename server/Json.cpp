@@ -2,6 +2,8 @@
 
 #include <crow.h>
 
+#include <algorithm>
+
 namespace server {
 
 namespace {
@@ -72,6 +74,17 @@ crow::response unauthorized(std::string message) {
 
 crow::response forbidden(std::string message) {
   return jsonError(403, "Forbidden", std::move(message));
+}
+
+bool isLowerHex64(std::string_view s) {
+  return s.size() == 64 &&
+         std::ranges::all_of(s, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+crow::response jsonOk(int status, const crow::json::wvalue& body) {
+  crow::response res{status, body.dump()};
+  res.add_header("Content-Type", "application/json");
+  return res;
 }
 
 } // namespace server

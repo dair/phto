@@ -8,6 +8,7 @@
 
 #include "AuthRoutes.h"
 #include "ItemRoutes.h"
+#include "TagRoutes.h"
 
 namespace server {
 
@@ -42,6 +43,7 @@ void App::registerRoutes() {
   registerAuthRoutes(m_crow, m_userStore, m_tokenService, m_tokenTtlSeconds, m_pbkdf2Iterations);
   registerUserRoutes(m_crow, m_userStore);
   registerItemRoutes(m_crow, m_imager, m_cfg.maxUploadBytes);
+  registerTagRoutes(m_crow, m_imager);
 }
 
 void App::run() {

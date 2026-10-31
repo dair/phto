@@ -1,8 +1,10 @@
 #pragma once
 
+#include <crow/json.h>
 #include <imager/types/ErrorCode.h>
 
 #include <string>
+#include <string_view>
 
 // Forward-declare crow types to keep this header light.
 namespace crow {
@@ -36,5 +38,11 @@ crow::response unauthorized(std::string message);
 
 /// 403 Forbidden — code "Forbidden".
 crow::response forbidden(std::string message);
+
+/// True if `s` is exactly 64 lowercase hex characters (an item id).
+bool isLowerHex64(std::string_view s);
+
+/// JSON response with the given status and Content-Type: application/json.
+crow::response jsonOk(int status, const crow::json::wvalue& body);
 
 } // namespace server

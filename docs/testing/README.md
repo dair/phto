@@ -24,3 +24,4 @@ Cross-cutting test structure, build/run commands, and conventions live in
 | Items upload & fetch — `PUT /items`, `GET /items/{id}` (0022.SERVER §6.2/§7/§9, G1) | [items-upload.md](items-upload.md) | complete | 9/9 (100%) |
 | Item content download & delete — `GET /items/{id}/content`, `DELETE /items/{id}` (0022.SERVER §6.2/§7/§14, G3) | [items-content.md](items-content.md) | complete | 8/8 (100%) |
 | Item listing — `GET /items` (filters, untagged, pagination) (0022.SERVER §6.2/§7/§14, G2) | [items-list.md](items-list.md) | complete | 8/8 (100%) |
+| Per-item tags — `/items/{id}/tags` GET/PUT/POST/DELETE (0022.SERVER §6.3/§7/§14, H1) | [item-tags.md](item-tags.md) | complete | 8/8 (100%) |

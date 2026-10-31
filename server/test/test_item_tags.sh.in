@@ -1,0 +1,340 @@
+#!/usr/bin/env bash
+# server/test/test_item_tags.sh.in — H1 per-item tag routes end-to-end test
+#
+# Covers (docs/plan/0022.SERVER.md §6.3, §7, §14.2–14.3, §16 H1):
+#   GET/PUT(replace)/POST(add)/DELETE(one) on /items/{id}/tags, auto-create of
+#   unknown tags, cross-checks via GET /items/{id} and GET /items (tags=, untagged=),
+#   identical tag rows in both per-target DBs, 400/404/401 on every route.
+# Tags are set only through the API; the DBs are read (never written) to verify.
+# Registered as "server_item_tags_test". Configured by CMake configure_file(@ONLY).
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+MOV_FIXTURE="@MOV_FIXTURE@"
+
+PASS=0
+FAIL=0
+
+check() {
+  local name="$1"; shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "PASS: $name"; PASS=$((PASS + 1))
+  else echo "FAIL: $name"; FAIL=$((FAIL + 1)); fi
+}
+
+for tool in curl python3; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_item_tags_test skipped"
+    exit 0
+  fi
+done
+for f in "$JPEG_FIXTURE" "$MOV_FIXTURE"; do
+  if [ ! -f "$f" ]; then echo "FATAL: fixture $f missing"; exit 1; fi
+done
+
+pick_port() {
+  for port in 19530 19531 19532 19533 19534; do
+    if ! ss -tlnp 2>/dev/null | grep -q ":${port} "; then echo "$port"; return 0; fi
+  done
+  echo "19530"
+}
+PORT=$(pick_port)
+
+TMPDIR_TEST=$(mktemp -d)
+T="$TMPDIR_TEST"
+ROOT1="$T/storage1"; ROOT2="$T/storage2"
+DB1="$T/imager1.db"; DB2="$T/imager2.db"
+AUTH_DB="$T/auth.db"
+CFG="$T/test.toml"
+mkdir -p "$ROOT1" "$ROOT2"
+
+cat > "$CFG" <<CFGEOF
+[[targets]]
+root = "$ROOT1"
+database = "$DB1"
+
+[[targets]]
+root = "$ROOT2"
+database = "$DB2"
+
+[server]
+bind = "127.0.0.1"
+port = $PORT
+threads = 2
+max_upload_mb = 8
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+CFGEOF
+
+printf '%s' "alicepass1" | "$IMAGERADMIN_BIN" "$CFG" user add alice "Alice User" --password-stdin || {
+  echo "FATAL: seeding user failed"; rm -rf "$TMPDIR_TEST"; exit 1; }
+
+"$IMAGERD_BIN" "$CFG" >"$T/daemon.stdout" 2>"$T/daemon.stderr" &
+DAEMON_PID=$!
+cleanup() {
+  if [ "${DAEMON_PID:-0}" -gt 0 ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
+
+BASE_URL="http://127.0.0.1:${PORT}"
+READY=$(curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 \
+  --retry-delay 1 --retry-connrefused --max-time 12 "$BASE_URL/health" 2>/dev/null) || READY="000"
+if [ "$READY" != "200" ]; then
+  echo "FATAL: daemon not ready ($READY)"; cat "$T/daemon.stderr" || true; exit 1
+fi
+
+json_get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+
+http() {
+  local prefix="$1"; shift
+  curl --silent --output "$prefix.body" --write-out "%{http_code}" "$@" > "$prefix.status" 2>/dev/null || echo 000 > "$prefix.status"
+}
+
+LOGIN=$(curl --silent --request POST --header "Content-Type: application/json" \
+  --data '{"login":"alice","password":"alicepass1"}' "$BASE_URL/auth/login")
+TOKEN=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$LOGIN" 2>/dev/null || true)
+check "setup: login returns a token" test -n "$TOKEN"
+AUTH="Authorization: Bearer $TOKEN"
+
+# ---- fixtures: 3 distinct JPEGs --------------------------------------------
+python3 - "$JPEG_FIXTURE" "$T" <<'PYEOF'
+import sys
+data = open(sys.argv[1], "rb").read()
+for n in range(1, 4):
+    com = b"variant-%d" % n
+    seg = b"\xff\xfe" + (len(com) + 2).to_bytes(2, "big") + com
+    open("%s/p%d.jpg" % (sys.argv[2], n), "wb").write(data[:2] + seg + data[2:])
+PYEOF
+for n in 1 2 3; do
+  http "$T/up$n" -X PUT -H "$AUTH" -H "X-Filename: p$n.jpg" --data-binary "@$T/p$n.jpg" "$BASE_URL/items"
+done
+check "setup: three uploads → 201" test "$(cat $T/up1.status $T/up2.status $T/up3.status | tr -d '\n')" = 201201201
+A=$(json_get $T/up1.body "d['id']")
+B=$(json_get $T/up2.body "d['id']")
+C=$(json_get $T/up3.body "d['id']")
+UNKNOWN_ID=$(printf 'f%.0s' $(seq 1 64))
+
+# req <prefix> <METHOD> <path> [body]: authenticated JSON request
+req() {
+  if [ $# -ge 4 ]; then
+    http "$1" -X "$2" -H "$AUTH" -H "Content-Type: application/json" --data "$4" "$BASE_URL$3"
+  else
+    http "$1" -X "$2" -H "$AUTH" "$BASE_URL$3"
+  fi
+}
+# tagsof <body>: sorted tags, comma-joined; "-" on nothing
+tagsof() { json_get "$1" "','.join(sorted(d['tags']))"; }
+# gettags <id>: current tags (comma-joined) via GET /items/{id}/tags
+gettags() { req "$T/gt" GET "/items/$1/tags"; tagsof "$T/gt.body"; }
+# itemtags <id>: tags via GET /items/{id}
+itemtags() { req "$T/gi" GET "/items/$1"; tagsof "$T/gi.body"; }
+# listnames <query>: sorted names from GET /items?query
+listnames() { req "$T/ls" GET "/items$1"; json_get "$T/ls.body" "','.join(sorted(i['name'] for i in d['items']))"; }
+
+# ---- GET on untagged item ----------------------------------------------------
+req "$T/g0" GET "/items/$A/tags"
+check "GET tags of untagged item → 200" test "$(cat $T/g0.status)" = 200
+check "GET tags of untagged item → {tags:[]}" test "$(json_get $T/g0.body "d")" = "{'tags': []}"
+
+# ---- PUT replace -------------------------------------------------------------
+req "$T/p1" PUT "/items/$A/tags" '{"tags":["alpha","beta"]}'
+check "PUT [alpha,beta] → 200" test "$(cat $T/p1.status)" = 200
+check "PUT response carries the new set" test "$(tagsof $T/p1.body)" = "alpha,beta"
+check "GET after PUT → alpha,beta" test "$(gettags $A)" = "alpha,beta"
+req "$T/p2" PUT "/items/$A/tags" '{"tags":["gamma"]}'
+check "PUT [gamma] → 200" test "$(cat $T/p2.status)" = 200
+check "PUT replaces: old tags gone, only gamma" test "$(gettags $A)" = "gamma"
+req "$T/p3" PUT "/items/$A/tags" '{"tags":["dup","dup","gamma"]}'
+check "PUT with duplicate names in body → 200" test "$(cat $T/p3.status)" = 200
+check "PUT with duplicate names → set has no duplicates" test "$(json_get $T/p3.body "sorted(d['tags'])")" = "['dup', 'gamma']"
+
+# ---- POST add ----------------------------------------------------------------
+req "$T/a1" POST "/items/$A/tags" '{"tags":["delta","epsilon"]}'
+check "POST {tags:[delta,epsilon]} → 200" test "$(cat $T/a1.status)" = 200
+check "POST response is the full set" test "$(tagsof $T/a1.body)" = "delta,dup,epsilon,gamma"
+check "POST appends: earlier tags kept" test "$(gettags $A)" = "delta,dup,epsilon,gamma"
+req "$T/a2" POST "/items/$A/tags" '{"tag":"zeta"}'
+check "POST {tag:zeta} single form → 200" test "$(cat $T/a2.status)" = 200
+check "POST {tag:zeta} adds zeta" test "$(gettags $A)" = "delta,dup,epsilon,gamma,zeta"
+req "$T/a3" POST "/items/$A/tags" '{"tags":["gamma"]}'
+check "POST duplicate tag → 200 (idempotent)" test "$(cat $T/a3.status)" = 200
+check "POST duplicate tag leaves the set unchanged, no repeats" \
+  test "$(json_get $T/a3.body "len(d['tags'])") $(gettags $A)" = "5 delta,dup,epsilon,gamma,zeta"
+
+# ---- DELETE one --------------------------------------------------------------
+req "$T/d1" DELETE "/items/$A/tags/zeta"
+check "DELETE tag/zeta → 204" test "$(cat $T/d1.status)" = 204
+check "DELETE removes only that tag" test "$(gettags $A)" = "delta,dup,epsilon,gamma"
+req "$T/d2" DELETE "/items/$A/tags/zeta"
+check "DELETE tag not set on item → 404" test "$(cat $T/d2.status)" = 404
+check "DELETE absent tag 404 envelope code is FileNotFound" test "$(json_get $T/d2.body "d['error']['code']")" = FileNotFound
+check "DELETE absent tag leaves the set unchanged" test "$(gettags $A)" = "delta,dup,epsilon,gamma"
+req "$T/d3" DELETE "/items/$A/tags/neverseen"
+check "DELETE never-existing tag name → 404" test "$(cat $T/d3.status)" = 404
+
+# ---- isolation + auto-create -------------------------------------------------
+check "other items unaffected: B has no tags" test "$(gettags $B)" = ""
+check "other items unaffected: C has no tags" test "$(gettags $C)" = ""
+req "$T/n1" PUT "/items/$B/tags" '{"tags":["fresh-put"]}'
+check "PUT with never-seen tag → 200" test "$(cat $T/n1.status)" = 200
+check "PUT auto-creates the tag and binds it" test "$(gettags $B)" = "fresh-put"
+req "$T/n2" POST "/items/$B/tags" '{"tags":["fresh-post"]}'
+check "POST with never-seen tag → 200" test "$(cat $T/n2.status)" = 200
+check "POST auto-creates the tag and binds it" test "$(gettags $B)" = "fresh-post,fresh-put"
+check "auto-created tags exist in the tag table of both DBs" \
+  test "$(python3 - "$DB1" "$DB2" <<'PYEOF'
+import sqlite3, sys
+ok = True
+for p in sys.argv[1:3]:
+    c = sqlite3.connect(p, timeout=10)
+    names = {r[0] for r in c.execute("SELECT name FROM tag")}
+    ok = ok and {"fresh-put", "fresh-post", "alpha", "gamma"} <= names
+    c.close()
+print(ok)
+PYEOF
+)" = True
+
+# ---- cross-checks via other routes --------------------------------------------
+check "GET /items/{id} shows the same tags as GET /items/{id}/tags (A)" test "$(itemtags $A)" = "delta,dup,epsilon,gamma"
+check "GET /items/{id} shows the same tags (B)" test "$(itemtags $B)" = "fresh-post,fresh-put"
+check "GET /items?tags=gamma finds A only" test "$(listnames '?tags=gamma')" = "p1.jpg"
+check "GET /items?tags=delta,gamma (AND) finds A" test "$(listnames '?tags=delta,gamma')" = "p1.jpg"
+check "GET /items?tags=fresh-put finds B only" test "$(listnames '?tags=fresh-put')" = "p2.jpg"
+check "removed tag no longer finds the item (tags=zeta empty)" test "$(listnames '?tags=zeta')" = ""
+check "replaced-away tag no longer finds the item (tags=alpha empty)" test "$(listnames '?tags=alpha')" = ""
+check "untagged=true lists only C while A and B are tagged" test "$(listnames '?untagged=true')" = "p3.jpg"
+
+# ---- clearing ----------------------------------------------------------------
+req "$T/c1" PUT "/items/$A/tags" '{"tags":[]}'
+check "PUT [] → 200" test "$(cat $T/c1.status)" = 200
+check "PUT [] response is {tags:[]}" test "$(json_get $T/c1.body "d")" = "{'tags': []}"
+check "PUT [] clears all tags" test "$(gettags $A)" = ""
+check "GET /items/{id} shows cleared tags" test "$(itemtags $A)" = ""
+check "after clearing, untagged=true lists A again" test "$(listnames '?untagged=true')" = "p1.jpg,p3.jpg"
+check "after clearing, tags=gamma finds nothing" test "$(listnames '?tags=gamma')" = ""
+req "$T/c2" DELETE "/items/$B/tags/fresh-put"
+req "$T/c3" DELETE "/items/$B/tags/fresh-post"
+check "deleting the last tags → untagged=true lists B too" test "$(listnames '?untagged=true')" = "p1.jpg,p2.jpg,p3.jpg"
+
+# ---- both targets hold identical tag rows ------------------------------------
+req "$T/m1" PUT "/items/$A/tags" '{"tags":["x","y","z"]}'
+req "$T/m2" POST "/items/$B/tags" '{"tags":["y","w"]}'
+req "$T/m3" DELETE "/items/$A/tags/z"
+req "$T/m4" PUT "/items/$C/tags" '{"tags":["q"]}'
+req "$T/m5" PUT "/items/$C/tags" '{"tags":[]}'
+cat > "$T/dbdump.py" <<'PYEOF'
+import sqlite3, sys
+def rows(p):
+    c = sqlite3.connect(p, timeout=10)
+    r = (sorted(c.execute("SELECT file_id, tag_name FROM file_tag")),
+         sorted(r[0] for r in c.execute("SELECT name FROM tag")))
+    c.close()
+    return r
+a, b = rows(sys.argv[1]), rows(sys.argv[2])
+mode = sys.argv[3]
+if mode == "same": print(a == b)
+elif mode == "ft": print(",".join("%s:%s" % (f[:4], t) for f, t in a[0]))
+PYEOF
+check "two targets: file_tag and tag rows identical after all changes" \
+  test "$(python3 -I $T/dbdump.py $DB1 $DB2 same)" = True
+check "two targets: file_tag holds exactly the expected bindings" \
+  test "$(python3 -I $T/dbdump.py $DB1 $DB2 ft | tr ',' '\n' | sort | tr '\n' ' ')" = "$(printf '%s\n' "${A:0:4}:x" "${A:0:4}:y" "${B:0:4}:w" "${B:0:4}:y" | sort | tr '\n' ' ')"
+check "two targets: API view agrees (A=x,y B=w,y C empty)" \
+  test "$(gettags $A)|$(gettags $B)|$(gettags $C)" = "x,y|w,y|"
+
+# ---- special characters ------------------------------------------------------
+req "$T/s1" PUT "/items/$A/tags" '{"tags":["sp ace","café","plain"]}'
+check "PUT tags with space / non-ASCII → 200" test "$(cat $T/s1.status)" = 200
+check "special-character tags round-trip" test "$(json_get $T/s1.body "sorted(d['tags'])")" = "['café', 'plain', 'sp ace']"
+check "special-character tags identical in both DBs" test "$(python3 -I $T/dbdump.py $DB1 $DB2 same)" = True
+req "$T/s2" DELETE "/items/$A/tags/sp%20ace"
+check "DELETE tag with URL-encoded space → 204" test "$(cat $T/s2.status)" = 204
+check "DELETE tag/sp%20ace removed 'sp ace' only" test "$(gettags $A)" = "café,plain"
+req "$T/s3" DELETE "/items/$A/tags/caf%C3%A9"
+check "DELETE tag with URL-encoded UTF-8 → 204" test "$(cat $T/s3.status)" = 204
+check "DELETE tag/caf%C3%A9 removed 'café'" test "$(gettags $A)" = "plain"
+
+for esc in "%zz" "%4" "%" "a%G1"; do
+  req "$T/s4" DELETE "/items/$A/tags/$esc"
+  check "DELETE invalid percent-escape '$esc' → 400" test "$(cat $T/s4.status)" = 400
+done
+req "$T/s5" PUT "/items/$A/tags" '{"tags":["a+b","plain"]}'
+req "$T/s6" DELETE "/items/$A/tags/a+b"
+check "DELETE tag/a+b: '+' stays literal → 204" test "$(cat $T/s6.status)" = 204
+check "DELETE a+b removed 'a+b' only" test "$(gettags $A)" = "plain"
+
+# ---- error handling: malformed id, unknown item, auth -------------------------
+for spec in "GET|/tags|" "PUT|/tags|{\"tags\":[\"a\"]}" "POST|/tags|{\"tags\":[\"a\"]}" "DELETE|/tags/a|"; do
+  IFS='|' read -r M SUF BODY <<<"$spec"
+  if [ -n "$BODY" ]; then
+    req "$T/e1" "$M" "/items/not-a-valid-id$SUF" "$BODY"
+    req "$T/e2" "$M" "/items/${A:0:63}$SUF" "$BODY"
+    req "$T/e3" "$M" "/items/$UNKNOWN_ID$SUF" "$BODY"
+    http "$T/e4" -X "$M" -H "Content-Type: application/json" --data "$BODY" "$BASE_URL/items/$A$SUF"
+  else
+    req "$T/e1" "$M" "/items/not-a-valid-id$SUF"
+    req "$T/e2" "$M" "/items/${A:0:63}$SUF"
+    req "$T/e3" "$M" "/items/$UNKNOWN_ID$SUF"
+    http "$T/e4" -X "$M" "$BASE_URL/items/$A$SUF"
+  fi
+  check "$M malformed id → 400" test "$(cat $T/e1.status)" = 400
+  check "$M too-short hex id → 400" test "$(cat $T/e2.status)" = 400
+  check "$M unknown item → 404" test "$(cat $T/e3.status)" = 404
+  check "$M unknown item → error envelope code present" test -n "$(json_get $T/e3.body "d['error']['code']")"
+  check "$M without token → 401" test "$(cat $T/e4.status)" = 401
+done
+http "$T/e5" -X GET -H "Authorization: Bearer not.a.token" "$BASE_URL/items/$A/tags"
+check "GET with invalid token → 401" test "$(cat $T/e5.status)" = 401
+check "unknown item did not get created by PUT/POST (A tags still 'plain')" test "$(gettags $A)" = "plain"
+
+# ---- error handling: bad bodies ----------------------------------------------
+for M in PUT POST; do
+  for bad in '{bad' '' '{}' '[]' '{"tags":"x"}' '{"tags":null}' '{"tags":["a",1]}' '{"tags":[null]}' '{"tags":[""]}' '{"tags":["ok",""]}' '{"tags":{"a":1}}' '{"tags":["a,b"]}' "{\"tags\":[\"$(printf 'x%.0s' $(seq 1 256))\"]}"; do
+    req "$T/bb" "$M" "/items/$A/tags" "$bad"
+    check "$M body '$bad' → 400" test "$(cat $T/bb.status)" = 400
+  done
+  req "$T/bb" "$M" "/items/$UNKNOWN_ID/tags" '{bad'
+  check "$M bad body on unknown item → 400 (validated before lookup)" test "$(cat $T/bb.status)" = 400
+  req "$T/bb" "$M" "/items/$A/tags" '{bad'
+  check "$M 400 error.code is BadRequest" test "$(json_get $T/bb.body "d['error']['code']")" = BadRequest
+done
+req "$T/bb" PUT "/items/$A/tags" '{"tag":"x"}'
+check "PUT body {tag:x} (not accepted on PUT) → 400" test "$(cat $T/bb.status)" = 400
+req "$T/bb" PUT "/items/$A/tags" "{\"tags\":[\"$(printf 'x%.0s' $(seq 1 255))\"]}"
+check "PUT tag name of exactly 255 bytes → 200" test "$(cat $T/bb.status)" = 200
+req "$T/bb" PUT "/items/$A/tags" '{"tags":["plain"]}'
+for bad in '{"tag":1}' '{"tag":""}' '{"tag":["a"]}'; do
+  req "$T/bb" POST "/items/$A/tags" "$bad"
+  check "POST body '$bad' → 400" test "$(cat $T/bb.status)" = 400
+done
+check "rejected requests left the tag set unchanged" test "$(gettags $A)" = "plain"
+check "rejected requests left both DBs identical" test "$(python3 -I $T/dbdump.py $DB1 $DB2 same)" = True
+
+# ---- graceful shutdown -------------------------------------------------------
+SIGTERM_OK=0
+if kill -TERM "$DAEMON_PID" 2>/dev/null; then
+  for _i in $(seq 1 50); do kill -0 "$DAEMON_PID" 2>/dev/null || break; sleep 0.1; done
+  if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+    EXIT=0; wait "$DAEMON_PID" 2>/dev/null || EXIT=$?
+    [ "$EXIT" -eq 0 ] && SIGTERM_OK=1
+  else kill -KILL "$DAEMON_PID" 2>/dev/null || true; fi
+fi
+if [ "$SIGTERM_OK" -eq 1 ]; then echo "PASS: SIGTERM causes clean exit (status 0)"; PASS=$((PASS+1))
+else echo "FAIL: SIGTERM causes clean exit (status 0)"; FAIL=$((FAIL+1)); fi
+DAEMON_PID=0
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

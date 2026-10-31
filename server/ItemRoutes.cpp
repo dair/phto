@@ -71,21 +71,10 @@ private:
   fs::path m_path;
 };
 
-bool isLowerHex64(std::string_view s) {
-  return s.size() == ID_LEN &&
-         std::ranges::all_of(s, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
-}
-
 /// Strip any directory components (both separators) from a client-supplied name.
 std::string baseName(std::string name) {
   auto pos = name.find_last_of("/\\");
   return pos == std::string::npos ? name : name.substr(pos + 1);
-}
-
-crow::response jsonOk(int status, const crow::json::wvalue& body) {
-  crow::response res{status, body.dump()};
-  res.add_header("Content-Type", "application/json");
-  return res;
 }
 
 crow::json::wvalue imageToJson(const imager::ImageInfo& info) {

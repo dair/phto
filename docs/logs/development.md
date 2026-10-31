@@ -221,3 +221,9 @@
 - **Task**: `GET /items` (tags AND / untagged / all, pagination) in `server/ItemRoutes.cpp`.
 - **Outcome**: Reuses existing facade (`getImagesByTags`, `getUntaggedImages`, `listImages`; SQL-side LIMIT/OFFSET, no new DB code). Envelope `{items, offset, limit}` per plan §6.2. `offset` 0..2^31-1, `limit` 1..500 default 50; out-of-range/non-numeric -> 400 (no clamping, unlike `/users`). `tags` comma list and/or repeated, deduped (SQL uses COUNT DISTINCT = n); empty element -> 400; `untagged` must be true/false; untagged+tags -> 400. Factored `imageToJson` shared with `GET /items/{id}`.
 - **Next Step**: g2-test builds/runs test_list.
+
+## [2026-10-31 14:00] - M-H H1 per-item tag routes
+- **Agent**: cpp-spec-coder
+- **Task**: `GET/PUT/POST /items/{id}/tags`, `DELETE /items/{id}/tags/{tag}` in new `server/TagRoutes.{h,cpp}`.
+- **Outcome**: No new facade calls (setImageTags/tagImage/untagImage/getImageTags suffice; MultiDatabase set/bind/unbind use parallelWriteAll with compensation). POST = read current + union + `setImageTags` (tagImage fails on already-bound and needs existing tag), serialized by a process mutex with PUT/DELETE. Success 200 `{tags}`; DELETE 204; unbound tag -> 404; names validated 1-255 bytes, no commas (400). `isLowerHex64`/`jsonOk` moved to Json.{h,cpp}. Validation precedes item lookup.
+- **Next Step**: h1-test runs test_item_tags; H2 global /tags.
