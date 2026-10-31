@@ -12,6 +12,14 @@
 
 namespace auth {
 
+/// Partial user update; unset fields are left unchanged.
+struct UserUpdate {
+  std::optional<std::string> fullName;
+  std::optional<PasswordRecord> password;
+  std::optional<bool> isAdmin;
+  std::optional<bool> enabled;
+};
+
 class UserStore {
 public:
   explicit UserStore(const std::filesystem::path& dbPath);
@@ -36,6 +44,17 @@ public:
 
   /// Toggle admin flag. Throws AuthException(NotFound) if login absent.
   void setAdmin(const std::string& login, bool isAdmin);
+
+  /// Delete a user unless it is the last enabled admin. Atomic (one IMMEDIATE transaction).
+  /// Throws AuthException(NotFound) if absent, AuthException(LastAdmin) if it would leave no enabled admin.
+  void removeGuarded(const std::string& login);
+
+  /// Apply a partial update atomically. Throws NotFound if absent, LastAdmin if the update would
+  /// demote or disable the last enabled admin (nothing is changed in that case).
+  void update(const std::string& login, const UserUpdate& upd);
+
+  /// Number of users that are both admin and enabled.
+  uint64_t countEnabledAdmins();
 
   /// Fetch a user record; returns nullopt when not found.
   std::optional<User> get(const std::string& login);

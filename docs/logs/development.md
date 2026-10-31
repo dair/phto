@@ -233,3 +233,9 @@
 - **Task**: GET/POST /tags, DELETE /tags/{name}
 - **Outcome**: Routes added to TagRoutes.cpp under g_tagMutex. Not admin-only (plan §6.4/§13 restrict only /users). `Imager::createTag` now returns DuplicateFile on a duplicate (409); test added in ImagerTests. `parseUintParam` moved to Json.{h,cpp}. Delete is all-or-nothing via MultiDatabase::deleteTag; unbinding via FK cascade. Build + ctest 28/28 green.
 - **Next Step**: h2-test writes test_tags.sh.in
+
+## [2026-10-31 15:00] - M-I I1 admin /users CRUD + last-admin guard
+- **Agent**: cpp-spec-coder (i1-dev)
+- **Task**: POST/GET/PATCH/DELETE /users[/{login}], last-admin guard, token re-check.
+- **Outcome**: New `server/UserRoutes.{h,cpp}` (GET /users moved there; `requireAdmin` now public in AuthRoutes.h; `percentDecode` moved to Json.{h,cpp}). `UserStore` gains `removeGuarded`, `update(UserUpdate)`, `countEnabledAdmins`, `AuthErrorCode::LastAdmin`; guard runs in one `BEGIN IMMEDIATE` transaction under the store mutex (also safe against imageradmin in another process); 9 new CPPUnit tests incl. concurrent demotion. Guard rejection = 409 code `LastAdmin`; duplicate = 409 `Conflict`; unknown = 404 `NotFound`. Validation: login 1..64 [A-Za-z0-9._@-], fullName 1..255, password 8..1024, POST requires all four fields; PATCH rejects empty/unknown/ill-typed. `AuthMiddleware` now re-reads the user per request: deleted/disabled -> 401, isAdmin/fullName taken from DB (immediate demotion). Self-delete/demote allowed unless last admin. Build + ctest 30/30 green.
+- **Next Step**: i1-test owns the build; root commits.

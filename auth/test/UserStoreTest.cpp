@@ -42,6 +42,16 @@ class UserStoreTest: public CppUnit::TestFixture {
   CPPUNIT_TEST(testListOffsetBeyondEnd);
   CPPUNIT_TEST(testCount);
   CPPUNIT_TEST(testConcurrency);
+  CPPUNIT_TEST(testCountEnabledAdmins);
+  CPPUNIT_TEST(testRemoveGuarded);
+  CPPUNIT_TEST(testRemoveGuardedLastAdminRejected);
+  CPPUNIT_TEST(testRemoveGuardedDisabledAdminDoesNotCount);
+  CPPUNIT_TEST(testUpdatePartial);
+  CPPUNIT_TEST(testUpdatePassword);
+  CPPUNIT_TEST(testUpdateMissingThrows);
+  CPPUNIT_TEST(testUpdateLastAdminGuard);
+  CPPUNIT_TEST(testUpdateGuardIsAtomic);
+  CPPUNIT_TEST(testGuardedConcurrentDemotion);
   CPPUNIT_TEST_SUITE_END();
 
 public:
@@ -295,6 +305,158 @@ public:
     CPPUNIT_ASSERT_EQUAL(0, errors.load());
     // Verify data integrity: all 10 original users still present.
     CPPUNIT_ASSERT_EQUAL(uint64_t(10), m_store->count());
+  }
+
+  static bool throwsCode(auto&& fn, AuthErrorCode code) {
+    try {
+      fn();
+    } catch (const AuthException& e) {
+      return e.code() == code;
+    }
+    return false;
+  }
+
+  void testCountEnabledAdmins() {
+    CPPUNIT_ASSERT_EQUAL(uint64_t(0), m_store->countEnabledAdmins());
+    addUser("a", "A", true);
+    addUser("b", "B", true);
+    addUser("c", "C", false);
+    CPPUNIT_ASSERT_EQUAL(uint64_t(2), m_store->countEnabledAdmins());
+    m_store->setEnabled("b", false);
+    CPPUNIT_ASSERT_EQUAL(uint64_t(1), m_store->countEnabledAdmins());
+  }
+
+  void testRemoveGuarded() {
+    addUser("a", "A", true);
+    addUser("b", "B", true);
+    addUser("c", "C", false);
+    m_store->removeGuarded("c");
+    m_store->removeGuarded("a"); // not the last admin
+    CPPUNIT_ASSERT(!m_store->get("a").has_value());
+    CPPUNIT_ASSERT(throwsCode([&] { m_store->removeGuarded("zzz"); }, AuthErrorCode::NotFound));
+  }
+
+  void testRemoveGuardedLastAdminRejected() {
+    addUser("a", "A", true);
+    addUser("c", "C", false);
+    CPPUNIT_ASSERT(throwsCode([&] { m_store->removeGuarded("a"); }, AuthErrorCode::LastAdmin));
+    CPPUNIT_ASSERT(m_store->get("a").has_value());
+  }
+
+  void testRemoveGuardedDisabledAdminDoesNotCount() {
+    addUser("a", "A", true);
+    addUser("b", "B", true);
+    m_store->setEnabled("b", false);
+    // b is disabled, so a is the last *enabled* admin.
+    CPPUNIT_ASSERT(throwsCode([&] { m_store->removeGuarded("a"); }, AuthErrorCode::LastAdmin));
+    // Removing the disabled admin is fine.
+    m_store->removeGuarded("b");
+    CPPUNIT_ASSERT(!m_store->get("b").has_value());
+  }
+
+  void testUpdatePartial() {
+    addUser("a", "A", true);
+    addUser("b", "B", false);
+    auto before = m_store->get("b");
+    auto pwBefore = m_store->getPassword("b");
+    auth::UserUpdate u;
+    u.fullName = "Bee";
+    m_store->update("b", u);
+    auto after = m_store->get("b");
+    CPPUNIT_ASSERT_EQUAL(std::string("Bee"), after->fullName);
+    CPPUNIT_ASSERT(!after->isAdmin);
+    CPPUNIT_ASSERT(after->enabled);
+    CPPUNIT_ASSERT(m_store->getPassword("b")->hash == pwBefore->hash);
+
+    auth::UserUpdate v;
+    v.isAdmin = true;
+    v.enabled = false;
+    m_store->update("b", v);
+    after = m_store->get("b");
+    CPPUNIT_ASSERT_EQUAL(std::string("Bee"), after->fullName);
+    CPPUNIT_ASSERT(after->isAdmin);
+    CPPUNIT_ASSERT(!after->enabled);
+  }
+
+  void testUpdatePassword() {
+    addUser("a", "A", true);
+    auth::UserUpdate u;
+    u.password = makePw("new-secret");
+    m_store->update("a", u);
+    auto rec = m_store->getPassword("a");
+    CPPUNIT_ASSERT(auth::verifyPassword("new-secret", *rec));
+    CPPUNIT_ASSERT(!auth::verifyPassword("pw-a", *rec));
+  }
+
+  void testUpdateMissingThrows() {
+    auth::UserUpdate u;
+    u.fullName = "x";
+    CPPUNIT_ASSERT(throwsCode([&] { m_store->update("nobody", u); }, AuthErrorCode::NotFound));
+  }
+
+  void testUpdateLastAdminGuard() {
+    addUser("a", "A", true);
+    auth::UserUpdate demote;
+    demote.isAdmin = false;
+    CPPUNIT_ASSERT(throwsCode([&] { m_store->update("a", demote); }, AuthErrorCode::LastAdmin));
+    auth::UserUpdate disable;
+    disable.enabled = false;
+    CPPUNIT_ASSERT(throwsCode([&] { m_store->update("a", disable); }, AuthErrorCode::LastAdmin));
+    // Harmless updates (including re-asserting admin/enabled) still work.
+    auth::UserUpdate ok;
+    ok.fullName = "Alpha";
+    ok.isAdmin = true;
+    ok.enabled = true;
+    m_store->update("a", ok);
+    CPPUNIT_ASSERT_EQUAL(std::string("Alpha"), m_store->get("a")->fullName);
+    // With a second admin, demoting the first is allowed.
+    addUser("b", "B", true);
+    m_store->update("a", demote);
+    CPPUNIT_ASSERT(!m_store->get("a")->isAdmin);
+    // ...and now b is the last one.
+    CPPUNIT_ASSERT(throwsCode([&] { m_store->update("b", disable); }, AuthErrorCode::LastAdmin));
+  }
+
+  void testUpdateGuardIsAtomic() {
+    addUser("a", "A", true);
+    auth::UserUpdate u;
+    u.fullName = "Changed";
+    u.password = makePw("changed");
+    u.enabled = false;
+    CPPUNIT_ASSERT(throwsCode([&] { m_store->update("a", u); }, AuthErrorCode::LastAdmin));
+    CPPUNIT_ASSERT_EQUAL(std::string("A"), m_store->get("a")->fullName);
+    CPPUNIT_ASSERT(auth::verifyPassword("pw-a", *m_store->getPassword("a")));
+  }
+
+  // Many threads race to demote/disable/delete admins; at least one enabled admin must survive.
+  void testGuardedConcurrentDemotion() {
+    constexpr int N = 8;
+    for (int i = 0; i < N; ++i) {
+      addUser("adm" + std::to_string(i), "Admin", true);
+    }
+    std::vector<std::thread> threads;
+    for (int i = 0; i < N; ++i) {
+      threads.emplace_back([this, i] {
+        const std::string login = "adm" + std::to_string(i);
+        try {
+          if (i % 3 == 0) {
+            m_store->removeGuarded(login);
+          } else {
+            auth::UserUpdate u;
+            if (i % 3 == 1) {
+              u.isAdmin = false;
+            } else {
+              u.enabled = false;
+            }
+            m_store->update(login, u);
+          }
+        } catch (const AuthException&) {}
+      });
+    }
+    for (auto& t : threads) {
+      t.join();
+    }
+    CPPUNIT_ASSERT_EQUAL(uint64_t(1), m_store->countEnabledAdmins());
   }
 
 private:

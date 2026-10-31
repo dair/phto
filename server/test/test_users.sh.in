@@ -1,0 +1,414 @@
+#!/usr/bin/env bash
+# server/test/test_users.sh.in — I1 admin user management e2e test
+#
+# Covers POST/GET/PATCH/DELETE /users[/{login}] (GET /users list from F2),
+# admin-only authz (401/403), validation (400), duplicates (409), the
+# password-hash non-disclosure rule, and the last-admin guard.
+#
+# Configured by CMake configure_file(@ONLY); @IMAGERD_BIN@ / @IMAGERADMIN_BIN@
+# are injected. Registered as CTest entry "server_users_test".
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+
+# ---- Contract knobs (aligned with i1-dev's contract) -----------------------
+GUARD_STATUS=409                 # last-admin guard rejection status
+PATCH_UNKNOWN_STATUS=400         # PATCH with only unknown fields
+DISABLED_TOKEN_STATUS=401        # token of a since-disabled user (middleware re-reads DB)
+DELETED_TOKEN_STATUS=401         # token of a since-deleted user
+DISABLED_LOGIN_STATUS=403        # F1: disabled account login
+
+PASS=0
+FAIL=0
+
+check() {   # check <name> <expected> <actual>
+  if [ "$2" = "$3" ]; then
+    echo "PASS: $1"; PASS=$((PASS + 1))
+  else
+    echo "FAIL: $1 (expected '$2', got '$3')"; FAIL=$((FAIL + 1))
+  fi
+}
+
+if ! command -v curl >/dev/null 2>&1; then
+  echo "SKIP: curl not found — server_users_test skipped"
+  exit 0
+fi
+
+PORT=19550
+for p in 19550 19551 19552 19553 19554; do
+  if ! ss -tlnp 2>/dev/null | grep -q ":${p} "; then PORT=$p; break; fi
+done
+
+TMPDIR_TEST=$(mktemp -d)
+STORAGE_ROOT="$TMPDIR_TEST/storage"
+CFG="$TMPDIR_TEST/test.toml"
+OUT="$TMPDIR_TEST/out.json"
+mkdir -p "$STORAGE_ROOT"
+
+cat > "$CFG" <<CFGEOF
+[[targets]]
+root = "$STORAGE_ROOT"
+database = "$TMPDIR_TEST/imager.db"
+
+[server]
+bind = "127.0.0.1"
+port = $PORT
+threads = 1
+
+[auth]
+database = "$TMPDIR_TEST/auth.db"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+CFGEOF
+
+seed_user() {
+  printf '%s' "$3" | "$IMAGERADMIN_BIN" "$CFG" user add "$1" "$2" ${4:-} --password-stdin
+}
+
+seed_user root "Root Admin" "rootpass1" "--admin" || { echo "FATAL: seed root"; rm -rf "$TMPDIR_TEST"; exit 1; }
+seed_user bob "Bob Regular" "bobpass12" || { echo "FATAL: seed bob"; rm -rf "$TMPDIR_TEST"; exit 1; }
+
+"$IMAGERD_BIN" "$CFG" >"$TMPDIR_TEST/daemon.stdout" 2>"$TMPDIR_TEST/daemon.stderr" &
+DAEMON_PID=$!
+
+cleanup() {
+  if [ "${DAEMON_PID:-0}" -gt 0 ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
+
+BASE_URL="http://127.0.0.1:${PORT}"
+READY=$(curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 \
+  --retry-delay 1 --retry-connrefused --max-time 12 "$BASE_URL/health" 2>/dev/null) || READY="000"
+if [ "$READY" != "200" ]; then
+  echo "FATAL: daemon did not become ready ($READY)"
+  cat "$TMPDIR_TEST/daemon.stderr" || true
+  exit 1
+fi
+
+# ---- helpers ---------------------------------------------------------------
+# req <METHOD> <path> <token|-> [json-body]  → sets STATUS, body in $OUT
+req() {
+  local args=(--silent --output "$OUT" --write-out "%{http_code}" --request "$1")
+  [ "$3" != "-" ] && args+=(--header "Authorization: Bearer $3")
+  if [ $# -ge 4 ]; then
+    args+=(--header "Content-Type: application/json" --data "$4")
+  fi
+  STATUS=$(curl "${args[@]}" "${BASE_URL}$2" 2>/dev/null) || STATUS="000"
+}
+
+# login <login> <password> → sets LSTATUS, LTOKEN
+login() {
+  req POST /auth/login - "{\"login\":\"$1\",\"password\":\"$2\"}"
+  LSTATUS="$STATUS"
+  LTOKEN=$(python3 -I -c 'import sys,json
+try: print(json.load(open(sys.argv[1])).get("token",""))
+except Exception: print("")' "$OUT" 2>/dev/null)
+}
+
+# jv <python-expr over d> → evaluates on $OUT JSON (prints ERR on failure)
+jv() {
+  python3 -I -c 'import sys,json
+d=json.load(open(sys.argv[1]))
+try: print(eval(sys.argv[2]))
+except Exception: print("ERR")' "$OUT" "$1" 2>/dev/null
+}
+
+# nosecrets → "clean" if no key anywhere in $OUT mentions hash/salt/password
+nosecrets() {
+  python3 -I -c 'import sys,json
+def keys(x):
+    if isinstance(x,dict):
+        for k,v in x.items():
+            yield k
+            yield from keys(v)
+    elif isinstance(x,list):
+        for i in x: yield from keys(i)
+d=json.load(open(sys.argv[1]))
+bad=[k for k in keys(d) if any(s in k.lower() for s in ("hash","salt","password","iterations"))]
+print("clean" if not bad else "leak:"+",".join(bad))' "$OUT" 2>/dev/null
+}
+
+# ---- bootstrap -------------------------------------------------------------
+login root rootpass1
+check "bootstrap: root login → 200" 200 "$LSTATUS"
+AT="$LTOKEN"
+login bob bobpass12
+check "bootstrap: bob login → 200" 200 "$LSTATUS"
+BT="$LTOKEN"
+
+# ---- create ----------------------------------------------------------------
+req POST /users "$AT" '{"login":"alice","fullName":"Alice A","password":"alicepass1","isAdmin":false}'
+check "POST /users regular user → 201" 201 "$STATUS"
+req POST /users "$AT" '{"login":"adm2","fullName":"Second Admin","password":"adm2pass12","isAdmin":true}'
+check "POST /users second admin → 201" 201 "$STATUS"
+login alice alicepass1
+check "created regular user can log in → 200" 200 "$LSTATUS"
+ALICE_TOKEN="$LTOKEN"
+login adm2 adm2pass12
+check "created admin can log in → 200" 200 "$LSTATUS"
+ADM2_TOKEN="$LTOKEN"
+req GET /users "$ADM2_TOKEN"
+check "created admin can reach GET /users → 200" 200 "$STATUS"
+req GET /users "$ALICE_TOKEN"
+check "created regular user gets 403 on GET /users" 403 "$STATUS"
+
+req POST /users "$AT" '{"login":"alice","fullName":"Dup","password":"duppass123","isAdmin":false}'
+check "POST /users duplicate login → 409" 409 "$STATUS"
+req GET /users/alice "$AT"
+check "duplicate POST did not overwrite fullName" "Alice A" "$(jv 'd["fullName"]')"
+
+req POST /users "$AT" '{"fullName":"X","password":"xxxxxxxx1","isAdmin":false}'
+check "POST missing login → 400" 400 "$STATUS"
+req POST /users "$AT" '{"login":"nopw","fullName":"X","isAdmin":false}'
+check "POST missing password → 400" 400 "$STATUS"
+req POST /users "$AT" '{}'
+check "POST empty object → 400" 400 "$STATUS"
+req POST /users "$AT" 'not json'
+check "POST non-JSON body → 400" 400 "$STATUS"
+req POST /users "$AT" '{"login":123,"fullName":"X","password":"xxxxxxxx1","isAdmin":false}'
+check "POST login wrong type → 400" 400 "$STATUS"
+req POST /users "$AT" '{"login":"wt1","fullName":"X","password":12345678,"isAdmin":false}'
+check "POST password wrong type → 400" 400 "$STATUS"
+req POST /users "$AT" '{"login":"wt2","fullName":"X","password":"xxxxxxxx1","isAdmin":"yes"}'
+check "POST isAdmin wrong type → 400" 400 "$STATUS"
+req POST /users "$AT" '{"login":"wt3","fullName":["x"],"password":"xxxxxxxx1","isAdmin":false}'
+check "POST fullName wrong type → 400" 400 "$STATUS"
+req POST /users "$AT" '{"login":"shortpw","fullName":"X","password":"short","isAdmin":false}'
+check "POST short password (<8) → 400" 400 "$STATUS"
+req POST /users "$AT" '{"login":"bad login","fullName":"X","password":"xxxxxxxx1","isAdmin":false}'
+check "POST login with space → 400" 400 "$STATUS"
+req POST /users "$AT" '{"login":"","fullName":"X","password":"xxxxxxxx1","isAdmin":false}'
+check "POST empty login → 400" 400 "$STATUS"
+for l in nopw shortpw wt1 wt2 wt3; do
+  req GET "/users/$l" "$AT"
+  check "rejected POST created nothing ($l) → 404" 404 "$STATUS"
+done
+
+# ---- read ------------------------------------------------------------------
+req GET /users/alice "$AT"
+check "GET /users/alice → 200" 200 "$STATUS"
+check "GET login field" alice "$(jv 'd["login"]')"
+check "GET fullName field" "Alice A" "$(jv 'd["fullName"]')"
+check "GET isAdmin false" False "$(jv 'd["isAdmin"]')"
+check "GET enabled true" True "$(jv 'd["enabled"]')"
+check "GET body has no hash/salt/password keys" clean "$(nosecrets)"
+req GET /users/adm2 "$AT"
+check "GET adm2 isAdmin true" True "$(jv 'd["isAdmin"]')"
+req GET /users "$AT"
+check "GET /users list still works → 200" 200 "$STATUS"
+check "GET /users list has no hash/salt/password keys" clean "$(nosecrets)"
+check "GET /users list contains alice and adm2" True \
+  "$(jv '{"alice","adm2","root","bob"} <= {u["login"] for u in d["users"]}')"
+req GET /users/nosuchuser "$AT"
+check "GET unknown login → 404" 404 "$STATUS"
+
+# ---- authz: non-admin 403, anonymous 401 on all five routes ----------------
+NEWU='{"login":"mallory","fullName":"M","password":"mallory123","isAdmin":false}'
+req GET /users "$BT";                        check "non-admin GET /users → 403" 403 "$STATUS"
+req POST /users "$BT" "$NEWU";               check "non-admin POST /users → 403" 403 "$STATUS"
+req GET /users/alice "$BT";                  check "non-admin GET /users/alice → 403" 403 "$STATUS"
+req PATCH /users/alice "$BT" '{"fullName":"Hacked"}'; check "non-admin PATCH → 403" 403 "$STATUS"
+req DELETE /users/alice "$BT";               check "non-admin DELETE → 403" 403 "$STATUS"
+req GET /users/nosuchuser "$BT";             check "non-admin GET unknown login → 403 (not 404)" 403 "$STATUS"
+req GET /users "-";                          check "anonymous GET /users → 401" 401 "$STATUS"
+req POST /users - "$NEWU";                   check "anonymous POST /users → 401" 401 "$STATUS"
+req GET /users/alice -;                      check "anonymous GET /users/alice → 401" 401 "$STATUS"
+req PATCH /users/alice - '{"fullName":"Hacked"}'; check "anonymous PATCH → 401" 401 "$STATUS"
+req DELETE /users/alice -;                   check "anonymous DELETE → 401" 401 "$STATUS"
+req GET /users "garbage.token.value";        check "garbage bearer GET /users → 401" 401 "$STATUS"
+req GET /users/mallory "$AT";                check "rejected non-admin POST created nothing → 404" 404 "$STATUS"
+req GET /users/alice "$AT"
+check "rejected non-admin PATCH/DELETE left alice intact" "Alice A" "$(jv 'd["fullName"]')"
+
+# ---- PATCH -----------------------------------------------------------------
+req PATCH /users/alice "$AT" '{"fullName":"Alice Renamed"}'
+check "PATCH fullName → 204" 204 "$STATUS"
+req GET /users/alice "$AT"
+check "fullName change visible on GET" "Alice Renamed" "$(jv 'd["fullName"]')"
+check "fullName PATCH left isAdmin unchanged" False "$(jv 'd["isAdmin"]')"
+login alice alicepass1
+check "fullName PATCH left password unchanged" 200 "$LSTATUS"
+
+req POST /users "$AT" '{"login":"carol","fullName":"Carol","password":"carolpass1","isAdmin":false}'
+req PATCH /users/carol "$AT" '{"password":"carolnewpass"}'
+check "PATCH password → 204" 204 "$STATUS"
+login carol carolnewpass
+check "new password works → 200" 200 "$LSTATUS"
+login carol carolpass1
+check "old password refused → 401" 401 "$LSTATUS"
+req PATCH /users/carol "$AT" '{"password":"short"}'
+check "PATCH short password → 400" 400 "$STATUS"
+login carol carolnewpass
+check "rejected short password left password intact" 200 "$LSTATUS"
+
+req POST /users "$AT" '{"login":"dave","fullName":"Dave","password":"davepass12","isAdmin":false}'
+req PATCH /users/dave "$AT" '{"isAdmin":true}'
+check "PATCH isAdmin true → 204" 204 "$STATUS"
+login dave davepass12
+DAVE_ADMIN_TOKEN="$LTOKEN"
+req GET /users "$LTOKEN"
+check "promoted user (fresh token) reaches /users → 200" 200 "$STATUS"
+req PATCH /users/dave "$AT" '{"isAdmin":false}'
+check "PATCH isAdmin false (not last admin) → 204" 204 "$STATUS"
+req GET /users "$DAVE_ADMIN_TOKEN"
+check "demoted user's old admin token gets 403 immediately" 403 "$STATUS"
+login dave davepass12
+req GET /users "$LTOKEN"
+check "demoted user (fresh token) gets 403" 403 "$STATUS"
+req GET /users/dave "$AT"
+check "demoted user isAdmin false on GET" False "$(jv 'd["isAdmin"]')"
+
+req POST /users "$AT" '{"login":"erin","fullName":"Erin","password":"erinpass12","isAdmin":false}'
+login erin erinpass12
+ERIN_TOKEN="$LTOKEN"
+req PATCH /users/erin "$AT" '{"enabled":false}'
+check "PATCH enabled false → 204" 204 "$STATUS"
+login erin erinpass12
+check "disabled user login refused" "$DISABLED_LOGIN_STATUS" "$LSTATUS"
+req GET /users/erin "$AT"
+check "GET shows enabled false" False "$(jv 'd["enabled"]')"
+req GET /auth/me "$ERIN_TOKEN"
+check "disabled user's existing token status " "$DISABLED_TOKEN_STATUS" "$STATUS"
+req PATCH /users/erin "$AT" '{"enabled":true,"fullName":"Erin Back"}'
+check "PATCH multiple fields → 204" 204 "$STATUS"
+login erin erinpass12
+check "re-enabled user login → 200" 200 "$LSTATUS"
+req GET /users/erin "$AT"
+check "multi-field PATCH applied fullName" "Erin Back" "$(jv 'd["fullName"]')"
+
+req PATCH /users/erin "$AT" '{}'
+check "PATCH empty object → 400" 400 "$STATUS"
+req PATCH /users/erin "$AT" 'not json'
+check "PATCH non-JSON → 400" 400 "$STATUS"
+req PATCH /users/erin "$AT" '{"enabled":"no"}'
+check "PATCH enabled wrong type → 400" 400 "$STATUS"
+req PATCH /users/erin "$AT" '{"isAdmin":1}'
+check "PATCH isAdmin wrong type → 400" 400 "$STATUS"
+req PATCH /users/erin "$AT" '{"fullName":42}'
+check "PATCH fullName wrong type → 400" 400 "$STATUS"
+req PATCH /users/erin "$AT" '{"bogusField":1}'
+check "PATCH only unknown field" "$PATCH_UNKNOWN_STATUS" "$STATUS"
+req PATCH /users/nosuchuser "$AT" '{"fullName":"X"}'
+check "PATCH unknown login → 404" 404 "$STATUS"
+req DELETE /users/nosuchuser "$AT"
+check "DELETE unknown login → 404" 404 "$STATUS"
+
+# ---- delete ----------------------------------------------------------------
+req POST /users "$AT" '{"login":"frank","fullName":"Frank","password":"frankpass1","isAdmin":false}'
+login frank frankpass1
+FRANK_TOKEN="$LTOKEN"
+req DELETE /users/frank "$AT"
+check "DELETE user → 204" 204 "$STATUS"
+req GET /users/frank "$AT"
+check "GET deleted user → 404" 404 "$STATUS"
+login frank frankpass1
+check "deleted user login refused → 401" 401 "$LSTATUS"
+req GET /auth/me "$FRANK_TOKEN"
+check "deleted user's existing token status " "$DELETED_TOKEN_STATUS" "$STATUS"
+req DELETE /users/frank "$AT"
+check "second DELETE → 404" 404 "$STATUS"
+req GET /users "$AT"
+check "deleted user absent from list" False "$(jv '"frank" in {u["login"] for u in d["users"]}')"
+
+# ---- percent-encoded login in path ----------------------------------------
+req POST /users "$AT" '{"login":"enc@user","fullName":"Enc","password":"encpass123","isAdmin":false}'
+check "POST login with @ → 201" 201 "$STATUS"
+req GET "/users/enc%40user" "$AT"
+check "GET percent-encoded login → 200" 200 "$STATUS"
+check "percent-encoded path decoded to enc@user" enc@user "$(jv 'd["login"]')"
+req PATCH "/users/enc%40user" "$AT" '{"fullName":"Enc2"}'
+check "PATCH percent-encoded login → 204" 204 "$STATUS"
+req DELETE "/users/enc%40user" "$AT"
+check "DELETE percent-encoded login → 204" 204 "$STATUS"
+req GET /users/enc@user "$AT"
+check "encoded DELETE removed the user → 404" 404 "$STATUS"
+
+req GET "/users/enc%4" "$AT"
+check "malformed percent escape → 400" 400 "$STATUS"
+req GET "/users/bad%20name" "$AT"
+check "valid escape decoding to invalid login (space) → 404" 404 "$STATUS"
+
+# ---- last-admin guard ------------------------------------------------------
+# Enabled admins now: root, adm2.
+req PATCH /users/adm2 "$AT" '{"isAdmin":false}'
+check "guard: demote one of two admins → 204" 204 "$STATUS"
+# Only root is an enabled admin.
+req GET /users/adm2 "$AT"
+check "guard: adm2 demoted on GET" False "$(jv 'd["isAdmin"]')"
+req DELETE /users/root "$AT"
+check "guard: DELETE sole admin rejected" "$GUARD_STATUS" "$STATUS"
+req PATCH /users/root "$AT" '{"isAdmin":false}'
+check "guard: demote sole admin rejected" "$GUARD_STATUS" "$STATUS"
+req PATCH /users/root "$AT" '{"enabled":false}'
+check "guard: disable sole admin rejected" "$GUARD_STATUS" "$STATUS"
+req GET /users/root "$AT"
+check "guard: root still exists (200)" 200 "$STATUS"
+check "guard: root still admin" True "$(jv 'd["isAdmin"]')"
+check "guard: root still enabled" True "$(jv 'd["enabled"]')"
+login root rootpass1
+check "guard: root can still log in" 200 "$LSTATUS"
+req PATCH /users/root "$AT" '{"fullName":"Root Renamed"}'
+check "guard: harmless PATCH of sole admin → 204" 204 "$STATUS"
+
+# Promote adm2 back → two admins; delete one succeeds, then remaining protected.
+req PATCH /users/adm2 "$AT" '{"isAdmin":true}'
+check "guard: re-promote adm2 → 204" 204 "$STATUS"
+req DELETE /users/adm2 "$AT"
+check "guard: DELETE one of two admins → 204" 204 "$STATUS"
+req DELETE /users/root "$AT"
+check "guard: remaining admin protected from DELETE" "$GUARD_STATUS" "$STATUS"
+
+# Self-service: an admin may delete themselves when another enabled admin remains.
+req POST /users "$AT" '{"login":"adm4","fullName":"Fourth","password":"adm4pass12","isAdmin":true}'
+login adm4 adm4pass12
+ADM4_TOKEN="$LTOKEN"
+req DELETE /users/adm4 "$ADM4_TOKEN"
+check "guard: admin deletes self while another admin remains → 204" 204 "$STATUS"
+req GET /users/adm4 "$AT"
+check "guard: self-deleted admin gone" 404 "$STATUS"
+
+# Disabled admin does not count.
+req POST /users "$AT" '{"login":"adm3","fullName":"Third","password":"adm3pass12","isAdmin":true}'
+check "guard: create adm3 admin → 201" 201 "$STATUS"
+req PATCH /users/adm3 "$AT" '{"enabled":false}'
+check "guard: disable one of two enabled admins → 204" 204 "$STATUS"
+req DELETE /users/root "$AT"
+check "guard: DELETE root rejected when other admin is disabled" "$GUARD_STATUS" "$STATUS"
+req PATCH /users/root "$AT" '{"isAdmin":false}'
+check "guard: demote root rejected when other admin is disabled" "$GUARD_STATUS" "$STATUS"
+req PATCH /users/root "$AT" '{"enabled":false}'
+check "guard: disable root rejected when other admin is disabled" "$GUARD_STATUS" "$STATUS"
+req DELETE /users/adm3 "$AT"
+check "guard: deleting a disabled admin is allowed → 204" 204 "$STATUS"
+req GET /users/root "$AT"
+check "guard: root unchanged at end (enabled admin)" "True True" "$(jv 'str(d["isAdmin"])+" "+str(d["enabled"])')"
+
+# ---- graceful shutdown -----------------------------------------------------
+SIGTERM_OK=0
+if kill -TERM "$DAEMON_PID" 2>/dev/null; then
+  EXITED=0
+  for _i in $(seq 1 50); do
+    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then EXITED=1; break; fi
+    sleep 0.1
+  done
+  if [ "$EXITED" -eq 1 ]; then
+    DAEMON_EXIT=0
+    wait "$DAEMON_PID" 2>/dev/null || DAEMON_EXIT=$?
+    [ "$DAEMON_EXIT" -eq 0 ] && SIGTERM_OK=1
+  else
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+  fi
+fi
+check "SIGTERM causes clean exit (status 0)" 1 "$SIGTERM_OK"
+DAEMON_PID=0
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

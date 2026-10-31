@@ -245,3 +245,25 @@ add_test(
 )
 
 set_tests_properties(server_tags_test PROPERTIES TIMEOUT 120)
+
+# ---- server_users_test — I1 admin user management (/users CRUD + last-admin guard) ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_users.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_users.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_users.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_users_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_users.sh"
+)
+
+set_tests_properties(server_users_test PROPERTIES TIMEOUT 120)

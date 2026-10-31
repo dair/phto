@@ -108,3 +108,10 @@
 - **Outcome**: Wrote `server/test/test_tags.sh.in`, registered `server_tags_test` (ports 19540–19544), added `docs/testing/tags-global.md` and dashboard row. Written against team-lead defaults; not yet run (build not handed over).
 - **Next Step**: Wait for "build is yours", build, run, fix mismatches, record assertion count.
 - **Update 2026-10-31 (final)**: Fixed duplicated upload fixture; server_tags_test 104 passed / 0 failed; full ctest 29/29.
+
+## [2026-10-31 15:00] - I1 admin /users routes e2e test
+- **Agent**: test-spec-writer
+- **Task**: Write end-to-end tests for I1 (`GET/POST /users`, `GET/PATCH/DELETE /users/{login}`, last-admin guard).
+- **Outcome**: Wrote `server/test/test_users.sh.in`, registered `server_users_test` (ports 19550–19554), added `docs/testing/users-admin.md` and dashboard row. Contract knobs (guard status etc.) are defaults from the plan; not yet run (build not handed over).
+- **Next Step**: Wait for i1-dev contract and "build is yours"; build, run, align, record assertion count.
+- **Update 2026-10-31 (final)**: After handover: server_users_test 118 passed / 0 failed; full ctest 30/30.

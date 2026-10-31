@@ -34,39 +34,6 @@ bool validTagName(const std::string& t) {
   return !t.empty() && t.size() <= MAX_TAG_LEN && t.find(',') == std::string::npos;
 }
 
-int hexVal(char c) {
-  if (c >= '0' && c <= '9') {
-    return c - '0';
-  }
-  if (c >= 'a' && c <= 'f') {
-    return c - 'a' + 10;
-  }
-  if (c >= 'A' && c <= 'F') {
-    return c - 'A' + 10;
-  }
-  return -1;
-}
-
-/// Percent-decodes a path segment ('+' stays literal). False on a malformed %XX escape.
-bool percentDecode(const std::string& in, std::string& out) {
-  out.clear();
-  out.reserve(in.size());
-  for (size_t i = 0; i < in.size(); ++i) {
-    if (in[i] != '%') {
-      out.push_back(in[i]);
-      continue;
-    }
-    const int hi = i + 2 < in.size() ? hexVal(in[i + 1]) : -1;
-    const int lo = i + 2 < in.size() ? hexVal(in[i + 2]) : -1;
-    if (hi < 0 || lo < 0) {
-      return false;
-    }
-    out.push_back(static_cast<char>(hi * 16 + lo));
-    i += 2;
-  }
-  return true;
-}
-
 /// Parses {"tags":[...]} (or, if `allowSingle`, {"tag":"x"}). Returns an error message, empty on success.
 std::string parseTags(const crow::request& req, bool allowSingle, std::vector<std::string>& out) {
   auto body = crow::json::load(req.body);

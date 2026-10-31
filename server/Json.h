@@ -44,6 +44,9 @@ crow::response forbidden(std::string message);
 /// True if `s` is exactly 64 lowercase hex characters (an item id).
 bool isLowerHex64(std::string_view s);
 
+/// Percent-decodes a path segment ('+' stays literal). False on a malformed %XX escape.
+bool percentDecode(const std::string& in, std::string& out);
+
 /// JSON response with the given status and Content-Type: application/json.
 crow::response jsonOk(int status, const crow::json::wvalue& body);
 

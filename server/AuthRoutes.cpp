@@ -20,8 +20,6 @@ std::optional<auth::TokenService::Claims> requireAuth(crow::App<AuthMiddleware>&
   return app.get_context<AuthMiddleware>(req).claims;
 }
 
-namespace {
-
 /// Like requireAuth, but also enforces isAdmin. Returns the Claims if the caller
 /// is an authenticated admin. On failure, writes an appropriate error response
 /// (401 or 403) and returns nullopt — the handler must return immediately.
@@ -40,17 +38,7 @@ std::optional<auth::TokenService::Claims> requireAdmin(
   return claims;
 }
 
-/// Serialize a single auth::User to a crow::json::wvalue map.
-crow::json::wvalue userToJson(const auth::User& u) {
-  crow::json::wvalue w;
-  w["login"] = u.login;
-  w["fullName"] = u.fullName;
-  w["isAdmin"] = u.isAdmin;
-  w["enabled"] = u.enabled;
-  w["createdAt"] = u.createdAt;
-  w["updatedAt"] = u.updatedAt;
-  return w;
-}
+namespace {
 
 /// Shared throttle instance — one per process, lives for the duration of the daemon.
 LoginThrottle& throttle() {
@@ -168,65 +156,6 @@ void registerAuthRoutes(
 
       return crow::response{204};
     });
-}
-
-void registerUserRoutes(crow::App<AuthMiddleware>& app, auth::UserStore& userStore) {
-  static constexpr uint32_t MAX_LIMIT = 500;
-  static constexpr uint32_t DEFAULT_LIMIT = 50;
-
-  // GET /users — list all users (admin only)
-  CROW_ROUTE(app, "/users").methods(crow::HTTPMethod::Get)([&app, &userStore](const crow::request& req) {
-    crow::response res;
-    if (!requireAdmin(app, req, res)) {
-      return res;
-    }
-
-    // Parse optional pagination query parameters.
-    uint32_t offset = 0;
-    uint32_t limit = DEFAULT_LIMIT;
-
-    const std::string& offsetParam = req.url_params.get("offset") ? req.url_params.get("offset") : "";
-    const std::string& limitParam = req.url_params.get("limit") ? req.url_params.get("limit") : "";
-
-    if (!offsetParam.empty()) {
-      try {
-        const long v = std::stol(offsetParam);
-        if (v < 0) {
-          return badRequest("offset must be non-negative");
-        }
-        offset = static_cast<uint32_t>(v);
-      } catch (...) {
-        return badRequest("offset must be an integer");
-      }
-    }
-
-    if (!limitParam.empty()) {
-      try {
-        const long v = std::stol(limitParam);
-        if (v < 1) {
-          return badRequest("limit must be at least 1");
-        }
-        limit = static_cast<uint32_t>(std::min(v, static_cast<long>(MAX_LIMIT)));
-      } catch (...) {
-        return badRequest("limit must be an integer");
-      }
-    }
-
-    const db::Pagination page{offset, limit};
-    const std::vector<auth::User> users = userStore.list(page);
-
-    crow::json::wvalue resp;
-    std::vector<crow::json::wvalue> arr;
-    arr.reserve(users.size());
-    for (const auto& u : users) {
-      arr.push_back(userToJson(u));
-    }
-    resp["users"] = std::move(arr);
-
-    crow::response listRes{200, resp};
-    listRes.add_header("Content-Type", "application/json");
-    return listRes;
-  });
 }
 
 } // namespace server

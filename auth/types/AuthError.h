@@ -10,6 +10,7 @@ enum class AuthErrorCode {
   QueryFailed,
   NotFound,
   Duplicate,
+  LastAdmin,
 };
 
 class AuthException: public std::runtime_error {

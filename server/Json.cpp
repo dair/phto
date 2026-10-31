@@ -29,6 +29,19 @@ constexpr StatusMapping MAPPINGS[] = {
   {imager::ErrorCode::TooLarge, 413, "TooLarge"},
 };
 
+int hexVal(char c) {
+  if (c >= '0' && c <= '9') {
+    return c - '0';
+  }
+  if (c >= 'a' && c <= 'f') {
+    return c - 'a' + 10;
+  }
+  if (c >= 'A' && c <= 'F') {
+    return c - 'A' + 10;
+  }
+  return -1;
+}
+
 const StatusMapping* findMapping(imager::ErrorCode code) {
   for (const auto& m : MAPPINGS) {
     if (m.code == code) {
@@ -80,6 +93,25 @@ crow::response forbidden(std::string message) {
 bool isLowerHex64(std::string_view s) {
   return s.size() == 64 &&
          std::ranges::all_of(s, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+bool percentDecode(const std::string& in, std::string& out) {
+  out.clear();
+  out.reserve(in.size());
+  for (size_t i = 0; i < in.size(); ++i) {
+    if (in[i] != '%') {
+      out.push_back(in[i]);
+      continue;
+    }
+    const int hi = i + 2 < in.size() ? hexVal(in[i + 1]) : -1;
+    const int lo = i + 2 < in.size() ? hexVal(in[i + 2]) : -1;
+    if (hi < 0 || lo < 0) {
+      return false;
+    }
+    out.push_back(static_cast<char>(hi * 16 + lo));
+    i += 2;
+  }
+  return true;
 }
 
 crow::response jsonOk(int status, const crow::json::wvalue& body) {

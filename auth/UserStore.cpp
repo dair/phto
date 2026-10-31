@@ -86,6 +86,13 @@ static constexpr std::string_view SQL_SELECT_ALL_USERS_PAGE =
   "SELECT login, full_name, is_admin, enabled, created_at, updated_at FROM user "
   "ORDER BY login LIMIT ? OFFSET ?";
 
+static constexpr std::string_view SQL_UPDATE_USER_FIELDS =
+  "UPDATE user SET full_name = COALESCE(?, full_name), is_admin = COALESCE(?, is_admin), "
+  "enabled = COALESCE(?, enabled), updated_at = ? WHERE login = ?";
+
+static constexpr std::string_view SQL_COUNT_ENABLED_ADMINS =
+  "SELECT COUNT(*) FROM user WHERE is_admin = 1 AND enabled = 1";
+
 static constexpr std::string_view SQL_COUNT_USERS = "SELECT COUNT(*) FROM user";
 
 // ---------------------------------------------------------------------------
@@ -117,6 +124,38 @@ struct UserStore::Impl {
       throw AuthException(AuthErrorCode::QueryFailed, "exec failed: " + msg);
     }
   }
+
+  // Caller must hold the mutex. Returns the row for `login`, if any.
+  std::optional<User> fetch(const std::string& login);
+  uint64_t enabledAdmins();
+
+  // RAII IMMEDIATE transaction: takes the SQLite write lock up front (also excludes other
+  // processes, e.g. imageradmin); rolls back unless commit() is called.
+  class Txn {
+  public:
+    explicit Txn(Impl& impl)
+      : m_impl(impl) {
+      m_impl.execScript("BEGIN IMMEDIATE");
+    }
+
+    ~Txn() {
+      if (!m_done) {
+        sqlite3_exec(m_impl.db.get(), "ROLLBACK", nullptr, nullptr, nullptr);
+      }
+    }
+
+    Txn(const Txn&) = delete;
+    Txn& operator=(const Txn&) = delete;
+
+    void commit() {
+      m_impl.execScript("COMMIT");
+      m_done = true;
+    }
+
+  private:
+    Impl& m_impl;
+    bool m_done = false;
+  };
 
   // Step a statement expecting SQLITE_DONE; maps SQLITE_CONSTRAINT to onConstraint.
   void mustDone(sqlite3_stmt* stmt, AuthErrorCode onConstraint, const std::string& constraintMsg) {
@@ -152,6 +191,20 @@ uint64_t nowEpoch() {
 }
 
 } // namespace
+
+std::optional<User> UserStore::Impl::fetch(const std::string& login) {
+  auto stmt = prepare(SQL_SELECT_USER);
+  sqlite3_bind_text(stmt.get(), 1, login.c_str(), -1, SQLITE_STATIC);
+  if (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    return rowToUser(stmt.get());
+  }
+  return std::nullopt;
+}
+
+uint64_t UserStore::Impl::enabledAdmins() {
+  auto stmt = prepare(SQL_COUNT_ENABLED_ADMINS);
+  return sqlite3_step(stmt.get()) == SQLITE_ROW ? static_cast<uint64_t>(sqlite3_column_int64(stmt.get(), 0)) : 0;
+}
 
 // ---------------------------------------------------------------------------
 // Constructor / destructor
@@ -263,6 +316,65 @@ void UserStore::setAdmin(const std::string& login, bool isAdmin) {
   if (sqlite3_changes(m_impl->db.get()) == 0) {
     throw AuthException(AuthErrorCode::NotFound, "User not found: " + login);
   }
+}
+
+void UserStore::removeGuarded(const std::string& login) {
+  std::unique_lock lock(m_impl->mutex);
+  Impl::Txn txn(*m_impl);
+  auto user = m_impl->fetch(login);
+  if (!user) {
+    throw AuthException(AuthErrorCode::NotFound, "User not found: " + login);
+  }
+  if (user->isAdmin && user->enabled && m_impl->enabledAdmins() <= 1) {
+    throw AuthException(AuthErrorCode::LastAdmin, "Cannot remove the last enabled admin");
+  }
+  auto stmt = m_impl->prepare(SQL_DELETE_USER);
+  sqlite3_bind_text(stmt.get(), 1, login.c_str(), -1, SQLITE_STATIC);
+  m_impl->mustDone(stmt.get(), AuthErrorCode::QueryFailed, "remove failed");
+  txn.commit();
+}
+
+void UserStore::update(const std::string& login, const UserUpdate& upd) {
+  std::unique_lock lock(m_impl->mutex);
+  Impl::Txn txn(*m_impl);
+  auto user = m_impl->fetch(login);
+  if (!user) {
+    throw AuthException(AuthErrorCode::NotFound, "User not found: " + login);
+  }
+  const bool newAdmin = upd.isAdmin.value_or(user->isAdmin);
+  const bool newEnabled = upd.enabled.value_or(user->enabled);
+  if (user->isAdmin && user->enabled && !(newAdmin && newEnabled) && m_impl->enabledAdmins() <= 1) {
+    throw AuthException(AuthErrorCode::LastAdmin, "Cannot demote or disable the last enabled admin");
+  }
+
+  const uint64_t now = nowEpoch();
+  {
+    auto stmt = m_impl->prepare(SQL_UPDATE_USER_FIELDS);
+    upd.fullName ? sqlite3_bind_text(stmt.get(), 1, upd.fullName->c_str(), -1, SQLITE_STATIC)
+                 : sqlite3_bind_null(stmt.get(), 1);
+    upd.isAdmin ? sqlite3_bind_int(stmt.get(), 2, *upd.isAdmin ? 1 : 0) : sqlite3_bind_null(stmt.get(), 2);
+    upd.enabled ? sqlite3_bind_int(stmt.get(), 3, *upd.enabled ? 1 : 0) : sqlite3_bind_null(stmt.get(), 3);
+    sqlite3_bind_int64(stmt.get(), 4, static_cast<sqlite3_int64>(now));
+    sqlite3_bind_text(stmt.get(), 5, login.c_str(), -1, SQLITE_STATIC);
+    m_impl->mustDone(stmt.get(), AuthErrorCode::QueryFailed, "update failed");
+  }
+  if (upd.password) {
+    const PasswordRecord& pw = *upd.password;
+    auto stmt = m_impl->prepare(SQL_UPDATE_PASSWORD);
+    sqlite3_bind_text(stmt.get(), 1, pw.algo.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt.get(), 2, static_cast<int>(pw.iterations));
+    sqlite3_bind_blob(stmt.get(), 3, pw.salt.data(), static_cast<int>(pw.salt.size()), SQLITE_STATIC);
+    sqlite3_bind_blob(stmt.get(), 4, pw.hash.data(), static_cast<int>(pw.hash.size()), SQLITE_STATIC);
+    sqlite3_bind_int64(stmt.get(), 5, static_cast<sqlite3_int64>(now));
+    sqlite3_bind_text(stmt.get(), 6, login.c_str(), -1, SQLITE_STATIC);
+    m_impl->mustDone(stmt.get(), AuthErrorCode::QueryFailed, "update password failed");
+  }
+  txn.commit();
+}
+
+uint64_t UserStore::countEnabledAdmins() {
+  std::shared_lock lock(m_impl->mutex);
+  return m_impl->enabledAdmins();
 }
 
 std::optional<User> UserStore::get(const std::string& login) {

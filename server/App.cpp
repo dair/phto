@@ -9,6 +9,7 @@
 #include "AuthRoutes.h"
 #include "ItemRoutes.h"
 #include "TagRoutes.h"
+#include "UserRoutes.h"
 
 namespace server {
 
@@ -28,6 +29,7 @@ App::App(
     m_pbkdf2Iterations(pbkdf2Iterations) {
   // Wire TokenService into the middleware so it can verify tokens.
   m_crow.get_middleware<AuthMiddleware>().service = &m_tokenService;
+  m_crow.get_middleware<AuthMiddleware>().users = &m_userStore;
 }
 
 App::~App() = default;
@@ -41,7 +43,7 @@ void App::registerRoutes() {
   });
 
   registerAuthRoutes(m_crow, m_userStore, m_tokenService, m_tokenTtlSeconds, m_pbkdf2Iterations);
-  registerUserRoutes(m_crow, m_userStore);
+  registerUserRoutes(m_crow, m_userStore, m_pbkdf2Iterations);
   registerItemRoutes(m_crow, m_imager, m_cfg.maxUploadBytes);
   registerTagRoutes(m_crow, m_imager);
 }
