@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# server/test/test_tls.sh.in — J2 native TLS smoke test for imagerd
+#
+# Generates a throw-away self-signed cert with the openssl CLI, then checks:
+# HTTPS works (health + login + /auth/me), cert verification is enforced,
+# plain HTTP on the TLS port fails, the minimum protocol version, fail-fast
+# startup errors (missing/mismatched/garbage cert or key, key mode 0644),
+# plain mode unchanged, and SIGTERM clean exit.
+#
+# Configured by CMake configure_file(@ONLY). Registered as "server_tls_test"
+# (SKIP_RETURN_CODE 77 when openssl or curl is missing).
+# Ports: 19570 TLS daemon, 19571 plain daemon, 19572 startup-failure cases,
+#        19573 spare, 19574 openssl s_server TLS<=1.1 capability probe.
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+
+# ---- Contract knobs (aligned with j2-dev's contract) -----------------------
+STARTUP_TIMEOUT=10     # seconds before a startup-failure daemon counts as hung
+MIN_TLS_ENFORCED=1     # 1 = server refuses TLS < 1.2
+
+SKIP_CODE=77
+for tool in openssl curl; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_tls_test skipped"
+    exit $SKIP_CODE
+  fi
+done
+
+PASS=0
+FAIL=0
+check() {   # check <name> <expected> <actual>
+  if [ "$2" = "$3" ]; then
+    echo "PASS: $1"; PASS=$((PASS + 1))
+  else
+    echo "FAIL: $1 (expected '$2', got '$3')"; FAIL=$((FAIL + 1))
+  fi
+}
+
+PORT_TLS=19570; PORT_PLAIN=19571; PORT_FAIL=19572; PORT_PROBE=19574
+
+TMPDIR_TEST=$(mktemp -d)
+PIDS=()
+cleanup() {
+  for p in "${PIDS[@]:-}"; do
+    if [ -n "$p" ] && [ "$p" -gt 0 ] 2>/dev/null && kill -0 "$p" 2>/dev/null; then
+      kill -KILL "$p" 2>/dev/null || true
+      wait "$p" 2>/dev/null || true
+    fi
+  done
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
+
+CERT="$TMPDIR_TEST/cert.pem"; KEY="$TMPDIR_TEST/key.pem"
+CERT2="$TMPDIR_TEST/cert2.pem"; KEY2="$TMPDIR_TEST/key2.pem"
+
+gen_cert() {   # gen_cert <cert> <key>
+  openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
+    -addext subjectAltName=DNS:localhost,IP:127.0.0.1 \
+    -keyout "$2" -out "$1" >/dev/null 2>&1 && chmod 0600 "$2"
+}
+if ! gen_cert "$CERT" "$KEY" || ! gen_cert "$CERT2" "$KEY2"; then
+  echo "SKIP: openssl could not generate a certificate — server_tls_test skipped"
+  exit $SKIP_CODE
+fi
+
+STORAGE_ROOT="$TMPDIR_TEST/storage"; mkdir -p "$STORAGE_ROOT"
+
+# mk_cfg <file> <port> <tls true|false> [cert] [key]
+mk_cfg() {
+  {
+    cat <<CFGEOF
+[[targets]]
+root = "$STORAGE_ROOT"
+database = "$TMPDIR_TEST/imager.db"
+
+[server]
+bind = "127.0.0.1"
+port = $2
+threads = 1
+tls = $3
+CFGEOF
+    [ $# -ge 4 ] && echo "tls_cert = \"$4\""
+    [ $# -ge 5 ] && echo "tls_key = \"$5\""
+    cat <<CFGEOF
+
+[auth]
+database = "$TMPDIR_TEST/auth.db"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+CFGEOF
+  } > "$1"
+}
+
+CFG_TLS="$TMPDIR_TEST/tls.toml"
+CFG_PLAIN="$TMPDIR_TEST/plain.toml"
+mk_cfg "$CFG_TLS" $PORT_TLS true "$CERT" "$KEY"
+mk_cfg "$CFG_PLAIN" $PORT_PLAIN false
+
+printf '%s' "tlspass12" | "$IMAGERADMIN_BIN" "$CFG_TLS" user add tlsuser "TLS User" --password-stdin \
+  || { echo "FATAL: seed user"; exit 1; }
+
+# ---- start the TLS daemon --------------------------------------------------
+"$IMAGERD_BIN" "$CFG_TLS" >"$TMPDIR_TEST/tls.stdout" 2>"$TMPDIR_TEST/tls.stderr" &
+TLS_PID=$!; PIDS+=("$TLS_PID")
+
+HTTPS="https://127.0.0.1:${PORT_TLS}"
+READY=$(curl --silent --output /dev/null --write-out "%{http_code}" --cacert "$CERT" \
+  --retry 10 --retry-delay 1 --retry-connrefused --max-time 12 "$HTTPS/health" 2>/dev/null) || READY="000"
+check "HTTPS GET /health with --cacert → 200" 200 "$READY"
+if [ "$READY" != "200" ]; then
+  echo "FATAL: TLS daemon not ready"; cat "$TMPDIR_TEST/tls.stderr"; exit 1
+fi
+
+# ---- HTTPS login + /auth/me ------------------------------------------------
+OUT="$TMPDIR_TEST/out.json"
+LST=$(curl --silent --output "$OUT" --write-out "%{http_code}" --cacert "$CERT" \
+  -H "Content-Type: application/json" \
+  --data '{"login":"tlsuser","password":"tlspass12"}' "$HTTPS/auth/login" 2>/dev/null) || LST="000"
+check "HTTPS POST /auth/login → 200" 200 "$LST"
+TOKEN=$(python3 -I -c 'import sys,json
+try: print(json.load(open(sys.argv[1])).get("token",""))
+except Exception: print("")' "$OUT" 2>/dev/null)
+check "login over HTTPS returned a token" yes "$([ -n "$TOKEN" ] && echo yes || echo no)"
+ME=$(curl --silent --output "$OUT" --write-out "%{http_code}" --cacert "$CERT" \
+  -H "Authorization: Bearer $TOKEN" "$HTTPS/auth/me" 2>/dev/null) || ME="000"
+check "HTTPS GET /auth/me with token → 200" 200 "$ME"
+check "/auth/me over HTTPS reports login" tlsuser \
+  "$(python3 -I -c 'import sys,json
+try: print(json.load(open(sys.argv[1])).get("login",""))
+except Exception: print("ERR")' "$OUT" 2>/dev/null)"
+
+# ---- certificate verification ----------------------------------------------
+curl --silent --output /dev/null --max-time 10 "$HTTPS/health" 2>/dev/null; RC=$?
+check "HTTPS without --cacert fails verification (curl exit 60)" 60 "$RC"
+curl --silent --output /dev/null --max-time 10 --cacert "$CERT2" "$HTTPS/health" 2>/dev/null; RC=$?
+check "HTTPS with the wrong CA cert fails verification (curl exit 60)" 60 "$RC"
+INS=$(curl --silent --output /dev/null --write-out "%{http_code}" --insecure --max-time 10 "$HTTPS/health" 2>/dev/null) || INS="000"
+check "HTTPS with --insecure → 200 (handshake works, only trust differs)" 200 "$INS"
+
+# ---- plain HTTP on the TLS port --------------------------------------------
+PL=$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 10 \
+  "http://127.0.0.1:${PORT_TLS}/health" 2>/dev/null) || PL="000"
+check "plain HTTP on TLS port does not return 200" no "$([ "$PL" = "200" ] && echo yes || echo no)"
+AFTER=$(curl --silent --output /dev/null --write-out "%{http_code}" --cacert "$CERT" --max-time 10 "$HTTPS/health" 2>/dev/null) || AFTER="000"
+check "daemon still serves HTTPS after a plain-HTTP attempt" 200 "$AFTER"
+
+# ---- minimum protocol version ----------------------------------------------
+# Probe whether this curl/OpenSSL can negotiate TLS 1.1 at all, using s_server.
+openssl s_server -accept $PORT_PROBE -cert "$CERT" -key "$KEY" -www -tls1_1 \
+  -cipher 'ALL:@SECLEVEL=0' >/dev/null 2>&1 &
+PROBE_PID=$!; PIDS+=("$PROBE_PID")
+PROBE_OK=1
+sleep 1
+curl --silent --output /dev/null --insecure --max-time 5 --tlsv1.1 --tls-max 1.1 \
+  --ciphers 'DEFAULT:@SECLEVEL=0' "https://127.0.0.1:${PORT_PROBE}/" 2>/dev/null || PROBE_OK=0
+kill -KILL "$PROBE_PID" 2>/dev/null || true; wait "$PROBE_PID" 2>/dev/null || true
+if [ "$PROBE_OK" -eq 1 ]; then
+  curl --silent --output /dev/null --insecure --max-time 10 --tlsv1.1 --tls-max 1.1 \
+    --ciphers 'DEFAULT:@SECLEVEL=0' "$HTTPS/health" 2>/dev/null; RC=$?
+  if [ "$MIN_TLS_ENFORCED" -eq 1 ]; then
+    check "TLS 1.1-only client is rejected by imagerd" yes "$([ "$RC" -ne 0 ] && echo yes || echo no)"
+  fi
+else
+  echo "NOTE: local curl/OpenSSL cannot negotiate TLS 1.1 — min-protocol (1.1 rejected) check skipped"
+fi
+curl --silent --output /dev/null --insecure --max-time 10 --tlsv1.2 --tls-max 1.2 "$HTTPS/health" 2>/dev/null; RC=$?
+check "TLS 1.2-only client is accepted" 0 "$RC"
+curl --silent --output /dev/null --insecure --max-time 10 --tlsv1.3 "$HTTPS/health" 2>/dev/null; RC=$?
+check "TLS 1.3 client is accepted" 0 "$RC"
+
+# ---- SIGTERM clean exit (TLS daemon) ---------------------------------------
+term_check() {   # term_check <pid> → sets TERM_RESULT=1 if clean exit 0 within 5 s
+  # (must run in the parent shell: wait only works there, so no $(...))
+  TERM_RESULT=0
+  local pid="$1" ok=0 ex=0
+  if kill -TERM "$pid" 2>/dev/null; then
+    for _i in $(seq 1 50); do
+      if ! kill -0 "$pid" 2>/dev/null; then ok=1; break; fi
+      sleep 0.1
+    done
+    if [ "$ok" -eq 1 ]; then
+      wait "$pid" 2>/dev/null || ex=$?
+      [ "$ex" -eq 0 ] && TERM_RESULT=1
+    else
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+}
+term_check "$TLS_PID"
+check "TLS daemon: SIGTERM causes clean exit (status 0)" 1 "$TERM_RESULT"
+
+# ---- startup failures ------------------------------------------------------
+# fail_case <label> <cert> <key>   (uses a fresh config on PORT_FAIL)
+fail_case() {
+  local label="$1" cfg="$TMPDIR_TEST/fail.toml" err="$TMPDIR_TEST/fail.stderr" rc=0
+  mk_cfg "$cfg" $PORT_FAIL true "$2" "$3"
+  timeout "$STARTUP_TIMEOUT" "$IMAGERD_BIN" "$cfg" >/dev/null 2>"$err"; rc=$?
+  check "startup fails ($label): exit code 2, no hang" 2 "$rc"
+  check "startup fails ($label): stderr has 'imagerd: TLS error:'" yes \
+    "$(grep -q 'imagerd: TLS error:' "$err" && echo yes || echo no)"
+}
+
+fail_case "missing cert" "$TMPDIR_TEST/nope-cert.pem" "$KEY"
+fail_case "missing key"  "$CERT" "$TMPDIR_TEST/nope-key.pem"
+fail_case "key does not match cert" "$CERT" "$KEY2"
+
+echo "this is not a pem file" > "$TMPDIR_TEST/garbage.pem"; chmod 0600 "$TMPDIR_TEST/garbage.pem"
+fail_case "garbage cert PEM" "$TMPDIR_TEST/garbage.pem" "$KEY"
+fail_case "garbage key PEM"  "$CERT" "$TMPDIR_TEST/garbage.pem"
+
+cp "$KEY" "$TMPDIR_TEST/key644.pem"; chmod 0644 "$TMPDIR_TEST/key644.pem"
+fail_case "key file mode 0644" "$CERT" "$TMPDIR_TEST/key644.pem"
+
+# ---- plain mode unchanged --------------------------------------------------
+"$IMAGERD_BIN" "$CFG_PLAIN" >"$TMPDIR_TEST/plain.stdout" 2>"$TMPDIR_TEST/plain.stderr" &
+PLAIN_PID=$!; PIDS+=("$PLAIN_PID")
+PR=$(curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 --retry-delay 1 \
+  --retry-connrefused --max-time 12 "http://127.0.0.1:${PORT_PLAIN}/health" 2>/dev/null) || PR="000"
+check "tls=false: plain HTTP GET /health → 200" 200 "$PR"
+curl --silent --output /dev/null --insecure --max-time 10 "https://127.0.0.1:${PORT_PLAIN}/health" 2>/dev/null; RC=$?
+check "tls=false: HTTPS to plain port fails" yes "$([ "$RC" -ne 0 ] && echo yes || echo no)"
+term_check "$PLAIN_PID"
+check "tls=false: SIGTERM causes clean exit (status 0)" 1 "$TERM_RESULT"
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

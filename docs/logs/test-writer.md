@@ -121,3 +121,10 @@
 - **Task**: Write end-to-end tests for J1 (security headers, /stats, tag-name validation, body cap, error-code vocabulary, secret file, per-IP throttle).
 - **Outcome**: Wrote `server/test/test_hardening.sh.in`, registered `server_hardening_test` (ports 19560–19564), added `docs/testing/hardening.md` and dashboard row. After handover: 249 passed / 0 failed; full ctest 31/31.
 - **Next Step**: Root verifies and commits.
+
+## [2026-10-31 17:00] - J2 TLS smoke test
+- **Agent**: test-spec-writer
+- **Task**: Write TLS smoke test for J2 (native TLS in imagerd).
+- **Outcome**: Wrote `server/test/test_tls.sh.in`, registered `server_tls_test` (ports 19570–19574, SKIP_RETURN_CODE 77), added `docs/testing/tls.md` and dashboard row. Not yet built or run (build not handed over).
+- **Next Step**: Wait for j2-dev contract and "build is yours"; build, run, align, record assertion count.
+- **Update 2026-10-31 (final)**: Aligned to j2-dev contract (exit 2, "imagerd: TLS error:"); server_tls_test 29 passed / 0 failed; full ctest result below in report.

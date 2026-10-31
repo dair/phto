@@ -245,3 +245,9 @@
 - **Task**: Checkpoint J1 (0022 §6.6, §7, §13)
 - **Outcome**: Generic error-code vocabulary in Json.cpp (NotFound/Conflict/Internal…); shared validTagName (UTF-8, no control/NUL/comma) on all tag paths + `?tags=` (incl. raw `%00` check); parsePage (limit ≤ 500) on all listings; 64 KiB JSON body cap (413) and nosniff/no-store headers centrally in AuthMiddleware; GET /stats; Imager `*Checked` listing/count variants (std::expected) so DB failures → 500; Database read paths now throw on step errors (previously silently empty); per-IP LoginThrottle (20) with window decay + pruning; imagerd refuses non-regular / other-readable secret file. Tests: ImagerTest CheckedListingTest, JsonTest (names, tag names, throttle), shell expectations renamed (test_item_tags, test_tags).
 - **Next Step**: J2 TLS
+
+## [2026-10-31 16:00] - J2 native TLS
+- **Agent**: cpp-spec-coder
+- **Task**: Checkpoint J2 (0022 §10).
+- **Outcome**: Top-level CMake: `Crow` INTERFACE gets `CROW_ENABLE_SSL` + `OpenSSL::SSL/Crypto`. `App::enableTls()` builds its own `asio::ssl::context` (tls_server, no SSLv2/3, `SSL_CTX_set_min_proto_version(TLS1_2)`), loads cert via `use_certificate_chain_file` (handles single cert and chain), key via `use_PrivateKey_file`, `check_private_key`, then `crow.ssl(ctx)`; Crow's own ssl_file would throw late and can't set min version. Key must be a regular file not S_IROTH. main.cpp calls it before run(); failure -> stderr `imagerd: TLS error: <msg>`, exit 2. Startup log "serving HTTP|HTTPS on bind:port". Build + ctest 31/31 green.
+- **Next Step**: j2-test runs test_tls.

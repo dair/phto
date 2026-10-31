@@ -33,6 +33,9 @@ FetchContent_Declare(
     GIT_TAG v1.2.1.2
 )
 FetchContent_MakeAvailable(crow)
+# Native TLS (0022 §10): Crow serves plain HTTP unless ssl_context is configured.
+target_compile_definitions(Crow INTERFACE CROW_ENABLE_SSL)
+target_link_libraries(Crow INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 
 enable_testing()
 

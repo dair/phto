@@ -3,7 +3,11 @@
 #include <auth/TokenService.h>
 #include <auth/UserStore.h>
 #include <imager/Imager.h>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#include <sys/stat.h>
 
+#include <stdexcept>
 #include <thread>
 
 #include "AuthRoutes.h"
@@ -69,6 +73,62 @@ void App::registerRoutes() {
   registerUserRoutes(m_crow, m_userStore, m_pbkdf2Iterations);
   registerItemRoutes(m_crow, m_imager, m_cfg.maxUploadBytes);
   registerTagRoutes(m_crow, m_imager);
+}
+
+namespace {
+
+std::string sslError() {
+  char buf[256] = {};
+  const unsigned long e = ERR_get_error();
+  if (e == 0) {
+    return "unknown OpenSSL error";
+  }
+  ERR_error_string_n(e, buf, sizeof buf);
+  return buf;
+}
+
+} // namespace
+
+void App::enableTls() {
+  if (!m_cfg.tls) {
+    return;
+  }
+  if (m_cfg.tlsCert.empty() || m_cfg.tlsKey.empty()) {
+    throw std::runtime_error("tls = true requires [server].tls_cert and [server].tls_key");
+  }
+  struct stat st{};
+  if (::stat(m_cfg.tlsCert.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+    throw std::runtime_error("tls_cert is missing or not a regular file: " + m_cfg.tlsCert.string());
+  }
+  if (::stat(m_cfg.tlsKey.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+    throw std::runtime_error("tls_key is missing or not a regular file: " + m_cfg.tlsKey.string());
+  }
+  // Same stance as jwt_secret_file: a private key must not be world-readable.
+  if ((st.st_mode & S_IROTH) != 0) {
+    throw std::runtime_error("tls_key must not be readable by others (chmod 600): " + m_cfg.tlsKey.string());
+  }
+
+  // Own context instead of Crow's ssl_file(): lets us set the minimum protocol and
+  // report OpenSSL errors. Chain loader accepts both a single cert and a full chain.
+  asio::ssl::context ctx{asio::ssl::context::tls_server};
+  SSL_CTX* h = ctx.native_handle();
+  ctx.set_options(
+    asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3
+  );
+  if (SSL_CTX_set_min_proto_version(h, TLS1_2_VERSION) != 1) {
+    throw std::runtime_error("cannot set minimum TLS version: " + sslError());
+  }
+  ERR_clear_error();
+  if (SSL_CTX_use_certificate_chain_file(h, m_cfg.tlsCert.c_str()) != 1) {
+    throw std::runtime_error("cannot load tls_cert " + m_cfg.tlsCert.string() + ": " + sslError());
+  }
+  if (SSL_CTX_use_PrivateKey_file(h, m_cfg.tlsKey.c_str(), SSL_FILETYPE_PEM) != 1) {
+    throw std::runtime_error("cannot load tls_key " + m_cfg.tlsKey.string() + ": " + sslError());
+  }
+  if (SSL_CTX_check_private_key(h) != 1) {
+    throw std::runtime_error("tls_key does not match tls_cert: " + sslError());
+  }
+  m_crow.ssl(std::move(ctx));
 }
 
 void App::run() {

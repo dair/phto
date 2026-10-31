@@ -43,6 +43,10 @@ public:
   /// Register all routes. Call before run().
   void registerRoutes();
 
+  /// Configure native TLS from cfg (no-op when tls = false). Requires TLS >= 1.2.
+  /// Validates cert/key eagerly; throws std::runtime_error with a clear message.
+  void enableTls();
+
   /// Start the server (blocking until stop() is called from another thread).
   void run();
 

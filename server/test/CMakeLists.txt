@@ -289,3 +289,26 @@ add_test(
 )
 
 set_tests_properties(server_hardening_test PROPERTIES TIMEOUT 180)
+
+# ---- server_tls_test — J2 native TLS smoke test (self-signed cert via openssl CLI) ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_tls.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_tls.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_tls.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_tls_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_tls.sh"
+)
+
+# Exit 77 = openssl/curl missing → ctest reports "Skipped".
+set_tests_properties(server_tls_test PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)

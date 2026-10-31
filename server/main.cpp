@@ -87,13 +87,20 @@ int main(int argc, char* argv[]) {
   // --- Build App + register routes ---
   server::App app{cfg.server, imager, userStore, tokenService, cfg.auth.tokenTtlSeconds, cfg.auth.pbkdf2Iterations};
   app.registerRoutes();
+  try {
+    app.enableTls();
+  } catch (const std::exception& e) {
+    std::cerr << "imagerd: TLS error: " << e.what() << "\n";
+    return 2;
+  }
 
   // --- Install signal handlers ---
   g_app = &app;
   std::signal(SIGINT, handleSignal);
   std::signal(SIGTERM, handleSignal);
 
-  std::cerr << "imagerd: listening on " << cfg.server.bind << ":" << cfg.server.port << "\n";
+  std::cerr << "imagerd: serving " << (cfg.server.tls ? "HTTPS" : "HTTP") << " on " << cfg.server.bind << ":"
+            << cfg.server.port << "\n";
 
   app.run();
 

@@ -28,3 +28,4 @@ Cross-cutting test structure, build/run commands, and conventions live in
 | Global tags — `GET/POST /tags`, `DELETE /tags/{name}` (0022.SERVER §6.4/§7/§14, H2) | [tags-global.md](tags-global.md) | complete | 9/9 (100%) |
 | Admin user management — `/users` CRUD + last-admin guard (0022.SERVER §6.5/§7/§13, I1) | [users-admin.md](users-admin.md) | complete | 8/8 (100%) |
 | Hardening — headers, /stats, validation, body cap, secret file, per-IP throttle (0022.SERVER §6.6/§7/§13, J1) | [hardening.md](hardening.md) | complete | 8/8 (100%) |
+| Native TLS — cert/key validation, HTTPS, min protocol (0022.SERVER §10/§11/§13, J2) | [tls.md](tls.md) | complete | 7/7 (100%) |
