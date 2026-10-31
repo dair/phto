@@ -15,6 +15,8 @@ Welcome to the Imager user documentation. This directory contains comprehensive 
 | [Storage and Data Model](storage.md) | How files are stored on disk, the database schema, and AAE sidecar handling |
 | [Metrics and Monitoring](metrics.md) | Built-in lock-free instrumentation, available metrics, and snapshot format |
 | [Architecture Overview](architecture.md) | Internal component map, concurrency model, and data flow |
+| [REST API Reference](API.md) | `imagerd` HTTP endpoints, auth flow, error codes, validation limits, curl walkthrough |
+| [Deployment and Operations](DEPLOYMENT.md) | Building and configuring `imagerd`, JWT secret, `imageradmin`, TLS or reverse proxy, uploads, backups, troubleshooting |
 | [Troubleshooting](troubleshooting.md) | Common errors, diagnosis steps, and workarounds |
 
 ## Quick Navigation
@@ -22,6 +24,8 @@ Welcome to the Imager user documentation. This directory contains comprehensive 
 **I want to ingest a photo collection** — read [Getting Started](getting-started.md), then [imagestore CLI](imagestore-cli.md).
 
 **I am embedding the library in my own application** — read [Getting Started](getting-started.md), then [Library API Reference](api-reference.md), then [Configuration Guide](configuration.md).
+
+**I want to run or call the HTTP server** — read [Deployment and Operations](DEPLOYMENT.md), then [REST API Reference](API.md).
 
 **I need to understand a specific error** — go to [Troubleshooting](troubleshooting.md).
 

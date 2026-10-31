@@ -24,6 +24,12 @@ A C++23 library and toolset for local-network media management. Imager ingests, 
 - **Coroutine-parallel I/O** — Internal operations (validation, hashing, storage, DB writes) run concurrently via C++23 coroutines
 - **Lock-free metrics** — Built-in histograms, counters, and gauges for pipeline bottleneck analysis
 - **Batch import CLI** — `imagestore` reads file paths from stdin with bounded concurrency, progress reporting, dry-run mode, and an error log
+- **HTTP(S) server (Phase 2)** — `imagerd` serves a JWT-authenticated REST API for upload, download (Range/ETag), tags, and user management; `imageradmin` manages users. See [REST API Reference](docs/user/API.md) and [Deployment and Operations](docs/user/DEPLOYMENT.md)
+
+## Status
+
+- **Phase 1** (offline core, validators, `imagestore`): implemented.
+- **Phase 2** (HTTP+JWT server, [plan 0022](docs/plan/0022.SERVER.md)): implemented. Endpoints for health/stats, auth, users, items, and tags; native TLS (>= 1.2) or reverse proxy; per-login and per-IP login throttle. Documented in [API.md](docs/user/API.md) and [DEPLOYMENT.md](docs/user/DEPLOYMENT.md).
 
 ## Supported Formats
 
@@ -40,7 +46,7 @@ A C++23 library and toolset for local-network media management. Imager ingests, 
 
 - **C++23** compiler (Clang recommended; GCC supported)
 - **CMake** ≥ 3.28
-- System libraries: `sqlite3`, `libjpeg`, `libpng`, `libheif`, `LibRaw`, `openssl`, `libavformat`, `libavcodec`, `libavutil`
+- System libraries: `sqlite3`, `libjpeg`, `libpng`, `libheif`, `LibRaw`, `openssl`, `libavformat`, `libavcodec`, `libavutil`; for the server also `asio` and `cpp-jwt` (Crow is fetched by CMake)
 - Test framework: `cppunit` (optional; tests are skipped if absent)
 
 On Debian/Ubuntu:
@@ -48,7 +54,8 @@ On Debian/Ubuntu:
 ```bash
 apt-get install libsqlite3-dev libjpeg-dev libpng-dev libheif-dev \
                 libraw-dev libssl-dev libavformat-dev libavcodec-dev \
-                libavutil-dev libcppunit-dev
+                libavutil-dev libcppunit-dev \
+                libasio-dev libcpp-jwt-dev
 ```
 
 ## Building
@@ -58,7 +65,7 @@ cmake --preset default
 cmake --build --preset default
 ```
 
-Build artifacts are placed in `/tmp/imager-build`. To run the test suite:
+Build artifacts are placed in `build/`. To run the test suite:
 
 ```bash
 ctest --preset default
@@ -194,6 +201,8 @@ Comprehensive user documentation lives in [`docs/user/`](docs/user/):
 | [Storage and Data Model](docs/user/storage.md) | Disk layout, database schema, SHA256 sharding, AAE sidecar mechanics |
 | [Metrics and Monitoring](docs/user/metrics.md) | All built-in metrics, how to read them, and bottleneck analysis |
 | [Architecture Overview](docs/user/architecture.md) | Component map, concurrency model, ingestion data flow |
+| [REST API Reference](docs/user/API.md) | Every `imagerd` endpoint, error codes, auth flow, curl walkthrough |
+| [Deployment and Operations](docs/user/DEPLOYMENT.md) | Server build, config, TLS/proxy, bootstrap, troubleshooting |
 | [Troubleshooting](docs/user/troubleshooting.md) | Common errors, diagnosis steps, and recovery procedures |
 
 ## Project Structure
@@ -210,8 +219,11 @@ imager/         libimager facade — ties everything together
   sample/       imager_cli demo
   test/
 imagestore/     Batch import CLI utility
+auth/           Users (SQLite), PBKDF2 password hashing, JWT tokens (namespace auth)
+server/         imagerd HTTP(S) daemon (Crow)
+imageradmin/    User administration CLI
 docs/
-  plan/         Design documents (0001–0015)
+  plan/         Design documents (0001–0023)
   analysis/     Implementation status
 ```
 

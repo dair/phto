@@ -251,3 +251,9 @@
 - **Task**: Checkpoint J2 (0022 §10).
 - **Outcome**: Top-level CMake: `Crow` INTERFACE gets `CROW_ENABLE_SSL` + `OpenSSL::SSL/Crypto`. `App::enableTls()` builds its own `asio::ssl::context` (tls_server, no SSLv2/3, `SSL_CTX_set_min_proto_version(TLS1_2)`), loads cert via `use_certificate_chain_file` (handles single cert and chain), key via `use_PrivateKey_file`, `check_private_key`, then `crow.ssl(ctx)`; Crow's own ssl_file would throw late and can't set min version. Key must be a regular file not S_IROTH. main.cpp calls it before run(); failure -> stderr `imagerd: TLS error: <msg>`, exit 2. Startup log "serving HTTP|HTTPS on bind:port". Build + ctest 31/31 green.
 - **Next Step**: j2-test runs test_tls.
+
+## [2026-10-31 17:00] - M-J J4 server documentation
+- **Agent**: bookkeeper
+- **Task**: Checkpoint J4 (0022 §16): API reference, deployment/ops guide, README/CLAUDE.md status.
+- **Outcome**: New `docs/user/API.md` (all 22 method+path routes (19 CROW_ROUTE registrations), auth flow, error code table from `server/Json.cpp`, pagination, validation limits, curl walkthrough, plan deviations) and `docs/user/DEPLOYMENT.md` (build deps, `[server]`/`[auth]` reference, JWT secret, imageradmin bootstrap, signals, native TLS, nginx/Caddy proxy, upload memory, backups, logging, startup-error troubleshooting). Updated `README.md` (Phase 2 status, deps, structure, doc links), `docs/user/README.md` index, and `CLAUDE.md` (structure tree, dependencies, plan list 0016–0023, test list, status). Cross-checked against `CROW_ROUTE` registrations; docs follow the code where it differs from the plan (BrokenFile 400, /stats counts only, no access log, 8 MiB range cap).
+- **Next Step**: root verifies and commits; architect may refresh `docs/plan/0022.SERVER.md` status line ("Proposal").

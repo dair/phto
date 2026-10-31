@@ -37,9 +37,12 @@ Build artifacts go to `build/imager-build` (configured in `CMakePresets.json`).
 │   ├── sample/             # CLI demo
 │   └── test/
 ├── imagestore/    # Batch import CLI: stdin pipe, bounded concurrency, progress, error file
+├── auth/          # User store (SQLite), PBKDF2 password hashing, HS256 JWT TokenService (namespace auth)
+├── server/        # imagerd: Crow HTTP(S) REST daemon — routes, auth middleware, login throttle, native TLS (namespace server)
+├── imageradmin/   # User administration CLI (add/del/passwd/enable/disable/promote/demote/list)
 ├── metrics/       # Lock-free monitoring: Histogram, Counter, Gauge, Timer (namespace metrics)
 └── docs/
-    ├── plan/      # Design documents (0001–0015)
+    ├── plan/      # Design documents (0001–0023)
     └── analysis/  # Implementation analysis
 ```
 
@@ -57,6 +60,9 @@ Build artifacts go to `build/imager-build` (configured in `CMakePresets.json`).
 | libavcodec | Video codec trial decode | System — `pkg_check_modules(LibAvCodec REQUIRED libavcodec)` |
 | libavutil | FFmpeg memory/error utilities | System — `pkg_check_modules(LibAvUtil REQUIRED libavutil)` |
 | toml++ | Config parsing | FetchContent from GitHub |
+| Crow (v1.2.1.2) | HTTP(S) server (`server/`) | FetchContent from GitHub (no Debian package); built without Boost, `CROW_ENABLE_SSL` |
+| asio | Crow's networking layer | System — `libasio-dev`, found by Crow's `Findasio.cmake` |
+| cpp-jwt | JWT issue/verify (`auth/`) | System — `find_package(cpp-jwt CONFIG REQUIRED)` (`libcpp-jwt-dev`) |
 | CPPUnit | Testing | System dependency |
 
 No other libraries without explicit discussion.
@@ -90,7 +96,7 @@ Config is read once at startup (no hot reload).
 
 ## Testing
 
-CPPUnit-based. Test suites: `DatabaseTests`, `ImagerTests`, `config_tests`, `jpeg_validator_tests`, `test_validate_png`, `heic_validator_tests`, `nef_validator_tests`, `aae_validator_tests`, `mov_validator_tests`.
+CPPUnit-based. Test suites (`ctest --preset default -N`, 33 tests): `metrics_tests`, `blob_tests`, `coro_tests`, `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `heic_validator_tests`, `nef_validator_tests`, `mov_validator_tests`, `aae_validator_tests`, `config_tests`, `auth_tests`, `auth_userstore_tests`, `auth_token_tests`, `ImagerTests`, `TimestampTests`, `imagestore_cli_tests`, `imagestore_memcheck`, `imagestore_output_tests`, `imageradmin_cli_tests`, and the server tests `server_health_test`, `server_auth_test`, `server_authz_test`, `server_json_tests`, `server_items_test`, `server_content_test`, `server_list_test`, `server_item_tags_test`, `server_tags_test`, `server_users_test`, `server_hardening_test`, `server_tls_test`, `server_api_test` (shell tests run a live `imagerd`).
 
 Use temporary directories for test databases and file storage; clean up in `tearDown()`.
 
@@ -114,12 +120,20 @@ Detailed plans live in `docs/plan/`:
 - **[0013.PROGRESS](docs/plan/0013.PROGRESS.md)** — Progress tracking: stage counters, `--graph` mode, `Imager::addFile()`
 - **[0014.DISPLAY](docs/plan/0014.DISPLAY.md)** — Display and output improvements for imagestore
 - **[0015.GAPS](docs/plan/0015.GAPS.md)** — Gap analysis and remediation plan
+- **[0016.VERBOSE_OUTPUT](docs/plan/0016.VERBOSE_OUTPUT.md)** — Verbose output redesign: real-time file status display
+- **[0017.LARGE_FILES](docs/plan/0017.LARGE_FILES.md)** — Large file handling: true streaming processing
+- **[0018.MEMORY](docs/plan/0018.MEMORY.md)** — Memory growth investigation and instrumentation
+- **[0019.DELETE](docs/plan/0019.DELETE.md)** — File-input deletion in `libimager` and `imagestore`
+- **[0020.TIMESTAMPS](docs/plan/0020.TIMESTAMPS.md)** — Preserve original file timestamps
+- **[0021.REORGANIZATION](docs/plan/0021.REORGANIZATION.md)** — Workspace/submodule reorganization
+- **[0022.SERVER](docs/plan/0022.SERVER.md)** — Phase 2 HTTP(S) REST server: Crow, JWT auth, users, items, tags, TLS
+- **[0023.TRANSCODING](docs/plan/0023.TRANSCODING.md)** — Content transcoding and format negotiation for `GET /items/{id}/content` (proposal, not implemented)
 
-Implementation status is tracked in **[docs/analysis/ANALYSIS.md](docs/analysis/ANALYSIS.md)** — Phase 1 core complete; 0002 (multi-target DB), 0003 (coroutine parallelism), 0004 (refactoring), 0007–0010 (HEIC/NEF/MOV/AAE validators), and 0013 (progress tracking) implemented. 0005 (metrics) partially wired. 0006 (`imagestore` CLI) substantially implemented.
+Implementation status is tracked in **[docs/analysis/ANALYSIS.md](docs/analysis/ANALYSIS.md)** — Phase 1 core complete; 0002 (multi-target DB), 0003 (coroutine parallelism), 0004 (refactoring), 0007–0010 (HEIC/NEF/MOV/AAE validators), and 0013 (progress tracking) implemented. 0005 (metrics) partially wired. 0006 (`imagestore` CLI) substantially implemented. **Phase 2 (0022) is implemented** (`auth/`, `server/`/`imagerd`, `imageradmin`; checkpoints A1–J4); see [docs/user/API.md](docs/user/API.md) and [docs/user/DEPLOYMENT.md](docs/user/DEPLOYMENT.md). ANALYSIS.md predates Phase 2.
 
 ## Key conventions
 
-- Namespaces match directory: `blob::`, `coro::`, `config::`, `db::`, `imager::`, `metrics::`, `validation::`
+- Namespaces match directory: `auth::`, `blob::`, `coro::`, `config::`, `db::`, `imager::`, `metrics::`, `server::`, `validation::`
 - All SQL uses prepared statements with bound parameters (no string interpolation)
 - RAII for all resources (file handles, SQLite connections, OpenSSL contexts)
 - Public API is synchronous; coroutines are internal, bridged via `coro::blockOn`
