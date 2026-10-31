@@ -19,7 +19,7 @@
 | Test Name | File | Criteria Covered | Status |
 |-----------|------|------------------|--------|
 | `HttpStatusForTest::testOk` | `server/test/JsonTest.cpp` | C1 — Ok → 200 | ✅ |
-| `HttpStatusForTest::testBrokenFile` | `server/test/JsonTest.cpp` | C1 — BrokenFile → 422 | ✅ |
+| `HttpStatusForTest::testBrokenFile` | `server/test/JsonTest.cpp` | C1 — BrokenFile → 400 | ✅ |
 | `HttpStatusForTest::testDuplicateFile` | `server/test/JsonTest.cpp` | C1 — DuplicateFile → 409 | ✅ |
 | `HttpStatusForTest::testUnsupportedFormat` | `server/test/JsonTest.cpp` | C1 — UnsupportedFormat → 415 | ✅ |
 | `HttpStatusForTest::testFileNotFound` | `server/test/JsonTest.cpp` | C1 — FileNotFound → 404 | ✅ |
@@ -43,7 +43,7 @@
 | `JsonErrorTest::testEnvelopeCode` | `server/test/JsonTest.cpp` | C3 — body["error"]["code"] matches | ✅ |
 | `JsonErrorTest::testEnvelopeMessage` | `server/test/JsonTest.cpp` | C3 — body["error"]["message"] matches | ✅ |
 | `JsonErrorTest::testMessageWithSpecialChars` | `server/test/JsonTest.cpp` | C3 — special-char message round-trips | ✅ |
-| `ErrorResponseTest::testBrokenFileStatus` | `server/test/JsonTest.cpp` | C4 — BrokenFile → 422 | ✅ |
+| `ErrorResponseTest::testBrokenFileStatus` | `server/test/JsonTest.cpp` | C4 — BrokenFile → 400 | ✅ |
 | `ErrorResponseTest::testBrokenFileEnvelopeCode` | `server/test/JsonTest.cpp` | C4 — BrokenFile envelope code | ✅ |
 | `ErrorResponseTest::testFileNotFoundStatus` | `server/test/JsonTest.cpp` | C4 — FileNotFound → 404 | ✅ |
 | `ErrorResponseTest::testFileNotFoundEnvelopeCode` | `server/test/JsonTest.cpp` | C4 — FileNotFound envelope code | ✅ |
@@ -73,4 +73,4 @@ None. All enum values, all functions, all edge cases (special-char escaping, WWW
 - The CTest entry is named `server_json_tests` (matches the executable name); registered in `server/test/CMakeLists.txt` alongside the existing `server_health_test` shell-script test.
 - JSON parsing in tests uses `crow::json::load(res.body)` directly — no extra dependencies, consistent with the existing crow dependency already in `server_lib`.
 - The special-character test uses `R"(file "foo\bar" rejected)"` — a raw string with an embedded double quote and backslash — to verify crow's JSON serialiser escapes and `load()` un-escapes symmetrically.
-- `errorResponse` spot-checks cover BrokenFile (422), FileNotFound (404), and DatabaseError (500); the exhaustive per-value coverage is already supplied by `HttpStatusForTest` and `ErrorCodeNameTest`.
+- `errorResponse` spot-checks cover BrokenFile (400), FileNotFound (404), and DatabaseError (500); the exhaustive per-value coverage is already supplied by `HttpStatusForTest` and `ErrorCodeNameTest`.

@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# server/test/test_items.sh.in — G1 PUT /items + GET /items/{id} end-to-end test
+#
+# Covers (docs/plan/0022.SERVER.md §6.2, §7, §9):
+#   - PUT /items new JPEG → 201 {id, duplicate:false}; stored at <root>/<aa>/<id>.jpg
+#   - PUT /items same bytes → 200 {id (same), duplicate:true}
+#   - unsupported extension → 415 UnsupportedFormat
+#   - valid extension, corrupt content → 400 BrokenFile (Crow 1.2.1.2 cannot send 422)
+#   - body over [server].max_upload_mb → 413
+#   - no / bad token → 401 on PUT and GET
+#   - GET /items/{id} → 200 with id,name,size,ext,tags (tags seeded via the DB)
+#   - GET unknown 64-hex id → 404; malformed id → 400
+#
+# Configured by CMake configure_file(@ONLY); registered as "server_items_test".
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+
+PASS=0
+FAIL=0
+
+# check <name> <command...>: runs the command in a subshell; pass iff exit 0.
+check() {
+  local name="$1"; shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "PASS: $name"; PASS=$((PASS + 1))
+  else echo "FAIL: $name"; FAIL=$((FAIL + 1)); fi
+}
+
+for tool in curl python3; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_items_test skipped"
+    exit 0
+  fi
+done
+if [ ! -f "$JPEG_FIXTURE" ]; then
+  echo "FATAL: fixture $JPEG_FIXTURE missing"; exit 1
+fi
+
+pick_port() {
+  for port in 19500 19501 19502 19503 19504; do
+    if ! ss -tlnp 2>/dev/null | grep -q ":${port} "; then echo "$port"; return 0; fi
+  done
+  echo "19500"
+}
+PORT=$(pick_port)
+
+TMPDIR_TEST=$(mktemp -d)
+STORAGE_ROOT="$TMPDIR_TEST/storage"
+IMAGER_DB="$TMPDIR_TEST/imager.db"
+AUTH_DB="$TMPDIR_TEST/auth.db"
+CFG="$TMPDIR_TEST/test.toml"
+mkdir -p "$STORAGE_ROOT"
+
+cat > "$CFG" <<CFGEOF
+[[targets]]
+root = "$STORAGE_ROOT"
+database = "$IMAGER_DB"
+
+[server]
+bind = "127.0.0.1"
+port = $PORT
+threads = 2
+max_upload_mb = 1
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+CFGEOF
+
+printf '%s' "alicepass1" | "$IMAGERADMIN_BIN" "$CFG" user add alice "Alice User" --password-stdin || {
+  echo "FATAL: seeding user failed"; rm -rf "$TMPDIR_TEST"; exit 1; }
+
+"$IMAGERD_BIN" "$CFG" >"$TMPDIR_TEST/daemon.stdout" 2>"$TMPDIR_TEST/daemon.stderr" &
+DAEMON_PID=$!
+cleanup() {
+  if [ "${DAEMON_PID:-0}" -gt 0 ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
+
+BASE_URL="http://127.0.0.1:${PORT}"
+READY=$(curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 \
+  --retry-delay 1 --retry-connrefused --max-time 12 "$BASE_URL/health" 2>/dev/null) || READY="000"
+if [ "$READY" != "200" ]; then
+  echo "FATAL: daemon not ready ($READY)"; cat "$TMPDIR_TEST/daemon.stderr" || true; exit 1
+fi
+
+# json_get <file> <python-expr over d>: prints the value
+json_get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+
+# http <outfile-prefix> <curl args...>: writes <prefix>.body / <prefix>.status
+http() {
+  local prefix="$1"; shift
+  curl --silent --output "$prefix.body" --write-out "%{http_code}" "$@" > "$prefix.status" 2>/dev/null || echo 000 > "$prefix.status"
+}
+
+LOGIN=$(curl --silent --request POST --header "Content-Type: application/json" \
+  --data '{"login":"alice","password":"alicepass1"}' "$BASE_URL/auth/login")
+TOKEN=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$LOGIN" 2>/dev/null || true)
+check "setup: login returns a token" test -n "$TOKEN"
+AUTH="Authorization: Bearer $TOKEN"
+
+EXPECTED_ID=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$JPEG_FIXTURE")
+SHARD="${EXPECTED_ID:0:2}"
+T="$TMPDIR_TEST"
+
+# ---- PUT new --------------------------------------------------------------
+http "$T/new" -X PUT -H "$AUTH" -H "X-Filename: photo.jpg" --data-binary "@$JPEG_FIXTURE" "$BASE_URL/items"
+check "PUT /items new JPEG → 201" test "$(cat $T/new.status)" = 201
+check "PUT new: duplicate is false" test "$(json_get $T/new.body "d['duplicate']")" = False
+check "PUT new: id is the SHA256 of the content" test "$(json_get $T/new.body "d['id']")" = "$EXPECTED_ID"
+check "stored file exists at <root>/<aa>/<hash>.jpg" test -f "$STORAGE_ROOT/$SHARD/$EXPECTED_ID.jpg"
+check "stored file is byte-identical to the upload" cmp "$JPEG_FIXTURE" "$STORAGE_ROOT/$SHARD/$EXPECTED_ID.jpg"
+
+# ---- PUT duplicate (also via ?filename=) -----------------------------------
+http "$T/dup" -X PUT -H "$AUTH" --data-binary "@$JPEG_FIXTURE" "$BASE_URL/items?filename=again.jpg"
+check "PUT /items same bytes → 200" test "$(cat $T/dup.status)" = 200
+check "PUT duplicate: duplicate is true" test "$(json_get $T/dup.body "d['duplicate']")" = True
+check "PUT duplicate: same id returned" test "$(json_get $T/dup.body "d['id']")" = "$EXPECTED_ID"
+
+# ---- unsupported / broken / oversized -------------------------------------
+printf 'just some text' > "$T/note.txt"
+http "$T/unsup" -X PUT -H "$AUTH" -H "X-Filename: note.txt" --data-binary "@$T/note.txt" "$BASE_URL/items"
+check "PUT unsupported extension → 415" test "$(cat $T/unsup.status)" = 415
+check "unsupported: error.code is UnsupportedFormat" test "$(json_get $T/unsup.body "d['error']['code']")" = UnsupportedFormat
+
+head -c 4096 /dev/urandom > "$T/broken.jpg"
+http "$T/broken" -X PUT -H "$AUTH" -H "X-Filename: broken.jpg" --data-binary "@$T/broken.jpg" "$BASE_URL/items"
+check "PUT broken JPEG → 400 (Crow cannot emit 422)" test "$(cat $T/broken.status)" = 400
+check "broken: error.code is BrokenFile" test "$(json_get $T/broken.body "d['error']['code']")" = BrokenFile
+
+head -c 2097152 /dev/zero > "$T/big.jpg"
+http "$T/big" -X PUT -H "$AUTH" -H "X-Filename: big.jpg" --data-binary "@$T/big.jpg" "$BASE_URL/items"
+check "PUT body over max_upload_mb → 413" test "$(cat $T/big.status)" = 413
+check "oversized: JSON error envelope present" test -n "$(json_get $T/big.body "d['error']['code']")"
+
+check "rejected uploads leave no extra stored files" \
+  test "$(find "$STORAGE_ROOT" -type f | wc -l)" = 1
+
+# ---- auth required --------------------------------------------------------
+http "$T/noauth" -X PUT -H "X-Filename: photo.jpg" --data-binary "@$JPEG_FIXTURE" "$BASE_URL/items"
+check "PUT /items without token → 401" test "$(cat $T/noauth.status)" = 401
+http "$T/badtok" -X PUT -H "Authorization: Bearer not.a.token" -H "X-Filename: photo.jpg" --data-binary "@$JPEG_FIXTURE" "$BASE_URL/items"
+check "PUT /items with invalid token → 401" test "$(cat $T/badtok.status)" = 401
+http "$T/getnoauth" "$BASE_URL/items/$EXPECTED_ID"
+check "GET /items/{id} without token → 401" test "$(cat $T/getnoauth.status)" = 401
+
+# ---- GET /items/{id} ------------------------------------------------------
+# Seed tags directly in the per-target DB (tag routes arrive in milestone H).
+python3 - "$IMAGER_DB" "$EXPECTED_ID" <<'PYEOF'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1], timeout=10)
+for t in ("holiday", "family"):
+    c.execute("INSERT OR IGNORE INTO tag(name) VALUES (?)", (t,))
+    c.execute("INSERT OR IGNORE INTO file_tag(file_id, tag_name) VALUES (?, ?)", (sys.argv[2], t))
+c.commit(); c.close()
+PYEOF
+
+http "$T/get" -H "$AUTH" "$BASE_URL/items/$EXPECTED_ID"
+check "GET /items/{id} existing → 200" test "$(cat $T/get.status)" = 200
+check "GET item: id matches" test "$(json_get $T/get.body "d['id']")" = "$EXPECTED_ID"
+check "GET item: name is the uploaded filename" test "$(json_get $T/get.body "d['name']")" = "photo.jpg"
+check "GET item: ext is .jpg" test "$(json_get $T/get.body "d['ext']")" = ".jpg"
+check "GET item: size equals fixture size" test "$(json_get $T/get.body "d['size']")" = "$(stat -c %s "$JPEG_FIXTURE")"
+check "GET item: tags lists the bound tags" test "$(json_get $T/get.body "sorted(d['tags'])")" = "['family', 'holiday']"
+
+UNKNOWN_ID=$(printf 'a%.0s' $(seq 1 64))
+http "$T/get404" -H "$AUTH" "$BASE_URL/items/$UNKNOWN_ID"
+check "GET unknown (well-formed) id → 404" test "$(cat $T/get404.status)" = 404
+check "GET 404: error envelope code present" test -n "$(json_get $T/get404.body "d['error']['code']")"
+
+http "$T/get400" -H "$AUTH" "$BASE_URL/items/not-a-valid-id"
+check "GET malformed id → 400" test "$(cat $T/get400.status)" = 400
+http "$T/get400b" -H "$AUTH" "$BASE_URL/items/${EXPECTED_ID:0:63}"
+check "GET too-short hex id → 400" test "$(cat $T/get400b.status)" = 400
+check "GET 400: error.code is BadRequest" test "$(json_get $T/get400.body "d['error']['code']")" = BadRequest
+
+# ---- graceful shutdown ----------------------------------------------------
+SIGTERM_OK=0
+if kill -TERM "$DAEMON_PID" 2>/dev/null; then
+  for _i in $(seq 1 50); do kill -0 "$DAEMON_PID" 2>/dev/null || break; sleep 0.1; done
+  if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+    EXIT=0; wait "$DAEMON_PID" 2>/dev/null || EXIT=$?
+    [ "$EXIT" -eq 0 ] && SIGTERM_OK=1
+  else kill -KILL "$DAEMON_PID" 2>/dev/null || true; fi
+fi
+if [ "$SIGTERM_OK" -eq 1 ]; then echo "PASS: SIGTERM causes clean exit (status 0)"; PASS=$((PASS+1))
+else echo "FAIL: SIGTERM causes clean exit (status 0)"; FAIL=$((FAIL+1)); fi
+DAEMON_PID=0
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

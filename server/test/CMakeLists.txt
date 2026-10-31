@@ -131,3 +131,27 @@ else()
     include(CTest)
     add_test(NAME server_json_tests COMMAND server_json_tests)
 endif()
+
+# ---- server_items_test — G1 PUT /items + GET /items/{id} (shell script) ----
+
+set(JPEG_FIXTURE "${CMAKE_SOURCE_DIR}/validations/jpeg/test/testimg.jpg")
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_items.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_items.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_items.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_items_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_items.sh"
+)
+
+set_tests_properties(server_items_test PROPERTIES TIMEOUT 90)

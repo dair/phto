@@ -30,7 +30,7 @@ public:
   }
 
   void testBrokenFile() {
-    CPPUNIT_ASSERT_EQUAL(422, server::httpStatusFor(imager::ErrorCode::BrokenFile));
+    CPPUNIT_ASSERT_EQUAL(400, server::httpStatusFor(imager::ErrorCode::BrokenFile));
   }
 
   void testDuplicateFile() {
@@ -195,7 +195,7 @@ class ErrorResponseTest: public CppUnit::TestFixture {
 public:
   void testBrokenFileStatus() {
     crow::response res = server::errorResponse(imager::ErrorCode::BrokenFile, "bad file");
-    CPPUNIT_ASSERT_EQUAL(422, res.code);
+    CPPUNIT_ASSERT_EQUAL(400, res.code);
   }
 
   void testBrokenFileEnvelopeCode() {

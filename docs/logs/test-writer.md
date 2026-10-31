@@ -1,5 +1,11 @@
 # Work Log
 
+## [2026-10-31 12:00] - G1 PUT /items + GET /items/{id} e2e test (0022.SERVER §6.2/§7/§9)
+- **Agent**: test-spec-writer
+- **Task**: Write shell E2E test for checkpoint G1; register as `server_items_test`; add `docs/testing/items-upload.md` and README row.
+- **Outcome**: Created `server/test/test_items.sh.in` (new/duplicate/unsupported/broken/oversized/401/get/404/400 + storage-shard check), CMake registration, doc. Broken file asserts 400/BrokenFile (Crow lacks 422). Green: 31/31 assertions, full ctest 25/25.
+- **Next Step**: Run against g1-dev's implementation and fix contract mismatches.
+
 ## [2026-06-24 14:00] - F2 requireAdmin / GET /users / throttle / /auth/password e2e test (0022.SERVER §6.1/§6.5/§13)
 - **Agent**: test-spec-writer
 - **Task**: Write shell E2E test for checkpoint F2: `requireAdmin`+`GET /users`, login brute-force throttle (5 fails → 429 + Retry-After), `POST /auth/password` (self password change). Register as CTest `server_authz_test`. Add `docs/testing/auth-authz.md` and update README dashboard.

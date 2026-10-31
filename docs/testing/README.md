@@ -21,3 +21,4 @@ Cross-cutting test structure, build/run commands, and conventions live in
 | Server error utilities — `server/Json.{h,cpp}` (0022.SERVER §7, E2) | [server-errors.md](server-errors.md) | complete | 7/7 (100%) |
 | Auth endpoints — `POST /auth/login`, `GET /auth/me` (0022.SERVER §6.1, F1) | [auth-endpoints.md](auth-endpoints.md) | complete | 7/7 (100%) |
 | Auth authz, throttle, password change (0022.SERVER §6.1/§6.5/§13, F2) | [auth-authz.md](auth-authz.md) | complete | 11/11 (100%) |
+| Items upload & fetch — `PUT /items`, `GET /items/{id}` (0022.SERVER §6.2/§7/§9, G1) | [items-upload.md](items-upload.md) | complete | 9/9 (100%) |

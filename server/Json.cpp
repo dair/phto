@@ -15,7 +15,7 @@ struct StatusMapping {
 // Single-sourced ErrorCode → (HTTP status, string) table (§7 of 0022.SERVER.md).
 constexpr StatusMapping MAPPINGS[] = {
   {imager::ErrorCode::Ok, 200, "Ok"},
-  {imager::ErrorCode::BrokenFile, 422, "BrokenFile"},
+  {imager::ErrorCode::BrokenFile, 400, "BrokenFile"},
   {imager::ErrorCode::DuplicateFile, 409, "DuplicateFile"},
   {imager::ErrorCode::UnsupportedFormat, 415, "UnsupportedFormat"},
   {imager::ErrorCode::FileNotFound, 404, "FileNotFound"},

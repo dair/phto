@@ -195,3 +195,17 @@
 - **Task**: Modify imagestore/main.cpp worker lambda to use `img.addFile(capturedPath)` for the non-dry-run path instead of manual stat+read+blob+addImage steps.
 - **Outcome**: Replaced the non-dry-run code path with a two-step approach: `fs::file_size` for `stats.totalBytes` accounting (same error handling as before), then `img.addFile(capturedPath)` for the full pipeline. The dry-run path retains the original blob-reading code unchanged. Result-handling switch unchanged. Build clean, all 10 tests pass.
 - **Next Step**: None specified.
+
+## [2026-10-31 12:00] - G1: PUT /items + GET /items/{id}
+
+- **Agent**: cpp-spec-coder
+- **Task**: Implement checkpoint G1 (0022.SERVER §6.2/§7/§9): authenticated item upload (spool to temp file, `Imager::addFile`) and item lookup.
+- **Outcome**: Added `server/ItemRoutes.{h,cpp}` (RAII `TempFile` via mkstemp in `$TMPDIR`; 201/200+`duplicate`; errors via the single-sourced Json.cpp table; size cap = `[server].max_upload_mb` → 413 checked after Crow buffers the body; GET validates 64-lowercase-hex id → 400, unknown → 404). Registered in `App::registerRoutes`. Routes have no `/api/v1` prefix, consistent with existing auth routes. Found Crow 1.2.1.2 has no 422 status line (rewrites to 500), so BrokenFile→422 fails e2e; decision escalated to team lead.
+- **Next Step**: Resolve the 422 issue (patch Crow table or remap), then re-run ctest.
+
+## [2026-10-31 12:30] - G1: BrokenFile remapped 422 → 400
+
+- **Agent**: cpp-spec-coder
+- **Task**: Resolve Crow's missing 422 status line (user decision: option b, no Crow patch).
+- **Outcome**: `BrokenFile` → 400 in `server/Json.cpp` (envelope code unchanged); updated `JsonTest.cpp` assertions, plan 0022 §7 (with note), and docs/testing notes. g1-test asked to update `test_items.sh.in` to 400.
+- **Next Step**: g1-test rebuilds and reports full ctest to team-lead.
