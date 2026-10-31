@@ -40,3 +40,23 @@ Network protocol is HTTP(S), Crow is the library for handling HTTP(S) requests
 
 Secure authentication on the web today is Bearer token authentication using JWT (JSON Web Tokens), typically passed in the Authorization: Bearer <token> header. It's the backbone of most modern REST APIs and OAuth 2.0 flows. The application will use jwt-cpp library to handle the authentication.
 
+## Plan status overview (2026-10-31)
+
+Each plan carries its own `Status` line; this table is a summary. Per-plan design documents are indexed in the project `CLAUDE.md`.
+
+| Plan | Status |
+|---|---|
+| 0001–0004 | Implemented |
+| 0005 MONITORING, 0006 UTILITY | No status line; partially wired / substantially implemented per [ANALYSIS](../analysis/ANALYSIS.md) |
+| 0007–0010 (HEIC, NEF, MOV, AAE) | Implemented |
+| 0011 ARCHIVES | Planned, not implemented |
+| 0012 CODING_STANDARDS | In progress |
+| 0013 PROGRESS | Implemented |
+| 0014 DISPLAY | Partially superseded (`--graph` removed by 0016) |
+| 0015 GAPS | No status line |
+| 0016 VERBOSE_OUTPUT, 0017 LARGE_FILES | Implemented |
+| 0018 MEMORY | Instrumentation implemented; investigation open |
+| 0019 DELETE, 0020 TIMESTAMPS | Implemented |
+| 0021 REORGANIZATION | Partially implemented (settings hygiene open) |
+| 0022 SERVER (Phase 2) | Implemented; see [API](../user/API.md), [DEPLOYMENT](../user/DEPLOYMENT.md) |
+| 0023 TRANSCODING | Proposal, not implemented |

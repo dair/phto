@@ -133,7 +133,7 @@ void App::enableTls() {
 
 void App::run() {
   uint32_t threads = m_cfg.threads ? m_cfg.threads : std::thread::hardware_concurrency();
-  m_crow.bindaddr(m_cfg.bind).port(m_cfg.port).multithreaded().concurrency(threads).run();
+  m_crow.bindaddr(m_cfg.bind).port(m_cfg.port).multithreaded().concurrency(threads).signal_clear().run();
 }
 
 void App::stop() {

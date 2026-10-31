@@ -69,10 +69,6 @@ static constexpr std::string_view SQL_DELETE_USER = "DELETE FROM user WHERE logi
 static constexpr std::string_view SQL_UPDATE_PASSWORD =
   "UPDATE user SET pw_algo = ?, pw_iterations = ?, pw_salt = ?, pw_hash = ?, updated_at = ? WHERE login = ?";
 
-static constexpr std::string_view SQL_UPDATE_ENABLED = "UPDATE user SET enabled = ?, updated_at = ? WHERE login = ?";
-
-static constexpr std::string_view SQL_UPDATE_ADMIN = "UPDATE user SET is_admin = ?, updated_at = ? WHERE login = ?";
-
 static constexpr std::string_view SQL_SELECT_USER =
   "SELECT login, full_name, is_admin, enabled, created_at, updated_at FROM user WHERE login = ?";
 
@@ -260,16 +256,6 @@ void UserStore::create(const std::string& login, const std::string& fullName, co
   m_impl->mustDone(stmt.get(), AuthErrorCode::Duplicate, "User '" + login + "' already exists");
 }
 
-void UserStore::remove(const std::string& login) {
-  std::unique_lock lock(m_impl->mutex);
-  auto stmt = m_impl->prepare(SQL_DELETE_USER);
-  sqlite3_bind_text(stmt.get(), 1, login.c_str(), -1, SQLITE_STATIC);
-  m_impl->mustDone(stmt.get(), AuthErrorCode::QueryFailed, "remove failed");
-  if (sqlite3_changes(m_impl->db.get()) == 0) {
-    throw AuthException(AuthErrorCode::NotFound, "User not found: " + login);
-  }
-}
-
 void UserStore::setPassword(const std::string& login, const PasswordRecord& pw) {
   std::unique_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_UPDATE_PASSWORD);
@@ -283,36 +269,6 @@ void UserStore::setPassword(const std::string& login, const PasswordRecord& pw) 
   sqlite3_bind_text(stmt.get(), 6, login.c_str(), -1, SQLITE_STATIC);
 
   m_impl->mustDone(stmt.get(), AuthErrorCode::QueryFailed, "setPassword failed");
-  if (sqlite3_changes(m_impl->db.get()) == 0) {
-    throw AuthException(AuthErrorCode::NotFound, "User not found: " + login);
-  }
-}
-
-void UserStore::setEnabled(const std::string& login, bool enabled) {
-  std::unique_lock lock(m_impl->mutex);
-  auto stmt = m_impl->prepare(SQL_UPDATE_ENABLED);
-  const uint64_t now = nowEpoch();
-
-  sqlite3_bind_int(stmt.get(), 1, enabled ? 1 : 0);
-  sqlite3_bind_int64(stmt.get(), 2, static_cast<sqlite3_int64>(now));
-  sqlite3_bind_text(stmt.get(), 3, login.c_str(), -1, SQLITE_STATIC);
-
-  m_impl->mustDone(stmt.get(), AuthErrorCode::QueryFailed, "setEnabled failed");
-  if (sqlite3_changes(m_impl->db.get()) == 0) {
-    throw AuthException(AuthErrorCode::NotFound, "User not found: " + login);
-  }
-}
-
-void UserStore::setAdmin(const std::string& login, bool isAdmin) {
-  std::unique_lock lock(m_impl->mutex);
-  auto stmt = m_impl->prepare(SQL_UPDATE_ADMIN);
-  const uint64_t now = nowEpoch();
-
-  sqlite3_bind_int(stmt.get(), 1, isAdmin ? 1 : 0);
-  sqlite3_bind_int64(stmt.get(), 2, static_cast<sqlite3_int64>(now));
-  sqlite3_bind_text(stmt.get(), 3, login.c_str(), -1, SQLITE_STATIC);
-
-  m_impl->mustDone(stmt.get(), AuthErrorCode::QueryFailed, "setAdmin failed");
   if (sqlite3_changes(m_impl->db.get()) == 0) {
     throw AuthException(AuthErrorCode::NotFound, "User not found: " + login);
   }

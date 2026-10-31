@@ -1,0 +1,492 @@
+#!/usr/bin/env bash
+# server/test/test_fixups.sh.in — post-0022 fix-up checkpoint end-to-end test
+#
+# Covers (fix-up gaps 3, 4, 5, 6, 7; gaps 1–2 live in imageradmin_cli_tests):
+#   3. imagerd startup open failures → clear "imagerd:" error, non-zero exit, no crash/core
+#   4. empty [auth].database rejected at startup
+#   5. missing JWT secret → "no JWT secret configured", distinct from the too-short message
+#   6. SIGTERM drains in-flight requests (slow download, slow upload) within a bounded time
+#   7. wrong oldPassword on POST /auth/password throttled with 429 + Retry-After
+# Registered as "server_fixups_test". Configured by CMake configure_file(@ONLY).
+# Ports 19590–19594. Throttle section runs LAST on its own daemon.
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+
+# ---- contract knobs (aligned with fx-dev) ----------------------------------
+STARTUP_TIMEOUT=10          # a failing startup must exit within this many seconds
+MSG_NO_SECRET='no JWT secret configured (set [auth].jwt_secret_file)'
+MSG_SHORT_SECRET='JWT secret must be >= 32 bytes'                       # too-short message must mention the 32-byte minimum
+MSG_EMPTY_AUTH_DB="Config [auth]: 'database' must not be empty"                # empty [auth].database message must mention it
+DRAIN_TIMEOUT=30            # fixed in imagerd; bounded SIGTERM drain, seconds (daemon-side)
+DRAIN_SLACK=5               # test-side slack on top of the drain timeout
+PW_THRESHOLD=5              # wrong oldPassword attempts before 429
+PW_SHARES_LOGIN_COUNTERS=1  # 1 → password failures lock out /auth/login for the same user too
+BIG_MB=6                    # size of the large items (must stay < max_upload_mb)
+LIMIT_RATE=1500k            # curl --limit-rate for the in-flight transfers
+
+PASS=0
+FAIL=0
+
+check() {
+  local name="$1"; shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "PASS: $name"; PASS=$((PASS + 1))
+  else echo "FAIL: $name"; FAIL=$((FAIL + 1)); fi
+}
+
+for tool in curl python3 timeout sha256sum; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_fixups_test skipped"
+    exit 0
+  fi
+done
+if [ ! -f "$JPEG_FIXTURE" ]; then echo "FATAL: fixture $JPEG_FIXTURE missing"; exit 1; fi
+
+P_STARTUP=19590; P_DL=19591; P_UL=19592; P_THROTTLE=19593
+
+TMPDIR_TEST=$(mktemp -d)
+T="$TMPDIR_TEST"
+ROOT1="$T/storage1"; DB1="$T/imager1.db"
+AUTH_DB="$T/auth.db"
+GOOD_SECRET="this-is-a-32-byte-test-secret-ok"
+mkdir -p "$ROOT1"
+PIDS=()
+cleanup() {
+  for p in "${PIDS[@]:-}"; do
+    if [ -n "${p:-}" ] && kill -0 "$p" 2>/dev/null; then
+      kill -KILL "$p" 2>/dev/null || true
+      wait "$p" 2>/dev/null || true
+    fi
+  done
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
+
+# make_cfg <file> <port> <auth-db-line-value> <secret-line> [target-db]
+#   <secret-line> is emitted verbatim inside [auth] (may be empty for "no secret")
+make_cfg() {
+  local tdb="${5:-$DB1}"
+  cat > "$1" <<CFGEOF
+[[targets]]
+root = "$ROOT1"
+database = "$tdb"
+
+[server]
+bind = "127.0.0.1"
+port = $2
+threads = 2
+max_upload_mb = 8
+
+[auth]
+database = "$3"
+$4
+issuer = "phto-test"
+token_ttl_seconds = 3600
+CFGEOF
+}
+SECRET_LINE="jwt_secret = \"$GOOD_SECRET\""
+
+# ===========================================================================
+# 1. Startup failures (gaps 3, 4, 5)
+# ===========================================================================
+# run_startup <cfg> → sets SU_RC, SU_ERR (stderr text), SU_SECS
+run_startup() {
+  local start=$SECONDS
+  timeout "$STARTUP_TIMEOUT" "$IMAGERD_BIN" "$1" >"$T/su.out" 2>"$T/su.err"
+  SU_RC=$?
+  SU_SECS=$((SECONDS - start))
+  SU_ERR=$(cat "$T/su.err")
+}
+no_crash() { # stderr must not show a crash; rc must be a plain exit code (not 124 timeout, not >=128 signal)
+  [ "$SU_RC" -ne 0 ] && [ "$SU_RC" -ne 124 ] && [ "$SU_RC" -lt 128 ] \
+    && ! grep -qiE 'terminate called|core dumped|Aborted|Segmentation|what\(\)' "$T/su.err"
+}
+exit2() { [ "$SU_RC" -eq 2 ]; }
+has_imagerd_line() { grep -q '^imagerd:' "$T/su.err"; }
+
+# -- 1a: auth DB in a non-existent directory
+make_cfg "$T/su1.toml" $P_STARTUP "$T/no/such/dir/auth.db" "$SECRET_LINE"
+run_startup "$T/su1.toml"
+check "startup su1: exit status is 2" exit2
+check "startup: auth DB in missing dir → plain non-zero exit (no crash/timeout)" no_crash
+check "startup: auth DB in missing dir → exits quickly" test "$SU_SECS" -lt "$STARTUP_TIMEOUT"
+check "startup: auth DB in missing dir → 'imagerd:' line on stderr" has_imagerd_line
+check "startup: auth DB in missing dir → 'cannot open auth database <path>'" \
+  bash -c 'grep -qF -- "cannot open auth database $2" "$1"' _ "$T/su.err" "$T/no/such/dir/auth.db"
+check "startup: auth DB in missing dir → directory not created" test ! -e "$T/no"
+
+# -- 1b: auth DB path is a directory
+mkdir -p "$T/adir"
+make_cfg "$T/su2.toml" $P_STARTUP "$T/adir" "$SECRET_LINE"
+run_startup "$T/su2.toml"
+check "startup su2: exit status is 2" exit2
+check "startup: auth DB path is a directory → plain non-zero exit" no_crash
+check "startup: auth DB path is a directory → 'imagerd:' line" has_imagerd_line
+check "startup: auth DB path is a directory → 'cannot open auth database'" \
+  bash -c 'grep -qF "cannot open auth database" "$1"' _ "$T/su.err"
+
+# -- 1c: imager target DB in a non-existent directory (other startup open failure)
+make_cfg "$T/su3.toml" $P_STARTUP "$T/auth-su3.db" "$SECRET_LINE" "$T/nodir2/imager.db"
+run_startup "$T/su3.toml"
+check "startup su3: exit status is 2" exit2
+check "startup: target DB in missing dir → plain non-zero exit" no_crash
+check "startup: target DB in missing dir → 'imagerd:' line" has_imagerd_line
+check "startup: target DB in missing dir → 'cannot open storage'" \
+  bash -c 'grep -qF "cannot open storage" "$1"' _ "$T/su.err"
+
+# -- 1d: empty [auth].database
+make_cfg "$T/su4.toml" $P_STARTUP "" "$SECRET_LINE"
+run_startup "$T/su4.toml"
+check "startup su4: exit status is 2" exit2
+check "startup: empty [auth].database → plain non-zero exit" no_crash
+check "startup: empty [auth].database → 'imagerd:' line" has_imagerd_line
+check "startup: empty [auth].database → message mentions database" \
+  bash -c 'grep -qiF -- "$1" "$2"' _ "$MSG_EMPTY_AUTH_DB" "$T/su.err"
+check "startup: empty [auth].database → no file created in cwd/tmp root" test ! -e "$T/auth-su4.db"
+
+# -- 1d2: absent [auth].database key
+cat > "$T/su9.toml" <<CFGEOF
+[[targets]]
+root = "$ROOT1"
+database = "$DB1"
+
+[server]
+bind = "127.0.0.1"
+port = $P_STARTUP
+
+[auth]
+$SECRET_LINE
+CFGEOF
+run_startup "$T/su9.toml"
+check "startup su9: exit status is 2" exit2
+check "startup: absent [auth].database → plain non-zero exit" no_crash
+check "startup: absent [auth].database → 'no auth database configured'" \
+  bash -c 'grep -qF "no auth database configured" "$1"' _ "$T/su.err"
+
+# -- 1e: missing JWT secret (no jwt_secret, no jwt_secret_file)
+make_cfg "$T/su5.toml" $P_STARTUP "$T/auth-su5.db" ""
+run_startup "$T/su5.toml"
+check "startup su5: exit status is 2" exit2
+check "startup: no JWT secret → plain non-zero exit" no_crash
+check "startup: no JWT secret → 'no JWT secret configured'" \
+  bash -c 'grep -qF -- "$1" "$2"' _ "$MSG_NO_SECRET" "$T/su.err"
+check "startup: no JWT secret → message starts with 'imagerd:'" has_imagerd_line
+
+# -- 1f: empty-string jwt_secret is also "missing"
+make_cfg "$T/su6.toml" $P_STARTUP "$T/auth-su6.db" 'jwt_secret = ""'
+run_startup "$T/su6.toml"
+check "startup su6: exit status is 2" exit2
+check "startup: empty jwt_secret → plain non-zero exit" no_crash
+check "startup: empty jwt_secret → 'no JWT secret configured'" \
+  bash -c 'grep -qF -- "$1" "$2"' _ "$MSG_NO_SECRET" "$T/su.err"
+
+# -- 1g: too-short secret keeps the distinct too-short message
+make_cfg "$T/su7.toml" $P_STARTUP "$T/auth-su7.db" 'jwt_secret = "tooshort"'
+run_startup "$T/su7.toml"
+check "startup su7: exit status is 2" exit2
+check "startup: short JWT secret → plain non-zero exit" no_crash
+check "startup: short JWT secret → mentions the 32-byte minimum" \
+  bash -c 'grep -qF -- "$1" "$2"' _ "$MSG_SHORT_SECRET" "$T/su.err"
+check "startup: short JWT secret → NOT the 'no JWT secret configured' message" \
+  bash -c '! grep -qF -- "$1" "$2"' _ "$MSG_NO_SECRET" "$T/su.err"
+
+# -- 1h: empty secret FILE → "no JWT secret configured" too (file exists, 0600, empty)
+: > "$T/empty.secret"; chmod 600 "$T/empty.secret"
+make_cfg "$T/su8.toml" $P_STARTUP "$T/auth-su8.db" "jwt_secret_file = \"$T/empty.secret\""
+run_startup "$T/su8.toml"
+check "startup su8: exit status is 2" exit2
+check "startup: empty jwt_secret_file → plain non-zero exit" no_crash
+check "startup: empty jwt_secret_file → 'no JWT secret configured'" \
+  bash -c 'grep -qF -- "$1" "$2"' _ "$MSG_NO_SECRET" "$T/su.err"
+
+# ===========================================================================
+# Shared helpers for the daemon sections
+# ===========================================================================
+json_get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+http() { # http <prefix> curl-args...
+  local prefix="$1"; shift
+  curl --silent --dump-header "$prefix.hdr" --output "$prefix.body" --write-out "%{http_code}" "$@" \
+    > "$prefix.status" 2>/dev/null || echo 000 > "$prefix.status"
+}
+hdr() { grep -i "^$2:" "$1.hdr" | tail -1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'; }
+wait_ready() {
+  curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 --retry-delay 1 \
+    --retry-connrefused --max-time 12 "http://127.0.0.1:$1/health" 2>/dev/null || echo 000
+}
+login() { # login <port> <login> <password> → token
+  local r
+  r=$(curl --silent --request POST --header "Content-Type: application/json" \
+    --data "{\"login\":\"$2\",\"password\":\"$3\"}" "http://127.0.0.1:$1/auth/login")
+  python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$r" 2>/dev/null || true
+}
+
+# Seed users (shared auth DB across the daemon sections)
+make_cfg "$T/main.toml" $P_DL "$AUTH_DB" "$SECRET_LINE"
+printf '%s' "alicepass1" | "$IMAGERADMIN_BIN" "$T/main.toml" user add alice "Alice User" --password-stdin || {
+  echo "FATAL: seeding alice failed"; exit 1; }
+printf '%s' "bobpass123" | "$IMAGERADMIN_BIN" "$T/main.toml" user add bob "Bob User" --password-stdin || {
+  echo "FATAL: seeding bob failed"; exit 1; }
+printf '%s' "carolpass1" | "$IMAGERADMIN_BIN" "$T/main.toml" user add carol "Carol User" --password-stdin || {
+  echo "FATAL: seeding carol failed"; exit 1; }
+
+# Big fixtures: valid JPEG + many COM segments (≈ BIG_MB MiB). Two distinct files.
+python3 - "$JPEG_FIXTURE" "$T" "$BIG_MB" <<'PYEOF'
+import sys, os
+data = open(sys.argv[1], "rb").read()
+mb = int(sys.argv[3])
+for n in (1, 2):
+    segs = b""
+    total = mb * 1024 * 1024
+    chunk = 65000
+    i = 0
+    while len(segs) < total:
+        body = (b"big-%d-%d-" % (n, i)) + os.urandom(chunk - 20)
+        segs += b"\xff\xfe" + (len(body) + 2).to_bytes(2, "big") + body
+        i += 1
+    open("%s/big%d.jpg" % (sys.argv[2], n), "wb").write(data[:2] + segs + data[2:])
+PYEOF
+SHA1=$(sha256sum "$T/big1.jpg" | cut -d' ' -f1)
+SHA2=$(sha256sum "$T/big2.jpg" | cut -d' ' -f1)
+
+start_daemon() { # start_daemon <cfg> <port> <tag> → sets DPID
+  "$IMAGERD_BIN" "$1" >"$T/$3.stdout" 2>"$T/$3.stderr" &
+  DPID=$!
+  PIDS+=("$DPID")
+  [ "$(wait_ready "$2")" = "200" ]
+}
+# wait_exit <pid> <max-secs> → sets EXIT_RC, EXIT_SECS ; returns 1 if it did not exit in time
+wait_exit() {
+  local pid="$1" max="$2" start=$SECONDS
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ $((SECONDS - start)) -ge "$max" ]; then EXIT_SECS=$((SECONDS - start)); return 1; fi
+    sleep 0.2
+  done
+  wait "$pid" 2>/dev/null
+  EXIT_RC=$?
+  EXIT_SECS=$((SECONDS - start))
+  return 0
+}
+
+# ===========================================================================
+# 2. Idle SIGTERM exits promptly with 0 (baseline for drain)
+# ===========================================================================
+make_cfg "$T/dl.toml" $P_DL "$AUTH_DB" "$SECRET_LINE"
+start_daemon "$T/dl.toml" $P_DL idle; STARTED=$?
+check "drain: daemon starts" test "$STARTED" -eq 0
+IDLE_PID=$DPID
+kill -TERM "$IDLE_PID"
+wait_exit "$IDLE_PID" 10; IDLE_OK=$?
+check "drain: idle daemon exits after SIGTERM within 10s" test "$IDLE_OK" -eq 0
+check "drain: idle daemon exit status is 0" test "${EXIT_RC:-99}" -eq 0
+check "drain: idle daemon logs shutdown complete" grep -q 'shutdown complete' "$T/idle.stderr"
+
+# ===========================================================================
+# 3. Drain: slow DOWNLOAD in flight when SIGTERM arrives
+# ===========================================================================
+start_daemon "$T/dl.toml" $P_DL dl; STARTED=$?
+check "drain-dl: daemon starts" test "$STARTED" -eq 0
+DL_PID=$DPID
+DL_TOKEN=$(login $P_DL alice alicepass1)
+check "drain-dl: alice token" test -n "$DL_TOKEN"
+http "$T/dlup" -X PUT -H "Authorization: Bearer $DL_TOKEN" -H "X-Filename: big1.jpg" \
+  --data-binary "@$T/big1.jpg" "http://127.0.0.1:$P_DL/items"
+check "drain-dl: setup upload of big item → 201" test "$(cat $T/dlup.status)" = 201
+check "drain-dl: item id equals file sha256" test "$(json_get $T/dlup.body "d['id']")" = "$SHA1"
+
+curl --silent --limit-rate "$LIMIT_RATE" --output "$T/dl.out" --write-out "%{http_code} %{size_download}" \
+  -H "Authorization: Bearer $DL_TOKEN" "http://127.0.0.1:$P_DL/items/$SHA1/content" \
+  > "$T/dl.curlres" 2>/dev/null &
+CURL_PID=$!
+PIDS+=("$CURL_PID")
+sleep 1.5
+check "drain-dl: precondition — transfer still in flight at SIGTERM" kill -0 "$CURL_PID"
+SIZE_AT_TERM=$(stat -c %s "$T/dl.out")
+check "drain-dl: precondition — some bytes received but not all" \
+  bash -c '[ "$1" -gt 0 ] && [ "$1" -lt "$2" ]' _ "$SIZE_AT_TERM" "$(stat -c %s $T/big1.jpg)"
+kill -TERM "$DL_PID"
+sleep 0.5
+NEWCONN=$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 3 \
+  "http://127.0.0.1:$P_DL/health" 2>/dev/null || true)
+check "drain-dl: new connection after SIGTERM is refused (not served)" \
+  bash -c '[ "$1" = "000" ] || [ -z "$1" ]' _ "$NEWCONN"
+wait "$CURL_PID" 2>/dev/null; CURL_RC=$?
+check "drain-dl: curl exits 0 (transfer not cut off)" test "$CURL_RC" -eq 0
+check "drain-dl: HTTP 200 with full size" \
+  test "$(cat $T/dl.curlres)" = "200 $(stat -c %s $T/big1.jpg)"
+check "drain-dl: downloaded bytes have the correct sha256" \
+  test "$(sha256sum $T/dl.out | cut -d' ' -f1)" = "$SHA1"
+wait_exit "$DL_PID" $((DRAIN_TIMEOUT + DRAIN_SLACK)); DL_EXITED=$?
+check "drain-dl: daemon exited within drain timeout (+slack)" test "$DL_EXITED" -eq 0
+check "drain-dl: daemon exit status 0" test "${EXIT_RC:-99}" -eq 0
+check "drain-dl: daemon logs shutdown complete" grep -q 'shutdown complete' "$T/dl.stderr"
+check "drain-dl: daemon logged 'draining (up to 30s)'" grep -q 'draining (up to 30s)' "$T/dl.stderr"
+check "drain-dl: no 'drain timeout' (drain completed in time)" bash -c '! grep -q "drain timeout" "$1"' _ "$T/dl.stderr"
+
+# ===========================================================================
+# 4. Drain: slow UPLOAD in flight when SIGTERM arrives
+# ===========================================================================
+make_cfg "$T/ul.toml" $P_UL "$AUTH_DB" "$SECRET_LINE"
+start_daemon "$T/ul.toml" $P_UL ul; STARTED=$?
+check "drain-ul: daemon starts" test "$STARTED" -eq 0
+UL_PID=$DPID
+UL_TOKEN=$(login $P_UL alice alicepass1)
+check "drain-ul: alice token" test -n "$UL_TOKEN"
+curl --silent --limit-rate "$LIMIT_RATE" --request PUT --output "$T/ul.body" --write-out "%{http_code}" \
+  -H "Authorization: Bearer $UL_TOKEN" -H "X-Filename: big2.jpg" --data-binary "@$T/big2.jpg" \
+  "http://127.0.0.1:$P_UL/items" > "$T/ul.status" 2>/dev/null &
+CURL_PID=$!
+PIDS+=("$CURL_PID")
+sleep 1.5
+check "drain-ul: precondition — upload still in flight at SIGTERM" kill -0 "$CURL_PID"
+kill -TERM "$UL_PID"
+sleep 0.5
+NEWCONN=$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 3 \
+  "http://127.0.0.1:$P_UL/health" 2>/dev/null || true)
+check "drain-ul: new connection after SIGTERM is refused" \
+  bash -c '[ "$1" = "000" ] || [ -z "$1" ]' _ "$NEWCONN"
+wait "$CURL_PID" 2>/dev/null; CURL_RC=$?
+# Documented behaviour (fx-dev): SIGTERM stops accepting AND reading new requests. A request whose body is
+# still being received has no running handler yet, so it is NOT drained: the upload is cut off. Only handlers
+# that already started (see the download section) run to completion.
+UL_STATUS=$(cat "$T/ul.status")
+check "drain-ul: mid-body upload is cut off (not answered 201)" test "$UL_STATUS" != 201
+wait_exit "$UL_PID" $((DRAIN_TIMEOUT + DRAIN_SLACK)); UL_EXITED=$?
+check "drain-ul: daemon exited within drain timeout (+slack)" test "$UL_EXITED" -eq 0
+check "drain-ul: daemon exited promptly (< 10s) — nothing to drain" test "$EXIT_SECS" -lt 10
+check "drain-ul: daemon exit status 0" test "${EXIT_RC:-99}" -eq 0
+check "drain-ul: no 'drain timeout' forced exit" bash -c '! grep -q "drain timeout" "$1"' _ "$T/ul.stderr"
+
+# The cut-off upload must leave nothing behind: restart and look for the item.
+start_daemon "$T/ul.toml" $P_UL ul2; STARTED=$?
+check "drain-ul: daemon restarts" test "$STARTED" -eq 0
+UL2_PID=$DPID
+UL2_TOKEN=$(login $P_UL alice alicepass1)
+http "$T/ul.fetch" -H "Authorization: Bearer $UL2_TOKEN" "http://127.0.0.1:$P_UL/items/$SHA2"
+check "drain-ul: cut-off upload was not persisted (item → 404)" test "$(cat $T/ul.fetch.status)" = 404
+kill -TERM "$UL2_PID"; wait_exit "$UL2_PID" 10 || true
+
+
+# ---- stalled client: a half-sent upload that never completes must not hang shutdown past the bound
+start_daemon "$T/ul.toml" $P_UL stall; STARTED=$?
+check "drain-stall: daemon starts" test "$STARTED" -eq 0
+STALL_PID=$DPID
+STALL_TOKEN=$(login $P_UL alice alicepass1)
+python3 -I - "$P_UL" "$STALL_TOKEN" "$T/stall.hold" <<'PYEOF' &
+import socket, sys, time
+port, tok, flag = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+s = socket.create_connection(("127.0.0.1", port))
+s.sendall(("PUT /items HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\nX-Filename: s.jpg\r\n"
+           "Content-Length: 1000000\r\n\r\n" % tok).encode() + b"x" * 1000)
+open(flag, "w").write("held")
+time.sleep(60)
+PYEOF
+HOLD_PID=$!
+PIDS+=("$HOLD_PID")
+for _ in $(seq 1 25); do [ -e "$T/stall.hold" ] && break; sleep 0.2; done
+kill -TERM "$STALL_PID"
+wait_exit "$STALL_PID" $((DRAIN_TIMEOUT + DRAIN_SLACK)); STALL_EXITED=$?
+check "drain-stall: daemon exits within drain timeout (+slack) despite stalled client" test "$STALL_EXITED" -eq 0
+check "drain-stall: exit status is 0 (nothing in flight) or 3 (forced after timeout)" \
+  bash -c '[ "$1" = 0 ] || [ "$1" = 3 ]' _ "${EXIT_RC:-99}"
+kill "$HOLD_PID" 2>/dev/null || true
+
+# ===========================================================================
+# 5. POST /auth/password wrong-oldPassword throttle (gap 7) — LAST, own daemon
+# ===========================================================================
+make_cfg "$T/th.toml" $P_THROTTLE "$AUTH_DB" "$SECRET_LINE"
+start_daemon "$T/th.toml" $P_THROTTLE th; STARTED=$?
+check "throttle: daemon starts" test "$STARTED" -eq 0
+TH_PID=$DPID
+TB="http://127.0.0.1:$P_THROTTLE"
+ALICE_T=$(login $P_THROTTLE alice alicepass1)
+BOB_T=$(login $P_THROTTLE bob bobpass123)
+CAROL_T=$(login $P_THROTTLE carol carolpass1)
+check "throttle: setup tokens" test -n "$ALICE_T" -a -n "$BOB_T" -a -n "$CAROL_T"
+
+pwchange() { # pwchange <prefix> <token> <old> <new>
+  http "$1" -X POST -H "Authorization: Bearer $2" -H "Content-Type: application/json" \
+    --data "{\"oldPassword\":\"$3\",\"newPassword\":\"$4\"}" "$TB/auth/password"
+}
+
+# Alice: PW_THRESHOLD wrong attempts. The first PW_THRESHOLD-1 are plain 401.
+ALL_401=1
+for i in $(seq 1 $((PW_THRESHOLD - 1))); do
+  pwchange "$T/a$i" "$ALICE_T" "wrong-old-$i" "newalicepass1"
+  [ "$(cat $T/a$i.status)" = 401 ] || ALL_401=0
+done
+check "throttle: first $((PW_THRESHOLD - 1)) wrong oldPassword attempts → 401" test "$ALL_401" = 1
+pwchange "$T/a_thr" "$ALICE_T" "wrong-old-final" "newalicepass1"
+THR_STATUS=$(cat "$T/a_thr.status")
+# The threshold-reaching attempt itself is either the last 401 or already 429 (contract detail).
+check "throttle: threshold attempt → 401 or 429" bash -c '[ "$1" = 401 ] || [ "$1" = 429 ]' _ "$THR_STATUS"
+pwchange "$T/a_lock" "$ALICE_T" "wrong-old-again" "newalicepass1"
+check "throttle: attempt after threshold → 429" test "$(cat $T/a_lock.status)" = 429
+check "throttle: 429 has Retry-After header" test -n "$(hdr $T/a_lock Retry-After)"
+check "throttle: Retry-After is a positive integer" \
+  bash -c '[[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 0 ]' _ "$(hdr $T/a_lock Retry-After)"
+check "throttle: 429 body is JSON error envelope" \
+  bash -c 'python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d[\"error\"][\"code\"]" "$1"' _ "$T/a_lock.body"
+
+pwchange "$T/a_good" "$ALICE_T" "alicepass1" "newalicepass1"
+check "throttle: CORRECT oldPassword is refused during lockout (429)" test "$(cat $T/a_good.status)" = 429
+check "throttle: correct-during-lockout carries Retry-After" test -n "$(hdr $T/a_good Retry-After)"
+
+# The password must NOT have changed while locked out.
+BAD_NEW=$(curl --silent --output /dev/null --write-out "%{http_code}" --request POST \
+  -H "Content-Type: application/json" --data '{"login":"alice","password":"newalicepass1"}' "$TB/auth/login")
+check "throttle: password unchanged — new password does not log in" test "$BAD_NEW" != 200
+
+# Bob (a different user) is unaffected by alice's lockout.
+pwchange "$T/b_good" "$BOB_T" "bobpass123" "bobnewpass12"
+check "throttle: other user's correct password change still works (204)" test "$(cat $T/b_good.status)" = 204
+check "throttle: other user's new password logs in" test -n "$(login $P_THROTTLE bob bobnewpass12)"
+
+# Carol: successful changes are not penalised (no failures accumulate).
+OK_ALL=1
+cur="carolpass1"
+for i in 1 2 3 4 5 6 7; do
+  nxt="carolpass1-$i"
+  pwchange "$T/c$i" "$CAROL_T" "$cur" "$nxt"
+  [ "$(cat $T/c$i.status)" = 204 ] || OK_ALL=0
+  cur="$nxt"
+done
+check "throttle: 7 consecutive correct changes (more than threshold) all → 204" test "$OK_ALL" = 1
+
+# Carol: failures below the threshold then a success resets/doesn't lock.
+pwchange "$T/c_w1" "$CAROL_T" "nope-nope" "carolfinal-1"
+pwchange "$T/c_w2" "$CAROL_T" "nope-nope" "carolfinal-1"
+pwchange "$T/c_ok" "$CAROL_T" "$cur" "carolfinal-1"
+check "throttle: wrong oldPassword below threshold still → 401" \
+  test "$(cat $T/c_w1.status)" = 401 -a "$(cat $T/c_w2.status)" = 401
+check "throttle: correct oldPassword below threshold still succeeds (204)" test "$(cat $T/c_ok.status)" = 204
+
+# Validation errors are not counted as wrong-password failures (bad body / short newPassword).
+for i in 1 2 3 4 5 6; do pwchange "$T/c_v$i" "$CAROL_T" "carolfinal-1" "short"; done
+pwchange "$T/c_after_v" "$CAROL_T" "carolfinal-1" "carolfinal-2"
+check "throttle: 400s for too-short newPassword do not count toward the lockout" \
+  test "$(cat $T/c_after_v.status)" = 204
+
+# Login interplay (knob): does the password lockout also lock /auth/login for alice?
+ALICE_LOGIN=$(curl --silent --output /dev/null --write-out "%{http_code}" --request POST \
+  -H "Content-Type: application/json" --data '{"login":"alice","password":"alicepass1"}' "$TB/auth/login")
+if [ "$PW_SHARES_LOGIN_COUNTERS" = 1 ]; then
+  check "throttle: counters shared — alice's login is also locked (429)" test "$ALICE_LOGIN" = 429
+else
+  check "throttle: counters separate — alice's login still works (200)" test "$ALICE_LOGIN" = 200
+fi
+
+# Unauthenticated requests are 401 and never reach the throttle.
+http "$T/noauth" -X POST -H "Content-Type: application/json" \
+  --data '{"oldPassword":"x","newPassword":"yyyyyyyy"}' "$TB/auth/password"
+check "throttle: unauthenticated POST /auth/password → 401 (not 429)" test "$(cat $T/noauth.status)" = 401
+
+kill -TERM "$TH_PID"; wait_exit "$TH_PID" 10 || true
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

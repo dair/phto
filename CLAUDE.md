@@ -37,7 +37,7 @@ Build artifacts go to `build/imager-build` (configured in `CMakePresets.json`).
 │   ├── sample/             # CLI demo
 │   └── test/
 ├── imagestore/    # Batch import CLI: stdin pipe, bounded concurrency, progress, error file
-├── auth/          # User store (SQLite), PBKDF2 password hashing, HS256 JWT TokenService (namespace auth)
+├── auth/          # User store (SQLite), PBKDF2 password hashing, HS256 JWT TokenService, input Validation helpers (namespace auth)
 ├── server/        # imagerd: Crow HTTP(S) REST daemon — routes, auth middleware, login throttle, native TLS (namespace server)
 ├── imageradmin/   # User administration CLI (add/del/passwd/enable/disable/promote/demote/list)
 ├── metrics/       # Lock-free monitoring: Histogram, Counter, Gauge, Timer (namespace metrics)
@@ -96,7 +96,7 @@ Config is read once at startup (no hot reload).
 
 ## Testing
 
-CPPUnit-based. Test suites (`ctest --preset default -N`, 33 tests): `metrics_tests`, `blob_tests`, `coro_tests`, `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `heic_validator_tests`, `nef_validator_tests`, `mov_validator_tests`, `aae_validator_tests`, `config_tests`, `auth_tests`, `auth_userstore_tests`, `auth_token_tests`, `ImagerTests`, `TimestampTests`, `imagestore_cli_tests`, `imagestore_memcheck`, `imagestore_output_tests`, `imageradmin_cli_tests`, and the server tests `server_health_test`, `server_auth_test`, `server_authz_test`, `server_json_tests`, `server_items_test`, `server_content_test`, `server_list_test`, `server_item_tags_test`, `server_tags_test`, `server_users_test`, `server_hardening_test`, `server_tls_test`, `server_api_test` (shell tests run a live `imagerd`).
+CPPUnit-based. Test suites (`ctest --preset default -N`, 35 tests): `metrics_tests`, `blob_tests`, `coro_tests`, `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `heic_validator_tests`, `nef_validator_tests`, `mov_validator_tests`, `aae_validator_tests`, `config_tests`, `auth_tests`, `auth_userstore_tests`, `auth_token_tests`, `auth_validation_tests`, `ImagerTests`, `TimestampTests`, `imagestore_cli_tests`, `imagestore_memcheck`, `imagestore_output_tests`, `imageradmin_cli_tests`, and the server tests `server_health_test`, `server_auth_test`, `server_authz_test`, `server_json_tests`, `server_items_test`, `server_content_test`, `server_list_test`, `server_item_tags_test`, `server_tags_test`, `server_users_test`, `server_hardening_test`, `server_tls_test`, `server_api_test`, `server_fixups_test` (shell tests run a live `imagerd`).
 
 Use temporary directories for test databases and file storage; clean up in `tearDown()`.
 

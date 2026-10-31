@@ -33,17 +33,11 @@ public:
   /// Insert a new user. Throws AuthException(Duplicate) if login already exists.
   void create(const std::string& login, const std::string& fullName, const PasswordRecord& pw, bool isAdmin);
 
-  /// Delete a user by login. Throws AuthException(NotFound) if absent.
-  void remove(const std::string& login);
-
   /// Replace stored password. Throws AuthException(NotFound) if login absent.
   void setPassword(const std::string& login, const PasswordRecord& pw);
 
-  /// Toggle enabled flag. Throws AuthException(NotFound) if login absent.
-  void setEnabled(const std::string& login, bool enabled);
-
-  /// Toggle admin flag. Throws AuthException(NotFound) if login absent.
-  void setAdmin(const std::string& login, bool isAdmin);
+  // Deliberately no unguarded remove/setEnabled/setAdmin: every path that can drop an admin goes through
+  // removeGuarded()/update() so the last-enabled-admin invariant cannot be bypassed (REST API and imageradmin).
 
   /// Delete a user unless it is the last enabled admin. Atomic (one IMMEDIATE transaction).
   /// Throws AuthException(NotFound) if absent, AuthException(LastAdmin) if it would leave no enabled admin.

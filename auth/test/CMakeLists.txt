@@ -85,3 +85,22 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 
 add_test(NAME auth_token_tests COMMAND auth_token_tests)
+
+# Validation tests — separate executable (has its own main())
+add_executable(auth_validation_tests ValidationTest.cpp)
+
+target_include_directories(auth_validation_tests
+    PRIVATE ${CPPUNIT_INCLUDE_DIRS}
+)
+
+target_link_libraries(auth_validation_tests
+    PRIVATE
+        auth_lib
+        ${CPPUNIT_LIBRARIES}
+)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(auth_validation_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_test(NAME auth_validation_tests COMMAND auth_validation_tests)

@@ -2,27 +2,27 @@
 #include <auth/UserStore.h>
 #include <config/Config.h>
 #include <imager/Imager.h>
+#include <pthread.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <fstream>
-#include <future>
 #include <iostream>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
 
 #include "App.h"
 
 namespace {
 
-// Global pointer set before signal installation; signal handler calls stop().
-server::App* g_app = nullptr;
-
-void handleSignal(int /*sig*/) {
-  if (g_app) {
-    g_app->stop();
-  }
-}
+/// Upper bound on how long shutdown waits for in-flight requests before the process is forced down.
+constexpr std::chrono::seconds DRAIN_TIMEOUT{30};
 
 /// Load JWT secret: prefer jwtSecretFile, fall back to jwtSecret inline.
 /// Returns the secret string, or empty on error (after printing to stderr).
@@ -62,6 +62,15 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  // Block SIGINT/SIGTERM in every thread (the mask is inherited by all threads created later, including the
+  // Imager pool and Crow workers). They are consumed synchronously by the watcher thread below via sigwait(),
+  // so no code runs in signal-handler context at all (async-signal-safe by construction).
+  sigset_t sigs;
+  sigemptyset(&sigs);
+  sigaddset(&sigs, SIGINT);
+  sigaddset(&sigs, SIGTERM);
+  pthread_sigmask(SIG_BLOCK, &sigs, nullptr);
+
   // --- Load config ---
   config::AppConfig cfg;
   try {
@@ -71,21 +80,47 @@ int main(int argc, char* argv[]) {
     return 2;
   }
 
+  if (cfg.auth.database.empty()) {
+    std::cerr << "imagerd: no auth database configured (set [auth].database)\n";
+    return 2;
+  }
+
   // --- Load + validate JWT secret ---
   const std::string jwtSecret = loadJwtSecret(cfg.auth);
+  if (jwtSecret.empty()) {
+    std::cerr << "imagerd: no JWT secret configured (set [auth].jwt_secret_file)\n";
+    return 2;
+  }
   if (jwtSecret.size() < 32) {
-    std::cerr << "imagerd: JWT secret must be >= 32 bytes (got " << jwtSecret.size() << "); "
-              << "set [auth].jwt_secret_file or [auth].jwt_secret in config\n";
+    std::cerr << "imagerd: JWT secret must be >= 32 bytes (got " << jwtSecret.size() << ")\n";
     return 2;
   }
 
   // --- Construct shared services ---
-  imager::Imager imager{cfg};
-  auth::UserStore userStore{cfg.auth.database};
-  auth::TokenService tokenService{jwtSecret, cfg.auth.issuer, cfg.auth.tokenTtlSeconds};
+  std::optional<imager::Imager> imager;
+  try {
+    imager.emplace(cfg);
+  } catch (const std::exception& e) {
+    std::cerr << "imagerd: cannot open storage: " << e.what() << "\n";
+    return 2;
+  }
+  std::optional<auth::UserStore> userStore;
+  try {
+    userStore.emplace(cfg.auth.database);
+  } catch (const std::exception& e) {
+    std::cerr << "imagerd: cannot open auth database " << cfg.auth.database.string() << ": " << e.what() << "\n";
+    return 2;
+  }
+  std::optional<auth::TokenService> tokenService;
+  try {
+    tokenService.emplace(jwtSecret, cfg.auth.issuer, cfg.auth.tokenTtlSeconds);
+  } catch (const std::exception& e) {
+    std::cerr << "imagerd: token service error: " << e.what() << "\n";
+    return 2;
+  }
 
   // --- Build App + register routes ---
-  server::App app{cfg.server, imager, userStore, tokenService, cfg.auth.tokenTtlSeconds, cfg.auth.pbkdf2Iterations};
+  server::App app{cfg.server, *imager, *userStore, *tokenService, cfg.auth.tokenTtlSeconds, cfg.auth.pbkdf2Iterations};
   app.registerRoutes();
   try {
     app.enableTls();
@@ -94,16 +129,52 @@ int main(int argc, char* argv[]) {
     return 2;
   }
 
-  // --- Install signal handlers ---
-  g_app = &app;
-  std::signal(SIGINT, handleSignal);
-  std::signal(SIGTERM, handleSignal);
+  // --- Shutdown watcher ---
+  // Crow's stop() halts the io_contexts: nothing new is accepted or read, while a handler that has already
+  // started (Crow writes its response, including streamed static files, synchronously inside that handler)
+  // runs to completion because run() joins its worker threads. The watcher bounds that wait.
+  std::mutex mu;
+  std::condition_variable cv;
+  bool stopped = false; // guarded by mu: app.run() has returned
+  std::thread watcher([&] {
+    int sig = 0;
+    sigwait(&sigs, &sig);
+    {
+      std::lock_guard lock(mu);
+      if (stopped) {
+        return; // woken by main() after a normal return
+      }
+    }
+    std::cerr << "imagerd: signal " << sig << ", draining (up to " << DRAIN_TIMEOUT.count() << "s)\n";
+    app.stop();
+    std::unique_lock lock(mu);
+    if (!cv.wait_for(lock, DRAIN_TIMEOUT, [&] { return stopped; })) {
+      std::cerr << "imagerd: drain timeout, forcing exit\n";
+      std::_Exit(3);
+    }
+  });
 
   std::cerr << "imagerd: serving " << (cfg.server.tls ? "HTTPS" : "HTTP") << " on " << cfg.server.bind << ":"
             << cfg.server.port << "\n";
 
-  app.run();
+  int rc = 0;
+  try {
+    app.run();
+  } catch (const std::exception& e) {
+    std::cerr << "imagerd: server error: " << e.what() << "\n";
+    rc = 2;
+  }
 
-  std::cerr << "imagerd: shutdown complete\n";
-  return 0;
+  {
+    std::lock_guard lock(mu);
+    stopped = true;
+  }
+  cv.notify_all();
+  pthread_kill(watcher.native_handle(), SIGTERM); // wakes sigwait() if no signal ever arrived
+  watcher.join();
+
+  if (rc == 0) {
+    std::cerr << "imagerd: shutdown complete\n";
+  }
+  return rc;
 }

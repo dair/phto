@@ -66,7 +66,23 @@ public:
     std::filesystem::remove(m_dbPath);
   }
 
-  // --- helpers ---
+  // --- helpers (the unguarded store methods no longer exist; these go through the guarded paths) ---
+
+  void setEnabled(const std::string& login, bool enabled) {
+    auth::UserUpdate u;
+    u.enabled = enabled;
+    m_store->update(login, u);
+  }
+
+  void setAdmin(const std::string& login, bool isAdmin) {
+    auth::UserUpdate u;
+    u.isAdmin = isAdmin;
+    m_store->update(login, u);
+  }
+
+  void removeUser(const std::string& login) {
+    m_store->removeGuarded(login);
+  }
 
   static PasswordRecord makePw(const std::string& password) {
     return hashPassword(password, 1000);
@@ -129,14 +145,14 @@ public:
   void testRemove() {
     addUser("dave", "Dave Grohl");
     CPPUNIT_ASSERT(m_store->get("dave").has_value());
-    m_store->remove("dave");
+    removeUser("dave");
     CPPUNIT_ASSERT(!m_store->get("dave").has_value());
   }
 
   void testRemoveMissingThrows() {
     bool threw = false;
     try {
-      m_store->remove("ghost");
+      removeUser("ghost");
     } catch (const AuthException& e) {
       CPPUNIT_ASSERT(e.code() == AuthErrorCode::NotFound);
       threw = true;
@@ -147,18 +163,19 @@ public:
   void testSetEnabled() {
     addUser("eve", "Eve Online");
     CPPUNIT_ASSERT(m_store->get("eve")->enabled);
-    m_store->setEnabled("eve", false);
+    setEnabled("eve", false);
     CPPUNIT_ASSERT(!m_store->get("eve")->enabled);
-    m_store->setEnabled("eve", true);
+    setEnabled("eve", true);
     CPPUNIT_ASSERT(m_store->get("eve")->enabled);
   }
 
   void testSetAdmin() {
     addUser("frank", "Frank Castle", false);
+    addUser("root", "Root", true); // keeps frank from being the last enabled admin when demoted
     CPPUNIT_ASSERT(!m_store->get("frank")->isAdmin);
-    m_store->setAdmin("frank", true);
+    setAdmin("frank", true);
     CPPUNIT_ASSERT(m_store->get("frank")->isAdmin);
-    m_store->setAdmin("frank", false);
+    setAdmin("frank", false);
     CPPUNIT_ASSERT(!m_store->get("frank")->isAdmin);
   }
 
@@ -175,7 +192,7 @@ public:
   void testSetEnabledMissingThrows() {
     bool threw = false;
     try {
-      m_store->setEnabled("nobody", false);
+      setEnabled("nobody", false);
     } catch (const AuthException& e) {
       CPPUNIT_ASSERT(e.code() == AuthErrorCode::NotFound);
       threw = true;
@@ -186,7 +203,7 @@ public:
   void testSetAdminMissingThrows() {
     bool threw = false;
     try {
-      m_store->setAdmin("nobody", true);
+      setAdmin("nobody", true);
     } catch (const AuthException& e) {
       CPPUNIT_ASSERT(e.code() == AuthErrorCode::NotFound);
       threw = true;
@@ -249,7 +266,7 @@ public:
     CPPUNIT_ASSERT_EQUAL(uint64_t(1), m_store->count());
     addUser("u2", "U2");
     CPPUNIT_ASSERT_EQUAL(uint64_t(2), m_store->count());
-    m_store->remove("u1");
+    removeUser("u1");
     CPPUNIT_ASSERT_EQUAL(uint64_t(1), m_store->count());
   }
 
@@ -282,7 +299,7 @@ public:
             // Write: toggle enabled
             const std::string login = "user" + std::to_string((tid + op) % 10);
             try {
-              m_store->setEnabled(login, (op % 2) == 0);
+              setEnabled(login, (op % 2) == 0);
             } catch (const AuthException&) {
               // NotFound is acceptable under concurrent deletes (none here, but guard)
             }
@@ -322,7 +339,7 @@ public:
     addUser("b", "B", true);
     addUser("c", "C", false);
     CPPUNIT_ASSERT_EQUAL(uint64_t(2), m_store->countEnabledAdmins());
-    m_store->setEnabled("b", false);
+    setEnabled("b", false);
     CPPUNIT_ASSERT_EQUAL(uint64_t(1), m_store->countEnabledAdmins());
   }
 
@@ -346,7 +363,7 @@ public:
   void testRemoveGuardedDisabledAdminDoesNotCount() {
     addUser("a", "A", true);
     addUser("b", "B", true);
-    m_store->setEnabled("b", false);
+    setEnabled("b", false);
     // b is disabled, so a is the last *enabled* admin.
     CPPUNIT_ASSERT(throwsCode([&] { m_store->removeGuarded("a"); }, AuthErrorCode::LastAdmin));
     // Removing the disabled admin is fine.

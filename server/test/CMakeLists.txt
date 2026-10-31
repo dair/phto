@@ -334,3 +334,25 @@ add_test(
 )
 
 set_tests_properties(server_api_test PROPERTIES TIMEOUT 120)
+
+# ---- server_fixups_test — post-0022 fix-ups: startup errors, SIGTERM drain, /auth/password throttle ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_fixups.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_fixups.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_fixups.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_fixups_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_fixups.sh"
+)
+
+set_tests_properties(server_fixups_test PROPERTIES TIMEOUT 240)

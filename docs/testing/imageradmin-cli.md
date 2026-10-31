@@ -71,3 +71,23 @@ CTest suite: `imageradmin_cli_tests` (29 shell assertions, one CTest entry).
 - Test infrastructure: `test_cli.sh.in` uses CMake `configure_file` to inject `@IMAGERADMIN_BIN@`, then registered with `add_test`. Helpers `expect_exit`, `output_contains`, `output_not_contains` wrap each check in a subshell so a failure under `set -e` does not abort the script.
 - The test script creates a temporary TOML config with a real `[auth]` section pointing to a temp auth DB, so all functional tests run against an actual SQLite store (no mocking).
 - `pbkdf2_iterations = 1000` is used in the test config to keep the test suite fast while still exercising the full PBKDF2 path.
+
+## Fix-up checkpoint (post-0022): last-admin guard + `user add` validation
+
+Added 2026-10-31 to `imageradmin/test/test_cli.sh.in` (suite total: 75 assertions, 0 failed;
+was 31 before). Each scenario uses its own auth DB (`new_cfg`) and verifies the DB with
+`python3 sqlite3` snapshots (`login,is_admin,enabled`) — "unchanged" means the snapshot is identical.
+
+- **Last-admin guard** (exit 2, messages "Cannot remove the last enabled admin" /
+  "Cannot demote or disable the last enabled admin"): sole admin `del`/`disable`/`demote` refused with DB
+  unchanged; deleting a non-admin still works; with two admins demote one OK then the other is protected
+  (demote/disable/del); disable one admin then `del` of the other refused, deleting the *disabled* admin
+  allowed; a disabled admin does not count (sole enabled admin protected, re-enabling lifts it).
+- **Bootstrap**: first `--admin` on an empty DB works; second admin add and `promote` still work.
+- **`user add` validation parity with `POST /users`** (exit 1, nothing stored): login with space, `/`, `:`,
+  non-ASCII, empty, 65 chars rejected; 64 chars, `a.b_c@d-e`, and `_` accepted; password 7 chars / empty /
+  1025 rejected, 8 / 1024 accepted; fullName empty / 256 rejected, 255 accepted; exact stderr messages for login,
+  password and fullName.
+
+Gaps: `user passwd` validation shares the code path but is only covered by fx-dev's edit to the existing
+`user passwd missing` test.

@@ -2,6 +2,7 @@
 
 #include <auth/PasswordHash.h>
 #include <auth/UserStore.h>
+#include <auth/Validation.h>
 #include <auth/types/AuthError.h>
 #include <auth/types/User.h>
 #include <database/Database.h>
@@ -17,11 +18,6 @@ namespace server {
 
 namespace {
 
-constexpr size_t MAX_LOGIN_LEN = 64;
-constexpr size_t MAX_FULLNAME_LEN = 255;
-constexpr size_t MIN_PASSWORD_LEN = 8; // same as POST /auth/password
-constexpr size_t MAX_PASSWORD_LEN = 1024;
-
 /// Serializes a User. Never includes password material (User has none; keep it that way).
 crow::json::wvalue userToJson(const auth::User& u) {
   crow::json::wvalue w;
@@ -32,23 +28,6 @@ crow::json::wvalue userToJson(const auth::User& u) {
   w["createdAt"] = u.createdAt;
   w["updatedAt"] = u.updatedAt;
   return w;
-}
-
-/// 1..64 chars of [A-Za-z0-9._@-].
-bool validLogin(const std::string& s) {
-  return !s.empty() && s.size() <= MAX_LOGIN_LEN && std::ranges::all_of(s, [](char c) {
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '_' ||
-           c == '@' || c == '-';
-  });
-}
-
-/// Returns an error message (empty if valid).
-const char* checkFullName(const std::string& s) {
-  return s.empty() || s.size() > MAX_FULLNAME_LEN ? "fullName must be 1..255 bytes" : "";
-}
-
-const char* checkPassword(const std::string& s) {
-  return s.size() < MIN_PASSWORD_LEN || s.size() > MAX_PASSWORD_LEN ? "password must be 8..1024 bytes" : "";
 }
 
 bool isBool(const crow::json::rvalue& v) {
@@ -101,13 +80,13 @@ crow::response createUser(auth::UserStore& store, uint32_t iterations, const cro
   const std::string login = body["login"].s();
   const std::string fullName = body["fullName"].s();
   const std::string password = body["password"].s();
-  if (!validLogin(login)) {
-    return badRequest("login must be 1..64 characters from [A-Za-z0-9._@-]");
-  }
-  if (const char* m = checkFullName(fullName); *m) {
+  if (const char* m = auth::validateLogin(login)) {
     return badRequest(m);
   }
-  if (const char* m = checkPassword(password); *m) {
+  if (const char* m = auth::validateFullName(fullName)) {
+    return badRequest(m);
+  }
+  if (const char* m = auth::validatePassword(password)) {
     return badRequest(m);
   }
   const bool isAdmin = body["isAdmin"].t() == crow::json::type::True;
@@ -138,12 +117,12 @@ crow::response patchUser(
     const auto& v = body[k];
     if (k == "fullName" && v.t() == crow::json::type::String) {
       upd.fullName = v.s();
-      if (const char* m = checkFullName(*upd.fullName); *m) {
+      if (const char* m = auth::validateFullName(*upd.fullName)) {
         return badRequest(m);
       }
     } else if (k == "password" && v.t() == crow::json::type::String) {
       password = v.s();
-      if (const char* m = checkPassword(password); *m) {
+      if (const char* m = auth::validatePassword(password)) {
         return badRequest(m);
       }
     } else if (k == "isAdmin" && isBool(v)) {

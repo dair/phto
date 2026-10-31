@@ -96,7 +96,7 @@ EOF
 # ---------------------------------------------------------------------------
 # Seed alice (regular user) via imageradmin --password-stdin
 # ---------------------------------------------------------------------------
-echo "hunter2" | "$IMAGERADMIN_BIN" "$CFG" user add alice "Alice Smith" --password-stdin
+echo "hunter22" | "$IMAGERADMIN_BIN" "$CFG" user add alice "Alice Smith" --password-stdin
 if [ $? -ne 0 ]; then
   echo "FATAL: imageradmin user add alice failed — aborting test"
   rm -rf "$TMPDIR_TEST"
@@ -145,7 +145,7 @@ fi
 # ---------------------------------------------------------------------------
 # Assertion 1: POST /auth/login with correct credentials → 200, token present
 # ---------------------------------------------------------------------------
-LOGIN_BODY='{"login":"alice","password":"hunter2"}'
+LOGIN_BODY='{"login":"alice","password":"hunter22"}'
 LOGIN_RESPONSE=$(curl --silent \
   --write-out "\n%{http_code}" \
   --request POST \
@@ -254,7 +254,7 @@ run_test "POST /auth/login missing password field → HTTP 400" \
 if [ $? -ne 0 ]; then
   record_fail "imageradmin user disable alice"
 else
-  DISABLED_LOGIN_BODY='{"login":"alice","password":"hunter2"}'
+  DISABLED_LOGIN_BODY='{"login":"alice","password":"hunter22"}'
   DISABLED_STATUS=$(curl --silent \
     --write-out "%{http_code}" \
     --output /dev/null \

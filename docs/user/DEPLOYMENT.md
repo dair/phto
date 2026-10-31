@@ -55,7 +55,7 @@ Build output is under `build/` (see `CMakePresets.json`). The relevant executabl
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `database` | string (path) | empty | SQLite file holding users. Created with its schema on first open, so its directory must exist. Set it explicitly: an empty path is not meaningful. Separate from the per-target image databases. |
+| `database` | string (path) | empty | SQLite file holding users. Created with its schema on first open, so its directory must exist. Required for `imagerd` and `imageradmin`: an explicitly empty `database = ""` is a config error, and an absent one is refused at startup (SQLite would otherwise silently open a throwaway temporary database). Separate from the per-target image databases. |
 | `jwt_secret_file` | string (path) | empty | Preferred. Takes precedence over `jwt_secret`. See [JWT secret](#jwt-secret). |
 | `jwt_secret` | string | empty | Inline secret. Discouraged: the config file is then a secret. |
 | `token_ttl_seconds` | integer | `43200` (12 h) | Must be > 0. |
@@ -128,7 +128,7 @@ imageradmin <config.toml> user demote  <login>
 imageradmin <config.toml> user list   [--offset N] [--limit N]
 ```
 
-Exit codes: `0` success, `1` usage error, `2` config/auth/database error (user not found, duplicate, ...). `imageradmin` can run while `imagerd` is up, since both use SQLite with locking; changes take effect on the next request (tokens are re-checked per request). Note that `imageradmin user del|disable|demote` do not apply the last-admin guard that the REST API enforces on `DELETE`/`PATCH /users`; do not remove your last admin from the shell.
+Exit codes: `0` success, `1` usage error, `2` config/auth/database error (user not found, duplicate, ...). `imageradmin user add` and `passwd` apply the same field rules as the REST API (login 1..64 of `[A-Za-z0-9._@-]`, full name 1..255 bytes, password 8..1024 bytes); a violation prints `Error: <rule>` and exits `1`. `user del`, `disable` and `demote` apply the same last-admin guard as the REST API: removing, disabling or demoting the last enabled admin prints `Error: Cannot ...` and exits `2` without changing anything (`add --admin` and `promote` are unaffected, so bootstrap and recovery still work). `imageradmin` can run while `imagerd` is up, since both use SQLite with locking; changes take effect on the next request (tokens are re-checked per request).
 
 `imageradmin` does not validate login characters the way `POST /users` does (`[A-Za-z0-9._@-]`, 1..64). Stick to that set so users can also be managed over REST.
 
@@ -140,7 +140,7 @@ Other users are normally created over REST by an admin ([API](API.md#post-users)
 imagerd /etc/imager/imager.toml
 ```
 
-Exactly one argument is accepted. Startup order: parse config, load and check the JWT secret, open the image databases and user database, register routes, set up TLS, install signal handlers, then listen. On success it prints to stderr:
+Exactly one argument is accepted. Startup order: parse config, load and check the JWT secret, open the image databases and user database, register routes, set up TLS, start the signal watcher, then listen. On success it prints to stderr:
 
 ```
 imagerd: serving HTTP on 127.0.0.1:8443
@@ -153,9 +153,9 @@ curl http://127.0.0.1:8443/health
 # {"status":"ok"}
 ```
 
-**Signals.** `SIGINT` and `SIGTERM` stop the server: the signal handler calls Crow's `stop()`, `run()` returns, the facade is destroyed (closing the databases), and the daemon prints `imagerd: shutdown complete` and exits `0`. There is no reload on `SIGHUP`; restart for config changes. The login throttle counters are in memory and reset on restart.
+**Signals.** `SIGINT` and `SIGTERM` are blocked in every thread and consumed by one watcher thread via `sigwait()`, so no code runs in signal-handler context. On a signal the daemon prints `imagerd: signal N, draining (up to 30s)` and calls Crow's `stop()`: the listener stops accepting and no further requests are read. A request whose handler has already started finishes (Crow writes the response, including streamed downloads, synchronously inside that handler, and `run()` joins its workers), so in-flight downloads, and uploads whose body has been fully received, complete. The wait is bounded by a fixed 30 s constant (`DRAIN_TIMEOUT` in `server/main.cpp`); if a request is still running after that (for example a client that stopped reading a download), the daemon prints `imagerd: drain timeout, forcing exit` and exits `3`. Otherwise the facade is destroyed (closing the databases), it prints `imagerd: shutdown complete` and exits `0`. Idle keep-alive connections and requests not yet fully received are dropped (an upload whose body is still arriving at SIGTERM is cut off, the client gets no response). There is no reload on `SIGHUP`; restart for config changes. The login throttle counters are in memory and reset on restart.
 
-**Exit codes:** `0` clean shutdown, `1` wrong argument count, `2` startup error (config, secret, TLS).
+**Exit codes:** `0` clean shutdown, `1` wrong argument count, `2` startup error (config, secret, TLS, database open, bind), `3` drain timeout on shutdown.
 
 Example systemd unit:
 
@@ -284,7 +284,10 @@ Startup messages from `server/main.cpp` and `server/App.cpp`. Exit code is shown
 | `imagerd: cannot stat jwt_secret_file: <path>` (empty secret, exit 2) | The file does not exist or its directory is not traversable. |
 | `imagerd: jwt_secret_file must be a regular file not readable by others (chmod 600): <path>` | Mode has the world-read bit, or it is a directory/device. `chmod 600`. |
 | `imagerd: cannot open jwt_secret_file: <path>` | The daemon user lacks read permission. |
-| `imagerd: JWT secret must be >= 32 bytes (got N); set [auth].jwt_secret_file or [auth].jwt_secret in config` (2) | Secret missing or short. Note this is also printed when no secret is configured at all (N = 0). |
+| `imagerd: no JWT secret configured (set [auth].jwt_secret_file)` (2) | No secret, or an empty one, from `jwt_secret_file` or `jwt_secret`. |
+| `imagerd: JWT secret must be >= 32 bytes (got N)` (2) | The secret is present but short. |
+| `imagerd: no auth database configured (set [auth].database)` (2) | `[auth].database` is absent. (`database = ""` is rejected earlier as a config error.) |
+| `imagerd: cannot open storage: ...` (2) | A `[[targets]]` root or database could not be opened. |
 | `imagerd: TLS error: tls = true requires [server].tls_cert and [server].tls_key` (2) | One of the paths is unset. |
 | `imagerd: TLS error: tls_cert is missing or not a regular file: <path>` / `tls_key is missing ...` | Wrong path, or a directory. |
 | `imagerd: TLS error: tls_key must not be readable by others (chmod 600): <path>` | Fix the key's mode. |
@@ -292,8 +295,8 @@ Startup messages from `server/main.cpp` and `server/App.cpp`. Exit code is shown
 | `imagerd: TLS error: cannot load tls_key <path>: <openssl error>` | Not PEM, or an encrypted key (passphrases are not supported). |
 | `imagerd: TLS error: tls_key does not match tls_cert: ...` | Key and certificate are from different pairs. |
 | `imagerd: TLS error: cannot set minimum TLS version: ...` | OpenSSL build problem. |
-| Uncaught `Failed to open user database: ...` | `[auth].database` directory missing or not writable. The failing step is the user-store open; the process aborts with a non-zero status rather than a tidy message. |
-| Bind failure from Crow (address in use / permission denied) | Another process holds the port, or ports < 1024 need privileges. |
+| `imagerd: cannot open auth database <path>: <reason>` (2) | `[auth].database` directory missing or not writable. |
+| `imagerd: server error: ...` (2) (bind failure: address in use / permission denied) | Another process holds the port, or ports < 1024 need privileges. |
 
 Runtime symptoms:
 
@@ -301,7 +304,7 @@ Runtime symptoms:
 |---------|-------|
 | Every request returns `401 Unauthorized` after a restart | The secret or `issuer` changed, so old tokens fail. Log in again. |
 | A user gets `401` mid-session | The account was deleted or disabled (tokens are re-checked on every request). |
-| `429 TooManyRequests` on login | Throttle; wait `Retry-After` (900 s) or restart the daemon. Behind a proxy see [Reverse proxy](#reverse-proxy). |
+| `429 TooManyRequests` on login or `POST /auth/password` | Throttle (shared counters); wait `Retry-After` (900 s) or restart the daemon. Behind a proxy see [Reverse proxy](#reverse-proxy). |
 | `413 TooLarge` on small JSON | Body over 64 KiB. |
 | `400 BrokenFile` on upload | The file failed validation; see [Supported Formats](formats.md). |
 | `500 Internal` | Read the stderr log for the cause. |

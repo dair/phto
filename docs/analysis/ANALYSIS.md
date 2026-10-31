@@ -1,5 +1,7 @@
 # Imager Development Analysis
 
+> **Note (2026-10-31):** This analysis predates Phase 2. Statements below that Phase 2 network/HTTP work is "still absent" are out of date: Phase 2 is implemented per [plan 0022](../plan/0022.SERVER.md) (`auth/`, `server/` / `imagerd`, `imageradmin`). See [docs/user/API.md](../user/API.md) and [docs/user/DEPLOYMENT.md](../user/DEPLOYMENT.md). The rest of this document has not been re-audited.
+
 ## Scope
 
 This document compares the current workspace against the spec chain rooted at [`CLAUDE.md`](../../CLAUDE.md), including the dependent plans and module-level spec files it points to:

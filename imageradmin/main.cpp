@@ -1,5 +1,6 @@
 #include <auth/PasswordHash.h>
 #include <auth/UserStore.h>
+#include <auth/Validation.h>
 #include <auth/types/AuthError.h>
 #include <auth/types/User.h>
 #include <config/Config.h>
@@ -39,7 +40,8 @@ void printUsage(const char* prog) {
                "Exit codes:\n"
                "  0  success\n"
                "  1  usage / argument error\n"
-               "  2  config / auth / DB error (e.g. user not found, duplicate)\n";
+               "  2  config / auth / DB error (e.g. user not found, duplicate, or the change would remove\n"
+               "     the last enabled admin: del / disable / demote are refused)\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +192,16 @@ int cmdUserAdd(auth::UserStore& store, const config::AuthConfig& authCfg, const 
     }
   }
 
+  // Same rules as POST /users (auth/Validation.h is the single source).
+  if (const char* m = auth::validateLogin(login)) {
+    std::cerr << "Error: " << m << "\n";
+    return 1;
+  }
+  if (const char* m = auth::validateFullName(fullName)) {
+    std::cerr << "Error: " << m << "\n";
+    return 1;
+  }
+
   std::optional<std::string> pw;
   if (pwStdin) {
     pw = readPasswordFromStdin();
@@ -198,6 +210,10 @@ int cmdUserAdd(auth::UserStore& store, const config::AuthConfig& authCfg, const 
   }
   if (!pw) {
     return 2;
+  }
+  if (const char* m = auth::validatePassword(*pw)) {
+    std::cerr << "Error: " << m << "\n";
+    return 1;
   }
 
   try {
@@ -217,7 +233,7 @@ int cmdUserDel(auth::UserStore& store, const std::vector<std::string>& args) {
     return 1;
   }
   try {
-    store.remove(args[0]);
+    store.removeGuarded(args[0]);
     std::cout << "User '" << args[0] << "' deleted.\n";
     return 0;
   } catch (const auth::AuthException& e) {
@@ -251,6 +267,10 @@ int cmdUserPasswd(auth::UserStore& store, const config::AuthConfig& authCfg, con
   if (!pw) {
     return 2;
   }
+  if (const char* m = auth::validatePassword(*pw)) {
+    std::cerr << "Error: " << m << "\n";
+    return 1;
+  }
 
   try {
     auto rec = auth::hashPassword(*pw, authCfg.pbkdf2Iterations);
@@ -269,7 +289,9 @@ int cmdUserEnable(auth::UserStore& store, const std::vector<std::string>& args, 
     return 1;
   }
   try {
-    store.setEnabled(args[0], enabled);
+    auth::UserUpdate upd;
+    upd.enabled = enabled;
+    store.update(args[0], upd);
     std::cout << "User '" << args[0] << "' " << (enabled ? "enabled" : "disabled") << ".\n";
     return 0;
   } catch (const auth::AuthException& e) {
@@ -284,7 +306,9 @@ int cmdUserSetAdmin(auth::UserStore& store, const std::vector<std::string>& args
     return 1;
   }
   try {
-    store.setAdmin(args[0], isAdmin);
+    auth::UserUpdate upd;
+    upd.isAdmin = isAdmin;
+    store.update(args[0], upd);
     std::cout << "User '" << args[0] << "' " << (isAdmin ? "promoted to admin" : "demoted from admin") << ".\n";
     return 0;
   } catch (const auth::AuthException& e) {
@@ -374,8 +398,20 @@ int main(int argc, char* argv[]) {
     rest.emplace_back(argv[i]);
   }
 
+  if (cfg.auth.database.empty()) {
+    std::cerr << "Error: no auth database configured (set [auth].database)\n";
+    return 2;
+  }
+
   // Open UserStore
-  auth::UserStore store(cfg.auth.database);
+  std::optional<auth::UserStore> storeOpt;
+  try {
+    storeOpt.emplace(cfg.auth.database);
+  } catch (const std::exception& e) {
+    std::cerr << "Error: cannot open auth database " << cfg.auth.database.string() << ": " << e.what() << "\n";
+    return 2;
+  }
+  auth::UserStore& store = *storeOpt;
 
   try {
     if (sub == "add") {

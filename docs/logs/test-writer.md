@@ -134,3 +134,9 @@
 - **Task**: Write the single-journey end-to-end API test (plan §14.3, J3).
 - **Outcome**: `server/test/test_api.sh.in` → `server_api_test` (ports 19580–19584); 69 assertions passed / 0 failed; full ctest 33/33. Docs: `docs/testing/api-e2e.md`, README row. No server bugs found.
 - **Next Step**: Root reviews and commits.
+
+## [2026-10-31 19:00] - Post-0022 fix-up checkpoint tests
+- **Agent**: test-spec-writer
+- **Task**: Tests for the 7 fix-up gaps (imageradmin last-admin guard + add validation; imagerd startup errors; SIGTERM drain; /auth/password throttle).
+- **Outcome**: Extended `imageradmin/test/test_cli.sh.in` (75 passed / 0 failed); new `server/test/test_fixups.sh.in` → `server_fixups_test` (ports 19590–19593; 88 passed / 0 failed). Full ctest 35/35. Docs: `docs/testing/fixups.md`, `imageradmin-cli.md`, README row. Finding: mid-body uploads are not drained by SIGTERM (documented Crow behaviour); a stale imagerd from an earlier failed run held port 19591 and had to be killed.
+- **Next Step**: Root reviews and commits.

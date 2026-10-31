@@ -66,7 +66,7 @@ Every error produced by a handler or the auth/size middleware is:
 | 409 | `LastAdmin` | Operation would leave no enabled admin |
 | 413 | `TooLarge` | JSON body over 64 KiB; upload over `max_upload_mb`; per-format size limit |
 | 415 | `UnsupportedFormat` | Upload extension/format not supported |
-| 429 | `TooManyRequests` | Login throttle (with `Retry-After`) |
+| 429 | `TooManyRequests` | Login / password-change throttle (with `Retry-After`) |
 | 500 | `Internal` | Storage, database, or config error; unexpected exception |
 
 Facade `ErrorCode` mapping (`server/Json.cpp:19`): `BrokenFile`->400/`BrokenFile`, `DuplicateFile`->409/`Conflict`, `UnsupportedFormat`->415, `FileNotFound`->404/`NotFound`, `StorageError`/`DatabaseError`/`ConfigError`->500/`Internal`, `AmbiguousSidecar`->409/`Conflict`, `TooLarge`->413.
@@ -156,7 +156,9 @@ Auth: Bearer. Changes the caller's own password.
 
 Body: `{"oldPassword":"...","newPassword":"..."}` (new: 8..1024 bytes). `204` on success.
 
-Errors: `400 BadRequest` (shape, new password length), `401 Unauthorized` (not authenticated, or `oldPassword` wrong).
+Errors: `400 BadRequest` (shape, new password length, `oldPassword` over 1024 bytes), `401 Unauthorized` (not authenticated, or `oldPassword` wrong), `429 TooManyRequests` with `Retry-After: 900` (see below).
+
+A wrong `oldPassword` counts as a failure against the **same** per-login and per-IP counters as `POST /auth/login` (shared budget: guesses through either endpoint add up). A locked-out key gets `429` before the password is checked, even with the correct `oldPassword`. A successful change resets the per-login counter.
 
 ### GET /users
 

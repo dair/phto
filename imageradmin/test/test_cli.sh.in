@@ -212,13 +212,179 @@ run_test "user demote missing exits 2" \
   expect_exit 2 "$BIN" "$CFG_PATH" user demote nonexistent_xyz
 
 run_test "user passwd missing exits 2" \
-  bash -c "echo 'pw' | \"$BIN\" \"$CFG_PATH\" user passwd nonexistent_xyz --password-stdin; [ \$? -eq 2 ]"
+  bash -c "echo 'password1' | \"$BIN\" \"$CFG_PATH\" user passwd nonexistent_xyz --password-stdin; [ \$? -eq 2 ]"
 
 # ---------------------------------------------------------------------------
 # Test 15: user list --limit pagination
 # ---------------------------------------------------------------------------
 run_test "user list --limit 1 exits 0" \
   bash -c "\"$BIN\" \"$CFG_PATH\" user list --limit 1"
+
+# ===========================================================================
+# Fix-up checkpoint: last-admin guard + add validation parity with POST /users
+# Uses a fresh auth DB per scenario so scenarios are independent.
+# ===========================================================================
+
+# new_cfg <name> → writes $TMPDIR_TEST/<name>.toml with its own auth DB
+new_cfg() {
+  cat > "$TMPDIR_TEST/$1.toml" <<EOF2
+[[targets]]
+root = "$STORE_ROOT"
+database = "$IMG_DB"
+
+[auth]
+database = "$TMPDIR_TEST/$1.db"
+jwt_secret = "test-secret-for-imageradmin-shell-test"
+pbkdf2_iterations = 1000
+EOF2
+}
+
+# add_user <cfg> <login> <pw> [--admin]  (full name fixed)
+add_user() {
+  local cfg="$1" login="$2" pw="$3"; shift 3
+  printf '%s' "$pw" | "$BIN" "$cfg" user add "$login" "Full $login" "$@" --password-stdin >/dev/null 2>&1
+}
+
+# snapshot <cfg> → "login,is_admin,enabled;..." sorted
+snapshot() {
+  python3 -I -c '
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+print(";".join("%s,%d,%d" % r for r in c.execute("SELECT login,is_admin,enabled FROM user ORDER BY login")))
+' "${1%.toml}.db"
+}
+
+# fails_unchanged <cfg> <args...>: command exits non-zero AND DB snapshot unchanged
+fails_unchanged() {
+  local cfg="$1"; shift
+  local before after rc=0
+  before=$(snapshot "$cfg")
+  "$BIN" "$cfg" "$@" >/dev/null 2>&1 || rc=$?
+  after=$(snapshot "$cfg")
+  [ "$rc" -ne 0 ] && [ "$before" = "$after" ]
+}
+
+snapshot_is() { [ "$(snapshot "$1")" = "$2" ]; }
+
+# --- sole admin is protected -----------------------------------------------
+new_cfg la1
+add_user "$TMPDIR_TEST/la1.toml" root rootpass1 --admin
+add_user "$TMPDIR_TEST/la1.toml" bob bobpass12
+run_test "last-admin: setup snapshot" snapshot_is "$TMPDIR_TEST/la1.toml" "bob,0,1;root,1,1"
+run_test "last-admin: del sole admin fails non-zero, DB unchanged" \
+  fails_unchanged "$TMPDIR_TEST/la1.toml" user del root
+run_test "last-admin: disable sole admin fails non-zero, DB unchanged" \
+  fails_unchanged "$TMPDIR_TEST/la1.toml" user disable root
+run_test "last-admin: demote sole admin fails non-zero, DB unchanged" \
+  fails_unchanged "$TMPDIR_TEST/la1.toml" user demote root
+run_test "last-admin: del → exit 2 + 'Cannot remove the last enabled admin'" \
+  bash -c "out=\$( \"$BIN\" \"$TMPDIR_TEST/la1.toml\" user del root 2>&1 ); rc=\$?; [ \$rc -eq 2 ] && echo \"\$out\" | grep -qF 'Cannot remove the last enabled admin'"
+run_test "last-admin: disable → exit 2 + 'Cannot demote or disable the last enabled admin'" \
+  bash -c "out=\$( \"$BIN\" \"$TMPDIR_TEST/la1.toml\" user disable root 2>&1 ); rc=\$?; [ \$rc -eq 2 ] && echo \"\$out\" | grep -qF 'Cannot demote or disable the last enabled admin'"
+run_test "last-admin: demote → exit 2 + 'Cannot demote or disable the last enabled admin'" \
+  bash -c "out=\$( \"$BIN\" \"$TMPDIR_TEST/la1.toml\" user demote root 2>&1 ); rc=\$?; [ \$rc -eq 2 ] && echo \"\$out\" | grep -qF 'Cannot demote or disable the last enabled admin'"
+run_test "last-admin: deleting a non-admin still works" \
+  bash -c "\"$BIN\" \"$TMPDIR_TEST/la1.toml\" user del bob"
+run_test "last-admin: after bob deleted root still present+admin" \
+  snapshot_is "$TMPDIR_TEST/la1.toml" "root,1,1"
+
+# --- two admins: demote one OK, then the other is protected ----------------
+new_cfg la2
+add_user "$TMPDIR_TEST/la2.toml" a1 adminpass1 --admin
+add_user "$TMPDIR_TEST/la2.toml" a2 adminpass2 --admin
+run_test "two admins: demote a1 succeeds" \
+  bash -c "\"$BIN\" \"$TMPDIR_TEST/la2.toml\" user demote a1"
+run_test "two admins: a1 demoted, a2 still admin" \
+  snapshot_is "$TMPDIR_TEST/la2.toml" "a1,0,1;a2,1,1"
+run_test "two admins: now a2 (last) cannot be demoted" \
+  fails_unchanged "$TMPDIR_TEST/la2.toml" user demote a2
+run_test "two admins: now a2 (last) cannot be disabled" \
+  fails_unchanged "$TMPDIR_TEST/la2.toml" user disable a2
+run_test "two admins: now a2 (last) cannot be deleted" \
+  fails_unchanged "$TMPDIR_TEST/la2.toml" user del a2
+
+# --- two admins: disable one OK, delete the other protected ----------------
+new_cfg la3
+add_user "$TMPDIR_TEST/la3.toml" a1 adminpass1 --admin
+add_user "$TMPDIR_TEST/la3.toml" a2 adminpass2 --admin
+run_test "two admins: disable a1 succeeds" \
+  bash -c "\"$BIN\" \"$TMPDIR_TEST/la3.toml\" user disable a1"
+run_test "two admins: a2 now sole enabled admin, del refused" \
+  fails_unchanged "$TMPDIR_TEST/la3.toml" user del a2
+run_test "two admins: delete the disabled admin a1 is allowed" \
+  bash -c "\"$BIN\" \"$TMPDIR_TEST/la3.toml\" user del a1"
+
+# --- disabled admin does not count -----------------------------------------
+new_cfg la4
+add_user "$TMPDIR_TEST/la4.toml" a1 adminpass1 --admin
+add_user "$TMPDIR_TEST/la4.toml" a2 adminpass2 --admin
+"$BIN" "$TMPDIR_TEST/la4.toml" user disable a2 >/dev/null 2>&1
+run_test "disabled admin: a1 is the only enabled admin; demote refused" \
+  fails_unchanged "$TMPDIR_TEST/la4.toml" user demote a1
+run_test "disabled admin: disable a1 refused" \
+  fails_unchanged "$TMPDIR_TEST/la4.toml" user disable a1
+run_test "disabled admin: del a1 refused" \
+  fails_unchanged "$TMPDIR_TEST/la4.toml" user del a1
+run_test "disabled admin: re-enabling a2 lifts the protection (demote a1 ok)" \
+  bash -c "\"$BIN\" \"$TMPDIR_TEST/la4.toml\" user enable a2 && \"$BIN\" \"$TMPDIR_TEST/la4.toml\" user demote a1"
+
+# --- bootstrap of first admin still works ----------------------------------
+new_cfg la5
+run_test "bootstrap: first admin on empty DB succeeds" \
+  bash -c "printf 'bootpass1' | \"$BIN\" \"$TMPDIR_TEST/la5.toml\" user add boot 'Boot Admin' --admin --password-stdin"
+run_test "bootstrap: first admin recorded as enabled admin" \
+  snapshot_is "$TMPDIR_TEST/la5.toml" "boot,1,1"
+run_test "bootstrap: second admin can be added" \
+  bash -c "printf 'bootpass2' | \"$BIN\" \"$TMPDIR_TEST/la5.toml\" user add boot2 'Boot Two' --admin --password-stdin"
+run_test "bootstrap: promote non-admin still works" \
+  bash -c "printf 'userpass12' | \"$BIN\" \"$TMPDIR_TEST/la5.toml\" user add u 'U' --password-stdin && \"$BIN\" \"$TMPDIR_TEST/la5.toml\" user promote u"
+
+# --- user add validation parity with POST /users ---------------------------
+new_cfg va
+VA="$TMPDIR_TEST/va.toml"
+# add_rejected <login> <fullname> <password>: non-zero exit and nothing stored
+add_rejected() {
+  local rc=0 before after
+  before=$(snapshot "$VA")
+  printf '%s' "$3" | "$BIN" "$VA" user add "$1" "$2" --password-stdin >/dev/null 2>&1 || rc=$?
+  after=$(snapshot "$VA")
+  [ "$rc" -ne 0 ] && [ "$before" = "$after" ]
+}
+add_accepted() {
+  printf '%s' "$3" | "$BIN" "$VA" user add "$1" "$2" --password-stdin >/dev/null 2>&1
+}
+L64=$(printf 'a%.0s' $(seq 1 64))
+L65=$(printf 'a%.0s' $(seq 1 65))
+F255=$(printf 'n%.0s' $(seq 1 255))
+F256=$(printf 'n%.0s' $(seq 1 256))
+P1024=$(printf 'p%.0s' $(seq 1 1024))
+P1025=$(printf 'p%.0s' $(seq 1 1025))
+add_user "$VA" seed seedpass1 >/dev/null 2>&1   # ensure DB/table exists
+run_test "add validation: login with space rejected"        add_rejected "bad login" "Name" "goodpass1"
+run_test "add validation: login with '/' rejected"          add_rejected "a/b" "Name" "goodpass1"
+run_test "add validation: login with ':' rejected"          add_rejected "a:b" "Name" "goodpass1"
+run_test "add validation: login with non-ASCII rejected"    add_rejected "jos$(printf '\303\251')" "Name" "goodpass1"
+run_test "add validation: empty login rejected"             add_rejected "" "Name" "goodpass1"
+run_test "add validation: 65-char login rejected"           add_rejected "$L65" "Name" "goodpass1"
+run_test "add validation: 64-char login accepted"           add_accepted "$L64" "Name" "goodpass1"
+run_test "add validation: allowed punctuation . _ @ - accepted" add_accepted "a.b_c@d-e" "Name" "goodpass1"
+run_test "add validation: '_'-only login accepted (in charset)" add_accepted "_" "Name" "goodpass1"
+run_test "add validation: password of 7 chars rejected"     add_rejected "shortpw" "Name" "1234567"
+run_test "add validation: empty password rejected"          add_rejected "emptypw" "Name" ""
+run_test "add validation: password of 8 chars accepted"     add_accepted "pw8" "Name" "12345678"
+run_test "add validation: 1024-char password accepted"      add_accepted "pw1024" "Name" "$P1024"
+run_test "add validation: 1025-char password rejected"      add_rejected "pw1025" "Name" "$P1025"
+run_test "add validation: empty fullName rejected"          add_rejected "noname" "" "goodpass1"
+run_test "add validation: 256-byte fullName rejected"       add_rejected "longname" "$F256" "goodpass1"
+run_test "add validation: 255-byte fullName accepted"       add_accepted "fn255" "$F255" "goodpass1"
+run_test "add validation: bad login → exit 1 + login message" \
+  bash -c "out=\$(printf 'goodpass1' | \"$BIN\" \"$VA\" user add 'bad login' Name --password-stdin 2>&1); rc=\$?; [ \$rc -eq 1 ] && echo \"\$out\" | grep -qF 'login must be 1..64 characters from [A-Za-z0-9._@-]'"
+run_test "add validation: bad password → exit 1 + password message" \
+  bash -c "out=\$(printf 'short' | \"$BIN\" \"$VA\" user add okuser Name --password-stdin 2>&1); rc=\$?; [ \$rc -eq 1 ] && echo \"\$out\" | grep -qF 'password must be 8..1024 bytes'"
+run_test "add validation: bad fullName → exit 1 + fullName message" \
+  bash -c "out=\$(printf 'goodpass1' | \"$BIN\" \"$VA\" user add okuser2 '' --password-stdin 2>&1); rc=\$?; [ \$rc -eq 1 ] && echo \"\$out\" | grep -qF 'fullName must be 1..255 bytes'"
+run_test "add validation: unusable config → non-zero" \
+  bash -c "printf 'x' | \"$BIN\" /dev/null user list >/dev/null 2>&1; [ \$? -ne 0 ]"
 
 # ---------------------------------------------------------------------------
 # Cleanup

@@ -396,6 +396,8 @@ class ServerAuthValidationTest: public CppUnit::TestFixture {
   CPPUNIT_TEST(testMaxUploadMbZero);
   CPPUNIT_TEST(testTokenTtlZero);
   CPPUNIT_TEST(testPbkdf2IterationsTooLow);
+  CPPUNIT_TEST(testAuthDatabaseEmpty);
+  CPPUNIT_TEST(testAuthDatabaseTypeMismatch);
   CPPUNIT_TEST_SUITE_END();
 
   fs::path m_path;
@@ -445,6 +447,16 @@ public:
 
   void testPbkdf2IterationsTooLow() {
     writeConfig("[auth]\npbkdf2_iterations = 10\n");
+    CPPUNIT_ASSERT_THROW(loadConfig(m_path), std::runtime_error);
+  }
+
+  void testAuthDatabaseEmpty() {
+    writeConfig("[auth]\ndatabase = \"\"\n");
+    CPPUNIT_ASSERT_THROW(loadConfig(m_path), std::runtime_error);
+  }
+
+  void testAuthDatabaseTypeMismatch() {
+    writeConfig("[auth]\ndatabase = 5\n");
     CPPUNIT_ASSERT_THROW(loadConfig(m_path), std::runtime_error);
   }
 };

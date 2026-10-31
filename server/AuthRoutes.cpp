@@ -3,6 +3,7 @@
 #include <auth/PasswordHash.h>
 #include <auth/TokenService.h>
 #include <auth/UserStore.h>
+#include <auth/Validation.h>
 #include <auth/types/User.h>
 #include <crow.h>
 #include <database/Database.h>
@@ -53,8 +54,14 @@ LoginThrottle& ipThrottle() {
   return instance;
 }
 
-constexpr size_t MAX_LOGIN_BYTES = 64;
-constexpr size_t MAX_PASSWORD_BYTES = 1024;
+constexpr size_t MAX_LOGIN_BYTES = auth::MAX_LOGIN_LEN;
+constexpr size_t MAX_PASSWORD_BYTES = auth::MAX_PASSWORD_LEN;
+
+crow::response tooManyAttempts(const char* what) {
+  auto res = jsonError(429, "TooManyRequests", what);
+  res.add_header("Retry-After", std::to_string(LoginThrottle::LOCKOUT_SECONDS));
+  return res;
+}
 
 } // namespace
 
@@ -82,9 +89,7 @@ void registerAuthRoutes(
 
       // Throttle check — precedes any credential verification.
       if (ipThrottle().isLockedOut(req.remote_ip_address) || throttle().isLockedOut(login)) {
-        auto res = jsonError(429, "TooManyRequests", "too many failed login attempts — try again later");
-        res.add_header("Retry-After", std::to_string(LoginThrottle::LOCKOUT_SECONDS));
-        return res;
+        return tooManyAttempts("too many failed login attempts — try again later");
       }
 
       auto userOpt = userStore.get(login);
@@ -158,14 +163,27 @@ void registerAuthRoutes(
       const std::string oldPassword = body["oldPassword"].s();
       const std::string newPassword = body["newPassword"].s();
 
-      if (newPassword.size() < 8 || newPassword.size() > MAX_PASSWORD_BYTES) {
+      if (auth::validatePassword(newPassword) != nullptr) {
         return badRequest("newPassword must be 8..1024 bytes");
       }
+      if (oldPassword.size() > MAX_PASSWORD_BYTES) {
+        return badRequest("oldPassword too long");
+      }
 
-      auto pwOpt = userStore.getPassword(claims->login);
+      // Brute-force guard: shares the per-login and per-IP counters with POST /auth/login, so guessing the
+      // current password through either endpoint draws from one budget. Checked before any PBKDF2 work.
+      const std::string& login = claims->login;
+      if (ipThrottle().isLockedOut(req.remote_ip_address) || throttle().isLockedOut(login)) {
+        return tooManyAttempts("too many failed password attempts — try again later");
+      }
+
+      auto pwOpt = userStore.getPassword(login);
       if (!pwOpt || !auth::verifyPassword(oldPassword, *pwOpt)) {
+        throttle().recordFailure(login);
+        ipThrottle().recordFailure(req.remote_ip_address);
         return unauthorized("current password is incorrect");
       }
+      throttle().recordSuccess(login);
 
       const auth::PasswordRecord newRec = auth::hashPassword(newPassword, pbkdf2Iterations);
       userStore.setPassword(claims->login, newRec);

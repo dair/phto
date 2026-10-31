@@ -50,8 +50,8 @@ public:
   /// Start the server (blocking until stop() is called from another thread).
   void run();
 
-  /// Signal graceful shutdown; safe to call from a signal handler context via
-  /// std::atomic_flag / app.stop().
+  /// Stop accepting and reading; started handlers finish, then run() returns. NOT async-signal-safe: call from
+  /// a normal thread (imagerd uses a sigwait() watcher thread). run() clears Crow's own SIGINT/SIGTERM handling.
   void stop();
 
   crow::App<AuthMiddleware>& crow() {

@@ -194,6 +194,10 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
   // Parse optional [auth] section.
   if (auto* authTbl = tbl["auth"].as_table()) {
     if (auto v = (*authTbl)["database"].value<std::string>()) {
+      if (v->empty()) {
+        // SQLite would silently open a private temporary database for "".
+        throw std::runtime_error("Config [auth]: 'database' must not be empty");
+      }
       cfg.auth.database = *v;
     } else if ((*authTbl)["database"]) {
       throw std::runtime_error("Config [auth]: 'database' must be a string");
