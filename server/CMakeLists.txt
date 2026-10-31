@@ -14,16 +14,8 @@ target_link_libraries(server_lib
         config_lib
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(server_lib PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 add_executable(imagerd main.cpp)
 
 target_link_libraries(imagerd PRIVATE server_lib)
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(imagerd PRIVATE -Wall -Wextra -Wpedantic)
-endif()
 
 add_subdirectory(test)

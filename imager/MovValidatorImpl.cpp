@@ -4,6 +4,8 @@
 
 #include "Validators.h"
 
+using namespace mov_detail;
+
 namespace {
 
 class MovValidator final: public validation::IValidator {

@@ -10,8 +10,4 @@ target_link_libraries(config_lib
     PRIVATE tomlplusplus::tomlplusplus
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(config_lib PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 add_subdirectory(test)

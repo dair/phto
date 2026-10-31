@@ -1,9 +1,11 @@
+#include <validations/mov/mov_validator.h>
+
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <vector>
 
-#include <validations/mov/mov_validator.h>
+using namespace mov_detail;
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {

@@ -5,8 +5,12 @@ NEF (Nikon Electronic Format) RAW image validator using the system-installed Lib
 ## Public API
 
 ```cpp
+namespace nef_detail {
+
 enum ValidationResult { INVALID = -1, VALID = 0, WRONG = 1 };
 ValidationResult validateNef(const void* data, size_t dataSize);
+
+} // namespace nef_detail
 ```
 
 Returns `WRONG` if the data lacks a TIFF header magic (`II\x2A\x00` or `MM\x00\x2A`) or is not a recognized RAW format, `INVALID` if LibRaw can identify the format but the sensor data cannot be unpacked (corrupted or truncated), `VALID` if the RAW data is successfully parsed and unpacked.

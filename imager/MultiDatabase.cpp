@@ -2,6 +2,7 @@
 
 #include <coro/BlockOn.h>
 #include <coro/WhenAll.h>
+#include <database/DatabaseException.h>
 #include <metrics/Metrics.h>
 
 namespace imager {

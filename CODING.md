@@ -44,6 +44,10 @@ database/
   CMakeLists.txt
   Database.h
   Database.cpp
+  File.h
+  Pagination.h
+  DatabaseException.h
+  DatabaseException.cpp
   sample/
   test/
 imager/
@@ -184,6 +188,7 @@ Errors propagate via exceptions at library boundaries; return codes (`ErrorCode`
 Error types derive from `std::runtime_error` and carry an error-code enum for programmatic inspection:
 
 ```cpp
+// database/DatabaseException.h
 class DatabaseException : public std::runtime_error {
 public:
   DatabaseException(DatabaseErrorCode code, const std::string& message);
@@ -280,4 +285,4 @@ cmake --preset default && cmake --build --preset default
 ctest --preset default
 ```
 
-Artifacts go to `/tmp/imager-build`. The compiler is Clang (`clang++`). Warnings are errors; locally the build uses `-Wall -Wextra -Wpedantic -Werror` on all first-party targets.
+Artifacts go to `build/` in the repo root. The compiler is Clang (`clang++`). Warnings are errors: the root `CMakeLists.txt` applies `-Wall -Wextra -Wpedantic -Werror` to all first-party targets (third-party dependencies are `SYSTEM` includes). Pass `-DIMAGER_WERROR=OFF` to drop `-Werror`, e.g. for a newer compiler. Both clang++ and g++ build warning-clean.

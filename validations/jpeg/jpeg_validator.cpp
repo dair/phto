@@ -29,7 +29,7 @@ void onMessage(j_common_ptr cinfo, int msg_level) {
 
 } // namespace
 
-ValidationResult validateJpeg(const void* data, size_t dataSize) {
+jpeg_detail::ValidationResult jpeg_detail::validateJpeg(const void* data, size_t dataSize) {
   if (!data || dataSize < 2) {
     return WRONG;
   }

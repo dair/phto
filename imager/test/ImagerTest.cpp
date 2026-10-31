@@ -1,7 +1,9 @@
+#include <config/Config.h>
 #include <cppunit/TestFixture.h>
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
+#include <imager/Imager.h>
 #include <sqlite3.h>
 
 #include <atomic>
@@ -13,9 +15,6 @@
 #include <thread>
 #include <vector>
 
-#include "config/Config.h"
-#include "imager/Imager.h"
-
 namespace fs = std::filesystem;
 using namespace imager;
 
@@ -23,12 +22,14 @@ using namespace imager;
 // Helpers
 // ---------------------------------------------------------------------------
 
-static std::string uniqueSuffix() {
+namespace {
+
+std::string uniqueSuffix() {
   return std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
 }
 
 /// Build a temporary AppConfig with one target (root + database).
-static config::AppConfig makeTempConfig(const std::string& suffix = "") {
+config::AppConfig makeTempConfig(const std::string& suffix = "") {
   std::string s = suffix.empty() ? uniqueSuffix() : suffix;
   fs::path base = fs::temp_directory_path() / ("imager_test_" + s);
   fs::create_directories(base / "storage");
@@ -39,7 +40,7 @@ static config::AppConfig makeTempConfig(const std::string& suffix = "") {
 }
 
 /// Minimal valid JPEG bytes (SOI + EOI).
-static std::vector<uint8_t> makeMinimalJpeg() {
+std::vector<uint8_t> makeMinimalJpeg() {
   // A 1x1 white JPEG created with libjpeg would be complex; instead
   // create a valid 1x1 JFIF. We use a hard-coded small valid JPEG.
   // (FF D8 FF E0 JFIF header ... FF D9 EOI)
@@ -67,7 +68,7 @@ static std::vector<uint8_t> makeMinimalJpeg() {
 /// Minimal valid HEIF/AV1 (AVIF) file — 4x4 solid-gray image.
 /// Generated with libheif + libaom encoder; ftyp at offset 4 confirmed.
 // clang-format off
-static std::vector<uint8_t> makeMinimalHeic() {
+std::vector<uint8_t> makeMinimalHeic() {
   return {
     0x00, 0x00, 0x00, 0x1C, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66, 0x00, 0x00, 0x00, 0x00,
     0x6D, 0x69, 0x66, 0x31, 0x61, 0x76, 0x69, 0x66, 0x6D, 0x69, 0x61, 0x66, 0x00, 0x00, 0x00, 0xD6,
@@ -94,7 +95,7 @@ static std::vector<uint8_t> makeMinimalHeic() {
 
 /// Load the NEF test fixture from the nef_validator fixtures directory.
 /// Returns an empty vector if the fixture is not available.
-static std::vector<uint8_t> loadNefFixture() {
+std::vector<uint8_t> loadNefFixture() {
   std::filesystem::path fixture{NEF_FIXTURES_DIR "/valid.nef"};
   std::ifstream file(fixture, std::ios::binary | std::ios::ate);
   if (!file.is_open()) {
@@ -112,7 +113,7 @@ static std::vector<uint8_t> loadNefFixture() {
 
 /// Load the MOV test fixture from the mov_validator fixtures directory.
 /// Returns an empty vector if the fixture is not available.
-static std::vector<uint8_t> loadMovFixture() {
+std::vector<uint8_t> loadMovFixture() {
   std::filesystem::path fixture{MOV_FIXTURES_DIR "/valid.mov"};
   std::ifstream file(fixture, std::ios::binary | std::ios::ate);
   if (!file.is_open()) {
@@ -130,7 +131,7 @@ static std::vector<uint8_t> loadMovFixture() {
 
 /// Make a uniquely-hashed but still-valid MOV by appending inert trailing bytes.
 /// libavformat reads from the moov atom and ignores trailing data.
-static std::vector<uint8_t> makeUniqueMovFixture(uint8_t tag1, uint8_t tag2) {
+std::vector<uint8_t> makeUniqueMovFixture(uint8_t tag1, uint8_t tag2) {
   auto data = loadMovFixture();
   if (!data.empty()) {
     data.push_back(tag1);
@@ -138,6 +139,8 @@ static std::vector<uint8_t> makeUniqueMovFixture(uint8_t tag1, uint8_t tag2) {
   }
   return data;
 }
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Test: AddImage workflow
@@ -683,7 +686,9 @@ CPPUNIT_TEST_SUITE_REGISTRATION(ConcurrencyTest);
 // Helpers: make a minimal valid AAE blob
 // ---------------------------------------------------------------------------
 
-static Blob makeAaeBlob(const std::string& key = "adjustmentFormatVersion") {
+namespace {
+
+Blob makeAaeBlob(const std::string& key = "adjustmentFormatVersion") {
   std::string xml =
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
     "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\""
@@ -699,6 +704,8 @@ static Blob makeAaeBlob(const std::string& key = "adjustmentFormatVersion") {
   std::vector<uint8_t> bytes(xml.begin(), xml.end());
   return Blob::fromVector(std::move(bytes));
 }
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Sidecar pairing tests

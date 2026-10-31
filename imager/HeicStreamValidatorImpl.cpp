@@ -1,5 +1,5 @@
 // Separate TU to avoid enum name collisions with other validator headers.
-#include <imager/ImageValidator.h>
+#include <imager/IStreamValidator.h>
 #include <libheif/heif.h>
 
 #include <cstdio>
@@ -88,14 +88,14 @@ public:
     }
 
     // Zero-initialize to null all optional v2 function pointers, then set required fields.
-    heif_reader kReader{};
-    kReader.reader_api_version = 1;
-    kReader.get_position = heifGetPosition;
-    kReader.read = heifRead;
-    kReader.seek = heifSeek;
-    kReader.wait_for_file_size = heifWaitForFileSize;
+    heif_reader reader{};
+    reader.reader_api_version = 1;
+    reader.get_position = heifGetPosition;
+    reader.read = heifRead;
+    reader.seek = heifSeek;
+    reader.wait_for_file_size = heifWaitForFileSize;
 
-    heif_error err = heif_context_read_from_reader(ctx.get(), &kReader, f.get(), nullptr);
+    heif_error err = heif_context_read_from_reader(ctx.get(), &reader, f.get(), nullptr);
     if (err.code != heif_error_Ok) {
       return (err.code == heif_error_Unsupported_filetype)
                ? validation::ValidationResult{false, "Data is not a HEIC/HEIF file"}

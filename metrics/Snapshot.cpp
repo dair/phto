@@ -6,7 +6,7 @@ namespace metrics {
 
 namespace detail {
 
-static uint64_t percentile(const Histogram::Snapshot& s, double p) {
+uint64_t percentile(const Histogram::Snapshot& s, double p) {
   if (s.count == 0) {
     return 0;
   }
@@ -21,7 +21,7 @@ static uint64_t percentile(const Histogram::Snapshot& s, double p) {
   return Histogram::BOUNDS[Histogram::NUM_BUCKETS - 2];
 }
 
-static std::string fmtDuration(uint64_t ns) {
+std::string fmtDuration(uint64_t ns) {
   if (ns == 0) {
     return "0ns";
   }
@@ -40,7 +40,7 @@ static std::string fmtDuration(uint64_t ns) {
   return os.str();
 }
 
-static std::string fmtBytes(uint64_t bytes) {
+std::string fmtBytes(uint64_t bytes) {
   if (bytes < 1'024) {
     return std::to_string(bytes) + " B";
   }
@@ -149,13 +149,17 @@ std::string format(const FullSnapshot& snap) {
   // Helper lambdas to look up named counter/gauge values from the snapshot
   auto findCounter = [&](const std::string& name) -> int64_t {
     for (const auto& c : snap.counters) {
-      if (c.name == name) return c.value;
+      if (c.name == name) {
+        return c.value;
+      }
     }
     return -1;
   };
   auto findGauge = [&](const std::string& name) -> int64_t {
     for (const auto& g : snap.gauges) {
-      if (g.name == name) return g.value;
+      if (g.name == name) {
+        return g.value;
+      }
     }
     return 0;
   };
@@ -168,33 +172,45 @@ std::string format(const FullSnapshot& snap) {
 
     struct StageRow {
       const char* label;
-      const char* filesCounter;   // nullptr = dash
-      const char* bytesCounter;   // nullptr = dash
+      const char* filesCounter; // nullptr = dash
+      const char* bytesCounter; // nullptr = dash
       const char* inflightFiles;
       const char* inflightBytes;
     };
 
     const StageRow rows[] = {
-      {"read",          "stage_read",         "stage_read_bytes",         "inflight_reading",          "inflight_reading_bytes"},
-      {"validate",      "stage_validated",     "stage_validated_bytes",    "inflight_validating",       "inflight_validating_bytes"},
-      {"hash",          "stage_hashed",        "stage_hashed_bytes",       "inflight_hashing",          "inflight_hashing_bytes"},
-      {"waiting_mutex", nullptr,               nullptr,                    "inflight_waiting_mutex",    "inflight_waiting_mutex_bytes"},
-      {"dedup_check",   "stage_dedup_checked", nullptr,                    "inflight_dedup_checking",   "inflight_dedup_checking_bytes"},
-      {"storage_write", "stage_stored",        "storage_bytes_written",    "inflight_writing_storage",  "inflight_writing_storage_bytes"},
-      {"db_insert",     "stage_db_inserted",   "stage_db_inserted_bytes",  "inflight_inserting_db",     "inflight_inserting_db_bytes"},
+      {"read", "stage_read", "stage_read_bytes", "inflight_reading", "inflight_reading_bytes"},
+      {"validate", "stage_validated", "stage_validated_bytes", "inflight_validating", "inflight_validating_bytes"},
+      {"hash", "stage_hashed", "stage_hashed_bytes", "inflight_hashing", "inflight_hashing_bytes"},
+      {"waiting_mutex", nullptr, nullptr, "inflight_waiting_mutex", "inflight_waiting_mutex_bytes"},
+      {"dedup_check", "stage_dedup_checked", nullptr, "inflight_dedup_checking", "inflight_dedup_checking_bytes"},
+      {"storage_write",
+       "stage_stored",
+       "storage_bytes_written",
+       "inflight_writing_storage",
+       "inflight_writing_storage_bytes"},
+      {"db_insert",
+       "stage_db_inserted",
+       "stage_db_inserted_bytes",
+       "inflight_inserting_db",
+       "inflight_inserting_db_bytes"},
     };
 
     for (const auto& row : rows) {
       // Label — left-padded to 18 chars
       out << "  " << row.label;
       int labelLen = static_cast<int>(std::string(row.label).size());
-      for (int i = labelLen; i < 18; ++i) out << ' ';
+      for (int i = labelLen; i < 18; ++i) {
+        out << ' ';
+      }
 
       // Files completed
       if (row.filesCounter) {
         int64_t v = findCounter(row.filesCounter);
         std::string s = (v >= 0) ? std::to_string(v) : "0";
-        for (int i = static_cast<int>(s.size()); i < 17; ++i) out << ' ';
+        for (int i = static_cast<int>(s.size()); i < 17; ++i) {
+          out << ' ';
+        }
         out << s;
       } else {
         out << "                —";
@@ -205,7 +221,9 @@ std::string format(const FullSnapshot& snap) {
       if (row.bytesCounter) {
         int64_t v = findCounter(row.bytesCounter);
         std::string s = (v > 0) ? detail::fmtBytes(static_cast<uint64_t>(v)) : "0 B";
-        for (int i = static_cast<int>(s.size()); i < 15; ++i) out << ' ';
+        for (int i = static_cast<int>(s.size()); i < 15; ++i) {
+          out << ' ';
+        }
         out << s;
       } else {
         out << "              —";
@@ -216,7 +234,9 @@ std::string format(const FullSnapshot& snap) {
       {
         int64_t v = findGauge(row.inflightFiles);
         std::string s = std::to_string(v);
-        for (int i = static_cast<int>(s.size()); i < 15; ++i) out << ' ';
+        for (int i = static_cast<int>(s.size()); i < 15; ++i) {
+          out << ' ';
+        }
         out << s;
       }
       out << "  ";

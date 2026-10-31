@@ -28,18 +28,20 @@ struct PngReadGuard {
   png_structp png_ptr{nullptr};
   png_infop info_ptr{nullptr};
   PngReadGuard() = default;
+
   ~PngReadGuard() {
     if (png_ptr) {
       png_destroy_read_struct(&png_ptr, info_ptr ? &info_ptr : nullptr, nullptr);
     }
   }
+
   PngReadGuard(const PngReadGuard&) = delete;
   PngReadGuard& operator=(const PngReadGuard&) = delete;
 };
 
 } // namespace
 
-ValidationResult validatePng(const void* data, size_t dataSize) {
+png_detail::ValidationResult png_detail::validatePng(const void* data, size_t dataSize) {
   static const uint8_t PNG_SIG[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
 
   if (dataSize < 8 || std::memcmp(data, PNG_SIG, 8) != 0) {

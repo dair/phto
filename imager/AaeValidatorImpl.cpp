@@ -4,6 +4,8 @@
 
 #include "Validators.h"
 
+using namespace aae_detail;
+
 namespace {
 
 class AaeValidator final: public validation::IValidator {

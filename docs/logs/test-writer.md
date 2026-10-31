@@ -152,3 +152,21 @@
 - **Task**: Follow-up decisions from team-lead.
 - **Outcome**: loose_ends test now 122 checks (290 MB MOV memory test (201, VmHWM ≈ 50 MB), TLS 413 case); `server_clientip_tests` has 26 cases incl. AccessLog::format. ctest -N = 37; green twice.
 - **Next Step**: None.
+
+## [2026-10-31 12:00] - Verify plan-0012 tidy-up (C1-L8)
+- **Agent**: td-test
+- **Task**: Independent build/test verification of the 0012 tidy-up: clang preset build + ctest x2, g++ build, -Werror negative test, IMAGER_WERROR=OFF, audit greps.
+- **Outcome**: clang build clean, ctest 37/37 twice. g++ build-gcc builds clean (-Werror). Deliberate unused variable in metrics/Snapshot.cpp failed under clang (-Werror,-Wunused-variable); with -DIMAGER_WERROR=OFF (g++, scratch dir) it only warned and built. Probe reverted (grep confirms). 88/88 compile_commands entries carry -Werror. Minor residuals: redundant `static` inside anon namespace at ImagerTest.cpp:33; test files still use quoted "config/Config.h"; MovStreamValidatorImpl.cpp still has kIoBufferSize/kMaxPacketsToTry (plan only listed mov_validator.cpp).
+- **Next Step**: Report to team-lead; ctest not run on the g++ build.
+
+## [2026-10-31 13:00] - Re-verify after central-warnings CMake cleanup
+- **Agent**: td-test
+- **Task**: Re-run both-compiler builds, full ctest x2 and -Werror negative test after td-dev removed the per-target warning flags.
+- **Outcome**: clang build clean, ctest 37/37 twice; g++ build-gcc clean. All 88 clang compile_commands entries carry `-Wall -Wextra -Wpedantic -Werror` (Crow via -isystem). Probe unused variable in metrics/Snapshot.cpp failed under both clang and g++; reverted (grep empty) and both rebuilt clean.
+- **Next Step**: None.
+
+## [2026-10-31 14:00] - Verify 0012 residual cleanup (kFoo, quoted includes, static)
+- **Agent**: td-test
+- **Task**: Rebuild both compilers, ctest clang x2 and g++ x1, re-run `\bk[A-Z]` and quoted-include greps.
+- **Outcome**: clang and g++ builds clean (-Werror); ctest 37/37 on clang twice and on build-gcc once. `\bk[A-Z]\w*` grep over first-party .cpp/.h: 0 hits. Quoted `"config|coro|database|imager|blob|metrics|auth|server|validations/` includes: 0 hits.
+- **Next Step**: None.

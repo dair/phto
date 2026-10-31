@@ -3,6 +3,7 @@
 #include <auth/PasswordHash.h>
 #include <auth/types/User.h>
 #include <database/Database.h>
+#include <database/Pagination.h>
 
 #include <filesystem>
 #include <memory>

@@ -23,6 +23,9 @@
  *   tag-files   <tag> [<tag>...] [--offset N] [--limit N]
  */
 
+#include <database/Database.h>
+#include <database/DatabaseException.h>
+
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -32,8 +35,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include "database/Database.h"
 
 using namespace db;
 
@@ -49,7 +50,9 @@ struct Args {
   std::optional<Pagination> page; // --offset / --limit if provided
 };
 
-static void printUsage(std::ostream& out) {
+namespace {
+
+void printUsage(std::ostream& out) {
   out <<
     R"(Usage: dbcli <database> <operation> [arguments...]
 
@@ -76,7 +79,7 @@ Operations:
 }
 
 /// Parse --offset / --limit flags out of argv, leaving other args in place.
-static std::optional<Pagination> parsePagination(std::vector<std::string>& args) {
+std::optional<Pagination> parsePagination(std::vector<std::string>& args) {
   uint32_t offset = 0;
   uint32_t limit = 0;
   bool hasOffset = false, hasLimit = false;
@@ -112,11 +115,11 @@ static std::optional<Pagination> parsePagination(std::vector<std::string>& args)
 // Output formatters
 // ---------------------------------------------------------------------------
 
-static void printFile(const File& f) {
+void printFile(const File& f) {
   std::cout << f.id << '\t' << f.name << '\t' << f.size << '\t' << f.ext << '\n';
 }
 
-static void printFiles(const std::vector<File>& files) {
+void printFiles(const std::vector<File>& files) {
   std::cout << "id\tname\tsize\text\n";
   for (const auto& f : files) {
     printFile(f);
@@ -124,7 +127,7 @@ static void printFiles(const std::vector<File>& files) {
   std::cout << files.size() << " record(s)\n";
 }
 
-static void printTags(const std::vector<std::string>& tags) {
+void printTags(const std::vector<std::string>& tags) {
   for (const auto& t : tags) {
     std::cout << t << '\n';
   }
@@ -135,9 +138,7 @@ static void printTags(const std::vector<std::string>& tags) {
 // Operation dispatch
 // ---------------------------------------------------------------------------
 
-static int runFileOp(
-  Database& db, const std::string& sub, std::vector<std::string> rest, std::optional<Pagination> page
-) {
+int runFileOp(Database& db, const std::string& sub, std::vector<std::string> rest, std::optional<Pagination> page) {
   if (sub == "add") {
     if (rest.size() < 4) {
       std::cerr << "file add requires: <id> <name> <size> <ext>\n";
@@ -198,9 +199,7 @@ static int runFileOp(
   return 1;
 }
 
-static int runTagOp(
-  Database& db, const std::string& sub, std::vector<std::string> rest, std::optional<Pagination> page
-) {
+int runTagOp(Database& db, const std::string& sub, std::vector<std::string> rest, std::optional<Pagination> page) {
   if (sub == "add") {
     if (rest.empty()) {
       std::cerr << "tag add requires: <name>\n";
@@ -234,6 +233,8 @@ static int runTagOp(
   std::cerr << "Unknown tag sub-command: " << sub << '\n';
   return 1;
 }
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // main

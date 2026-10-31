@@ -2,6 +2,7 @@
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
+#include <validations/mov/mov_validator.h>
 
 #include <cstdint>
 #include <cstring>
@@ -9,7 +10,7 @@
 #include <fstream>
 #include <vector>
 
-#include <validations/mov/mov_validator.h>
+using namespace mov_detail;
 
 // ---------------------------------------------------------------------------
 // Minimal valid MOV (QuickTime) file — 16x16, 1 frame, H.264 baseline, 1416 bytes.

@@ -4,6 +4,8 @@
 
 #include "Validators.h"
 
+using namespace png_detail;
+
 namespace {
 
 class PngValidator final: public validation::IValidator {

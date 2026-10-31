@@ -4,6 +4,8 @@
 
 #include "Validators.h"
 
+using namespace heic_detail;
+
 namespace {
 
 class HeicValidator final: public validation::IValidator {

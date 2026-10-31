@@ -32,7 +32,7 @@ using ImagePtr = std::unique_ptr<heif_image, ImageDeleter>;
 
 } // namespace
 
-ValidationResult validateHeic(const void* data, size_t dataSize) {
+heic_detail::ValidationResult heic_detail::validateHeic(const void* data, size_t dataSize) {
   // Step 1: quick rejection — must have ISOBMFF ftyp box at offset 4
   if (!data || dataSize < 12) {
     return WRONG;

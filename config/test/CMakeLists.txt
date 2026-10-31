@@ -40,9 +40,5 @@ target_link_libraries(config_tests
         ${CPPUNIT_LIBRARIES}
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(config_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 include(CTest)
 add_test(NAME config_tests COMMAND config_tests)

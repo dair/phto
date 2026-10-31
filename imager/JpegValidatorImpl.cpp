@@ -4,6 +4,8 @@
 
 #include "Validators.h"
 
+using namespace jpeg_detail;
+
 namespace {
 
 class JpegValidator final: public validation::IValidator {

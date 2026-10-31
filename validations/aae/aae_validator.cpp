@@ -6,9 +6,7 @@
 namespace {
 
 // Search for a substring within the first `limit` bytes of `haystack`.
-static bool containsWithinLimit(
-  const char* haystack, size_t haystackLen, const char* needle, size_t needleLen, size_t limit
-) {
+bool containsWithinLimit(const char* haystack, size_t haystackLen, const char* needle, size_t needleLen, size_t limit) {
   if (haystackLen < needleLen) {
     return false;
   }
@@ -27,7 +25,7 @@ static bool containsWithinLimit(
 // Minimal XML well-formedness check: verify matching open/close tags exist
 // for <dict> and that it contains at least one <key> element.
 // Returns true if the structure looks like a valid plist dict.
-static bool hasValidPlistStructure(const char* data, size_t size) {
+bool hasValidPlistStructure(const char* data, size_t size) {
   // Check for opening <dict> tag
   bool hasDict = containsWithinLimit(data, size, "<dict>", 6, size);
   if (!hasDict) {
@@ -45,7 +43,7 @@ static bool hasValidPlistStructure(const char* data, size_t size) {
 
 } // namespace
 
-ValidationResult validateAae(const void* data, size_t dataSize) {
+aae_detail::ValidationResult aae_detail::validateAae(const void* data, size_t dataSize) {
   // Step 1: Quick rejection — minimum size and XML/plist markers
   if (!data || dataSize < 64) {
     return WRONG;

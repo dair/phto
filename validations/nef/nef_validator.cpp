@@ -18,7 +18,7 @@ using LibRawPtr = std::unique_ptr<libraw_data_t, LibRawDeleter>;
 
 } // namespace
 
-ValidationResult validateNef(const void* data, size_t dataSize) {
+nef_detail::ValidationResult nef_detail::validateNef(const void* data, size_t dataSize) {
   // Step 1: Quick rejection — check TIFF header magic
   if (!data || dataSize < 8) {
     return WRONG;

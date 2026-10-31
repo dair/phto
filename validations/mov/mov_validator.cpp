@@ -88,14 +88,14 @@ struct FFmpegState {
       avformat_close_input(&fmtCtx); // nulls fmtCtx; does NOT call avio_close (custom IO)
     }
     if (avioCtx) {
-      av_freep(&avioCtx->buffer);   // free the I/O read buffer allocated by av_malloc
-      avio_context_free(&avioCtx);  // free the AVIOContext struct itself
+      av_freep(&avioCtx->buffer);  // free the I/O read buffer allocated by av_malloc
+      avio_context_free(&avioCtx); // free the AVIOContext struct itself
     }
   }
 };
 
-constexpr size_t kIoBufferSize = 32768; // 32 KB I/O buffer
-constexpr int kMaxPacketsToTry = 8;     // Try up to 8 video packets for trial decode
+constexpr size_t IO_BUFFER_SIZE = 32768; // 32 KB I/O buffer
+constexpr int MAX_PACKETS_TO_TRY = 8;    // Try up to 8 video packets for trial decode
 
 // Recognized ISOBMFF box types that can appear at the start of a MOV/MP4 file
 bool isIsobmffBoxType(const uint8_t* p) {
@@ -110,7 +110,7 @@ bool isIsobmffBoxType(const uint8_t* p) {
 
 } // namespace
 
-ValidationResult validateMov(const void* data, size_t dataSize) {
+mov_detail::ValidationResult mov_detail::validateMov(const void* data, size_t dataSize) {
   // Step 1: Quick rejection — check for ISOBMFF box at start
   if (!data || dataSize < 8) {
     return WRONG;
@@ -124,14 +124,14 @@ ValidationResult validateMov(const void* data, size_t dataSize) {
   BufferState buf{bytes, dataSize, 0};
 
   // Step 2: Set up custom AVIO for memory-backed reading
-  auto* ioBuffer = static_cast<uint8_t*>(av_malloc(kIoBufferSize));
+  auto* ioBuffer = static_cast<uint8_t*>(av_malloc(IO_BUFFER_SIZE));
   if (!ioBuffer) {
     return INVALID;
   }
 
   st.avioCtx = avio_alloc_context(
     ioBuffer,
-    static_cast<int>(kIoBufferSize),
+    static_cast<int>(IO_BUFFER_SIZE),
     0,    // write_flag = 0 (read-only)
     &buf, // opaque
     readPacket,
@@ -200,7 +200,7 @@ ValidationResult validateMov(const void* data, size_t dataSize) {
 
   bool gotFrame = false;
   int packetsRead = 0;
-  while (packetsRead < kMaxPacketsToTry) {
+  while (packetsRead < MAX_PACKETS_TO_TRY) {
     ret = av_read_frame(st.fmtCtx, st.pkt);
     if (ret < 0) {
       break; // EOF or error

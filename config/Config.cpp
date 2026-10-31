@@ -10,21 +10,21 @@ namespace config {
 
 namespace {
 
-static constexpr uint64_t kMegabyte = 1024ULL * 1024ULL;
-static constexpr uint64_t kDefaultLossyImageSizeLimit = 250ULL * kMegabyte;
-static constexpr uint64_t kDefaultLosslessImageSizeLimit = 500ULL * kMegabyte;
-static constexpr uint64_t kDefaultVideoSizeLimit = 100ULL * 1024ULL * kMegabyte;
+static constexpr uint64_t MEGABYTE = 1024ULL * 1024ULL;
+static constexpr uint64_t DEFAULT_LOSSY_IMAGE_SIZE_LIMIT = 250ULL * MEGABYTE;
+static constexpr uint64_t DEFAULT_LOSSLESS_IMAGE_SIZE_LIMIT = 500ULL * MEGABYTE;
+static constexpr uint64_t DEFAULT_VIDEO_SIZE_LIMIT = 100ULL * 1024ULL * MEGABYTE;
 
-static const std::unordered_map<std::string, uint64_t> kDefaultSizeLimits = {
-  {"jpg", kDefaultLossyImageSizeLimit},
-  {"jpeg", kDefaultLossyImageSizeLimit},
-  {"png", kDefaultLosslessImageSizeLimit},
-  {"heic", kDefaultLossyImageSizeLimit},
-  {"heif", kDefaultLossyImageSizeLimit},
-  {"nef", kDefaultLosslessImageSizeLimit},
-  {"aae", 1ULL * kMegabyte},
-  {"mov", kDefaultVideoSizeLimit},
-  {"mp4", kDefaultVideoSizeLimit},
+static const std::unordered_map<std::string, uint64_t> DEFAULT_SIZE_LIMITS = {
+  {"jpg", DEFAULT_LOSSY_IMAGE_SIZE_LIMIT},
+  {"jpeg", DEFAULT_LOSSY_IMAGE_SIZE_LIMIT},
+  {"png", DEFAULT_LOSSLESS_IMAGE_SIZE_LIMIT},
+  {"heic", DEFAULT_LOSSY_IMAGE_SIZE_LIMIT},
+  {"heif", DEFAULT_LOSSY_IMAGE_SIZE_LIMIT},
+  {"nef", DEFAULT_LOSSLESS_IMAGE_SIZE_LIMIT},
+  {"aae", 1ULL * MEGABYTE},
+  {"mov", DEFAULT_VIDEO_SIZE_LIMIT},
+  {"mp4", DEFAULT_VIDEO_SIZE_LIMIT},
 };
 
 /// Parse a human-readable size string like "250MB", "100GB", "512KB", "1024".
@@ -140,7 +140,7 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
   }
 
   // Populate fileSizeLimits: start with compiled defaults then merge user overrides.
-  cfg.fileSizeLimits = kDefaultSizeLimits;
+  cfg.fileSizeLimits = DEFAULT_SIZE_LIMITS;
   if (auto* limits = tbl["file_size_limits"].as_table()) {
     for (const auto& [key, val] : *limits) {
       auto sizeStr = val.value<std::string>();

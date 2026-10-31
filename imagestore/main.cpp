@@ -36,7 +36,9 @@ namespace fs = std::filesystem;
 // Usage
 // ---------------------------------------------------------------------------
 
-static void printUsage(const char* prog) {
+namespace {
+
+void printUsage(const char* prog) {
   std::cerr << "Usage: " << prog
             << " [OPTIONS]\n"
                "\n"
@@ -73,7 +75,7 @@ static void printUsage(const char* prog) {
 // Stage mapping: imager::ProcessingStage -> imagestore::PipelineStage
 // ---------------------------------------------------------------------------
 
-static imagestore::PipelineStage mapStage(imager::ProcessingStage stage) {
+imagestore::PipelineStage mapStage(imager::ProcessingStage stage) {
   using IP = imager::ProcessingStage;
   using SP = imagestore::PipelineStage;
   switch (stage) {
@@ -94,6 +96,8 @@ static imagestore::PipelineStage mapStage(imager::ProcessingStage stage) {
   }
   return SP::Reading;
 }
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // main
@@ -255,11 +259,7 @@ int main(int argc, char* argv[]) {
 
   imagestore::ProgressReporter progress(mode, stats, slots, resultLog, jobs, dryRun, startTime, deleteMode);
   imagestore::MemoryReporter memoryReporter(
-    memoryReport,
-    std::chrono::seconds(memoryIntervalSec),
-    stats,
-    img.metrics(),
-    resultLog
+    memoryReport, std::chrono::seconds(memoryIntervalSec), stats, img.metrics(), resultLog
   );
 
   // Bounded semaphore — caps files in-flight at `jobs`

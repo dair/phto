@@ -6,6 +6,7 @@
 #include <auth/types/AuthError.h>
 #include <auth/types/User.h>
 #include <database/Database.h>
+#include <database/Pagination.h>
 
 #include <algorithm>
 #include <string>

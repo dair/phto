@@ -40,10 +40,6 @@ target_link_libraries(auth_tests
         ${CPPUNIT_LIBRARIES}
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(auth_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 include(CTest)
 add_test(NAME auth_tests COMMAND auth_tests)
 
@@ -59,10 +55,6 @@ target_link_libraries(auth_userstore_tests
         auth_lib
         ${CPPUNIT_LIBRARIES}
 )
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(auth_userstore_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
 
 add_test(NAME auth_userstore_tests COMMAND auth_userstore_tests)
 
@@ -80,10 +72,6 @@ target_link_libraries(auth_token_tests
         ${CPPUNIT_LIBRARIES}
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(auth_token_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 add_test(NAME auth_token_tests COMMAND auth_token_tests)
 
 # Validation tests — separate executable (has its own main())
@@ -98,9 +86,5 @@ target_link_libraries(auth_validation_tests
         auth_lib
         ${CPPUNIT_LIBRARIES}
 )
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(auth_validation_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
 
 add_test(NAME auth_validation_tests COMMAND auth_validation_tests)

@@ -1,9 +1,11 @@
+#include <validations/aae/aae_validator.h>
+
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <vector>
 
-#include <validations/aae/aae_validator.h>
+using namespace aae_detail;
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {

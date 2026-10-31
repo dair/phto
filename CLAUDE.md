@@ -9,9 +9,10 @@ cmake --preset default && cmake --build --preset default
 ctest --preset default
 ```
 
-Build artifacts go to `build/imager-build` (configured in `CMakePresets.json`).
+Build artifacts go to `build/` in the repo root (configured in `CMakePresets.json`).
 
 - **Compiler**: clang++ preferred (auto-selected), g++ fallback — both supported; override with `-DCMAKE_CXX_COMPILER=...` or `CXX` env var
+- **Warnings**: `-Wall -Wextra -Wpedantic -Werror` on all first-party targets (set centrally in the root `CMakeLists.txt`; FetchContent deps are `SYSTEM`). Disable `-Werror` with `-DIMAGER_WERROR=OFF` (default `ON`), e.g. when packaging against a newer compiler
 - **Standard**: C++23
 - **CMake**: ≥ 3.28
 
@@ -21,7 +22,7 @@ Build artifacts go to `build/imager-build` (configured in `CMakePresets.json`).
 ├── blob/          # Header-only shared-ownership binary buffer (namespace blob)
 ├── coro/          # Header-only coroutine primitives: Task<T>, ThreadPool, whenAll, blockOn (namespace coro)
 ├── config/        # TOML config parser (toml++ via FetchContent)
-├── database/      # SQLite wrapper (system SQLite via find_package — intentional system dep)
+├── database/      # SQLite wrapper (system SQLite via find_package — intentional system dep); one type per header: Database.h, File.h, Pagination.h, DatabaseException.h
 ├── validations/   # Format validators (system libjpeg/libpng/libheif/libav*; each has CLAUDE.md)
 │   ├── jpeg/
 │   ├── png/

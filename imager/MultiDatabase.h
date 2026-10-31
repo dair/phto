@@ -4,6 +4,8 @@
 #include <coro/Task.h>
 #include <coro/ThreadPool.h>
 #include <database/Database.h>
+#include <database/File.h>
+#include <database/Pagination.h>
 #include <metrics/Metrics.h>
 
 #include <memory>

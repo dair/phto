@@ -2,6 +2,7 @@
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
+#include <validations/aae/aae_validator.h>
 
 #include <cstdint>
 #include <cstring>
@@ -10,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include <validations/aae/aae_validator.h>
+using namespace aae_detail;
 
 namespace {
 

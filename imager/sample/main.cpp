@@ -28,6 +28,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -37,7 +38,9 @@ using namespace imager;
 // Helpers
 // ---------------------------------------------------------------------------
 
-static void printImage(const ImageInfo& img) {
+namespace {
+
+void printImage(const ImageInfo& img) {
   std::cout << img.id << '\t' << img.name << '\t' << img.size << '\t' << img.ext;
   if (!img.tags.empty()) {
     std::cout << '\t';
@@ -51,10 +54,12 @@ static void printImage(const ImageInfo& img) {
   std::cout << '\n';
 }
 
-static std::optional<uint32_t> parseUInt(const std::string& s) {
+std::optional<uint32_t> parseUInt(const std::string& s) {
   try {
     return static_cast<uint32_t>(std::stoul(s));
-  } catch (...) {
+  } catch (const std::invalid_argument&) {
+    return std::nullopt;
+  } catch (const std::out_of_range&) {
     return std::nullopt;
   }
 }
@@ -64,7 +69,7 @@ struct PageArgs {
   uint32_t limit{50};
 };
 
-static PageArgs parsePage(std::vector<std::string>& args) {
+PageArgs parsePage(std::vector<std::string>& args) {
   PageArgs p;
   for (auto it = args.begin(); it != args.end();) {
     if (*it == "--offset" && std::next(it) != args.end()) {
@@ -84,7 +89,7 @@ static PageArgs parsePage(std::vector<std::string>& args) {
   return p;
 }
 
-static const char* errName(ErrorCode c) {
+const char* errName(ErrorCode c) {
   switch (c) {
     case ErrorCode::Ok:
       return "Ok";
@@ -109,6 +114,8 @@ static const char* errName(ErrorCode c) {
   }
   return "Unknown";
 }
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // main

@@ -2,6 +2,8 @@
 
 #include <cstddef>
 
+namespace aae_detail {
+
 enum ValidationResult {
   INVALID = -1, // the input is AAE data that is actually broken/malformed XML
   VALID = 0,    // the input is a valid AAE plist file
@@ -9,3 +11,5 @@ enum ValidationResult {
 };
 
 ValidationResult validateAae(const void* data, size_t dataSize);
+
+} // namespace aae_detail

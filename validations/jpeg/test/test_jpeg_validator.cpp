@@ -2,12 +2,13 @@
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
+#include <validations/jpeg/jpeg_validator.h>
 
 #include <cstring>
 #include <fstream>
 #include <vector>
 
-#include <validations/jpeg/jpeg_validator.h>
+using namespace jpeg_detail;
 
 class JpegValidatorTest: public CppUnit::TestFixture {
   CPPUNIT_TEST_SUITE(JpegValidatorTest);

@@ -18,8 +18,12 @@ database/
 ├── CLAUDE.md
 ├── README.md
 ├── CMakeLists.txt              # Top-level: builds library, sample, and tests
-├── Database.h                  # Public header
+├── Database.h                  # Database class (includes File.h and Pagination.h)
 ├── Database.cpp                # Implementation
+├── File.h                      # struct File
+├── Pagination.h                # struct Pagination
+├── DatabaseException.h         # DatabaseErrorCode + DatabaseException
+├── DatabaseException.cpp
 ├── sample/
 │   ├── CMakeLists.txt          # Builds dbcli executable
 │   └── main.cpp                # CLI sample application
@@ -85,7 +89,10 @@ Enable foreign keys on every connection: `PRAGMA foreign_keys = ON;`
 
 ### Supporting types
 
+Each type has its own header (plan 0012, L3). `Database.h` includes `database/File.h` and `database/Pagination.h`, but it does not include `database/DatabaseException.h` and it does not re-export it. Include `<database/DatabaseException.h>` directly wherever you catch or throw `DatabaseException`.
+
 ```cpp
+// database/File.h
 struct File {
     std::string id;
     std::string name;
@@ -93,6 +100,7 @@ struct File {
     std::string ext;
 };
 
+// database/Pagination.h
 struct Pagination {
     uint32_t offset = 0;
     uint32_t limit = 50;  // sensible default page size
@@ -108,6 +116,7 @@ Use SQL `LIMIT ? OFFSET ?`. The `Pagination` struct is optional on query methods
 Define a custom exception hierarchy:
 
 ```cpp
+// database/DatabaseException.h
 enum class DatabaseErrorCode {
     CreationFailed,
     OpenFailed,

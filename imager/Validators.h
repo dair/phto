@@ -1,6 +1,7 @@
 #pragma once
 
-#include <imager/ImageValidator.h>
+#include <imager/IStreamValidator.h>
+#include <imager/IValidator.h>
 
 #include <memory>
 #include <vector>

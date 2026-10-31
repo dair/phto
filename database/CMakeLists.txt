@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(SQLite3 REQUIRED)
 
 # Database library
-add_library(database Database.cpp)
+add_library(database Database.cpp DatabaseException.cpp)
 
 target_include_directories(database
     PUBLIC
@@ -19,10 +19,6 @@ target_link_libraries(database
     PRIVATE SQLite::SQLite3
     PUBLIC metrics_lib
 )
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(database PRIVATE -Wall -Wextra -Wpedantic)
-endif()
 
 # Sample CLI application
 add_subdirectory(sample)

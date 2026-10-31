@@ -39,9 +39,5 @@ target_link_libraries(metrics_tests
         ${CPPUNIT_LIBRARIES}
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(metrics_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 include(CTest)
 add_test(NAME metrics_tests COMMAND metrics_tests)

@@ -2,6 +2,8 @@
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
+#include <database/Database.h>
+#include <database/DatabaseException.h>
 
 #include <atomic>
 #include <filesystem>
@@ -9,18 +11,20 @@
 #include <thread>
 #include <vector>
 
-#include "database/Database.h"
-
 namespace fs = std::filesystem;
 using namespace db;
 
 // ---------------------------------------------------------------------------
 // Helper: create a unique temp db path
 // ---------------------------------------------------------------------------
-static fs::path tempDbPath(const std::string& suffix = "") {
+namespace {
+
+fs::path tempDbPath(const std::string& suffix = "") {
   return fs::temp_directory_path() /
          ("db_test_" + suffix + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".db");
 }
+
+} // namespace
 
 // ============================================================================
 // Construction tests

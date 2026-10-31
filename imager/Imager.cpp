@@ -1,9 +1,14 @@
-#include "imager/Imager.h"
+#include "Imager.h"
 
 #include <coro/BlockOn.h>
 #include <coro/ThreadPool.h>
 #include <coro/WhenAll.h>
-#include <imager/ImageValidator.h>
+#include <database/DatabaseException.h>
+#include <database/File.h>
+#include <database/Pagination.h>
+#include <imager/IStreamValidator.h>
+#include <imager/IValidator.h>
+#include <imager/ValidationResult.h>
 #include <metrics/Gauge.h>
 #include <metrics/Metrics.h>
 
@@ -34,13 +39,15 @@ namespace imager {
 // ---------------------------------------------------------------------------
 
 // Files above this size use streaming paths instead of full Blob allocation.
-static constexpr uint64_t kStreamingThreshold = 256ULL * 1024ULL * 1024ULL; // 256 MB
+static constexpr uint64_t STREAMING_THRESHOLD = 256ULL * 1024ULL * 1024ULL; // 256 MB
 
 // ---------------------------------------------------------------------------
 // Pool sizing
 // ---------------------------------------------------------------------------
 
-static size_t defaultPoolSize(size_t numTargets) {
+namespace {
+
+size_t defaultPoolSize(size_t numTargets) {
   size_t hw = std::thread::hardware_concurrency();
   if (hw == 0) {
     hw = 4;
@@ -48,6 +55,8 @@ static size_t defaultPoolSize(size_t numTargets) {
   // At least 4, at least numTargets, at most 16
   return std::clamp(hw, std::max<size_t>(4u, numTargets), size_t{16});
 }
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Impl
@@ -107,7 +116,7 @@ struct Imager::Impl {
     return (it != fileSizeLimits.end()) ? it->second : 0;
   }
 
-  /// Core image-add pipeline for large files (> kStreamingThreshold).
+  /// Core image-add pipeline for large files (> STREAMING_THRESHOLD).
   AddResult addFileLarge(
     const std::filesystem::path& path, const std::string& displayName, uint64_t fileSize, StageCallback onStage
   );
@@ -591,7 +600,7 @@ AddResult Imager::addFile(const std::filesystem::path& path, const std::string& 
   }
 
   // Step 2: Route to streaming path for large files.
-  if (fileSize > kStreamingThreshold) {
+  if (fileSize > STREAMING_THRESHOLD) {
     return m_impl->addFileLarge(path, displayName, fileSize, std::move(onStage));
   }
 
@@ -658,7 +667,7 @@ AddResult Imager::addFile(const std::filesystem::path& path, const std::string& 
 }
 
 // ---------------------------------------------------------------------------
-// Impl::addFileLarge — streaming pipeline for files > kStreamingThreshold
+// Impl::addFileLarge — streaming pipeline for files > STREAMING_THRESHOLD
 // ---------------------------------------------------------------------------
 
 AddResult Imager::Impl::addFileLarge(
@@ -939,7 +948,7 @@ AddResult Imager::validateOnlyFile(const std::filesystem::path& path, const std:
   }
 
   // Small file: load as Blob and use existing validateOnly
-  if (fileSize <= kStreamingThreshold) {
+  if (fileSize <= STREAMING_THRESHOLD) {
     Blob blob;
     try {
       blob = Blob(fileSize, &m_impl->metrics);
@@ -1260,7 +1269,7 @@ Imager::Impl::ReadHashResult Imager::Impl::readAndHash(const std::filesystem::pa
     onStage(ProcessingStage::Reading);
   }
 
-  if (fileSize <= kStreamingThreshold) {
+  if (fileSize <= STREAMING_THRESHOLD) {
     // Small file: read into Blob, hash single-shot
     Blob blob;
     try {

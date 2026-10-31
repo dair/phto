@@ -37,9 +37,5 @@ if(DEFINED FFMPEG_INCLUDE_DIRS)
 endif()
 target_link_libraries(mov_validator PRIVATE ${FFMPEG_TARGETS})
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(mov_validator PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 add_subdirectory(sample)
 add_subdirectory(test)

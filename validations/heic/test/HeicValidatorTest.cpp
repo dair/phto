@@ -3,6 +3,7 @@
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
 #include <libheif/heif.h>
+#include <validations/heic/heic_validator.h>
 
 #include <cstdint>
 #include <cstring>
@@ -10,7 +11,7 @@
 #include <fstream>
 #include <vector>
 
-#include <validations/heic/heic_validator.h>
+using namespace heic_detail;
 
 // ---------------------------------------------------------------------------
 // Minimal valid HEIF/AV1 (AVIF) file — 4x4 solid-gray image, 273 bytes.

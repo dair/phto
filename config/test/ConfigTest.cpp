@@ -1,3 +1,4 @@
+#include <config/Config.h>
 #include <cppunit/TestFixture.h>
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
@@ -7,8 +8,6 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
-
-#include "config/Config.h"
 
 namespace fs = std::filesystem;
 using config::loadConfig;

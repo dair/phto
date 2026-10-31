@@ -62,7 +62,7 @@ cd imager
 
 ## Building
 
-Imager uses CMake presets. The default preset compiles with Clang and places all build artifacts in `/tmp/imager-build` so the source tree stays clean.
+Imager uses CMake presets. The default preset compiles with Clang and places all build artifacts in `build/` (gitignored) under the repo root.
 
 ```bash
 # Configure
@@ -79,10 +79,10 @@ Build artifacts:
 
 | Artifact | Location |
 |----------|----------|
-| `libimager.a` | `/tmp/imager-build/imager/` |
-| `imager_cli` | `/tmp/imager-build/imager/sample/` |
-| `imagestore` | `/tmp/imager-build/imagestore/` |
-| Test executables | `/tmp/imager-build/*/test/` |
+| `libimager.a` | `build/imager/` |
+| `imager_cli` | `build/imager/sample/` |
+| `imagestore` | `build/imagestore/` |
+| Test executables | `build/*/test/` |
 
 ### Switching to GCC
 
@@ -108,18 +108,12 @@ cmake --build build
 ctest --preset default
 ```
 
-All tests use temporary directories and clean up after themselves. A passing run should show output similar to:
+All tests use temporary directories and clean up after themselves. A passing run ends with the summary below (per-test lines omitted; `ctest --preset default -N` lists all 37 tests):
 
 ```
-Test project /tmp/imager-build
-    Start 1: DatabaseTests
-1/8 Test #1: DatabaseTests ...........  Passed   0.23 sec
-    Start 2: jpeg_validator_tests
-2/8 Test #2: jpeg_validator_tests ....  Passed   0.01 sec
+Test project <repo>/build
     ...
-8/8 Test #8: ImagerTests .............  Passed   0.47 sec
-
-100% tests passed, 0 tests failed out of 8
+100% tests passed, 0 tests failed out of 37
 ```
 
 To see verbose test output on failure:

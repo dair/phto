@@ -44,9 +44,5 @@ target_link_libraries(libimager
         OpenSSL::Crypto
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(libimager PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 add_subdirectory(sample)
 add_subdirectory(test)

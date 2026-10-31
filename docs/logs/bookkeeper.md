@@ -10,3 +10,14 @@
 - **Task**: Document bounded uploads, trusted proxies, access log and configurable timings; finish plan status bookkeeping.
 - **Outcome**: Status lines for 0005, 0006, 0015; 0012 re-checked (still in progress: -Werror and Database.h split open); 0021 settings hygiene marked done; plan/README.md status table and Next work list; API.md and DEPLOYMENT.md updated (413 behaviour, new config keys, trusted_proxies, access log, memory sizing); README.md and CLAUDE.md (Crow patch, test list); ANALYSIS.md Phase 2 section. 1 MiB drain and 100-continue handling confirmed against third_party/crow/crow-body-sink.patch.
 - **Next Step**: Replace the placeholder test count (36) in CLAUDE.md and ANALYSIS.md with the final `ctest -N` number once le-test reports.
+
+## [2026-10-31 22:00] - Plan 0012 tidy-up documentation
+- **Agent**: bookkeeper (td-docs)
+- **Task**: Document the completed plan-0012 work from td-dev's summary; correct build-directory claims.
+- **Outcome**: 0012 status set to Implemented with a per-item table; plan/README.md status row updated and the 0012 "Next work" entry removed; CLAUDE.md (`-Werror`/`IMAGER_WERROR`, database headers, build dir), CODING.md (database layout, exception snippet, warnings, build dir), database/CLAUDE.md (header split), validations/{jpeg,png,heic,nef,mov}/CLAUDE.md (`*_detail` namespaces). Build dir corrected to `build/` (CMakePresets.json:7) in CLAUDE.md, CODING.md, docs/user/architecture.md, docs/user/getting-started.md, 0021. Historical docs/logs entries left as-is. Verified against code: root CMakeLists.txt option, SYSTEM on both FetchContent deps, database/ headers, imager/ split headers, `*_detail` namespaces.
+- **Next Step**: Match the 0012 table to td-test's audit. getting-started.md ctest sample output is stale (8 tests) and database/CMakeLists.txt:24 still has a redundant per-target warning line.
+
+## [2026-10-31 23:00] - kFoo rename follow-up
+- **Agent**: bookkeeper (td-docs)
+- **Task**: Update current docs after `kStreamingThreshold` -> `STREAMING_THRESHOLD` and the project-wide L4 rename.
+- **Outcome**: docs/DEVELOPMENT_NOTES.md and docs/plan/README.md (`imager/Imager.cpp:42`, verified in code) updated; 0012 table rows M1, L1, L4 and remainder note revised. getting-started.md ctest sample refreshed to an excerpt ending "out of 37". Historical plans 0009/0017/0019 and logs untouched.

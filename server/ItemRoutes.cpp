@@ -70,7 +70,7 @@ crow::response listItems(imager::Imager& imager, const crow::request& req) {
 
   std::vector<std::string> tags;
   const auto tagParams = req.url_params.get_list("tags", false);
-  for (const std::string& raw : tagParams) {
+  for (const char* raw : tagParams) {
     std::string_view rest = raw;
     while (true) {
       auto comma = rest.find(',');

@@ -229,4 +229,4 @@ CMakeLists.txt
   └── imagestore/       → imagestore (executable, links libimager)
 ```
 
-All artifacts go to `/tmp/imager-build` via the default CMake preset.
+All artifacts go to `build/` in the repo root via the default CMake preset.

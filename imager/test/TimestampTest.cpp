@@ -1,8 +1,11 @@
+#include <config/Config.h>
 #include <cppunit/TestFixture.h>
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TextTestRunner.h>
 #include <fcntl.h>
+#include <imager/FileTimestamp.h>
+#include <imager/Imager.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -14,10 +17,6 @@
 #include <string>
 #include <system_error>
 #include <vector>
-
-#include "config/Config.h"
-#include "imager/FileTimestamp.h"
-#include "imager/Imager.h"
 
 namespace fs = std::filesystem;
 using namespace imager;
@@ -157,14 +156,14 @@ public:
     auto src = writeTempFile(m_tmpDir, "src.bin", {0x01, 0x02, 0x03});
     auto dst = writeTempFile(m_tmpDir, "dst.bin", {0x01, 0x02, 0x03});
 
-    static constexpr time_t kKnownSec = 1577836800; // 2020-01-01 00:00:00 UTC
-    setKnownTimestamps(src, kKnownSec, 0);
+    static constexpr time_t KNOWN_SEC = 1577836800; // 2020-01-01 00:00:00 UTC
+    setKnownTimestamps(src, KNOWN_SEC, 0);
 
     copyTimestamps(src, dst);
 
     auto [dstAtime, dstMtime] = getTimestamps(dst);
-    CPPUNIT_ASSERT_EQUAL(kKnownSec, dstMtime.tv_sec);
-    CPPUNIT_ASSERT_EQUAL(kKnownSec, dstAtime.tv_sec);
+    CPPUNIT_ASSERT_EQUAL(KNOWN_SEC, dstMtime.tv_sec);
+    CPPUNIT_ASSERT_EQUAL(KNOWN_SEC, dstAtime.tv_sec);
   }
 
   /// copyTimestamps preserves sub-second nanoseconds.
@@ -172,14 +171,14 @@ public:
     auto src = writeTempFile(m_tmpDir, "src_ns.bin", {0xAA, 0xBB});
     auto dst = writeTempFile(m_tmpDir, "dst_ns.bin", {0xAA, 0xBB});
 
-    static constexpr time_t kSec = 1577836800;
-    static constexpr long kNsec = 123456789L;
-    setKnownTimestamps(src, kSec, kNsec);
+    static constexpr time_t SEC = 1577836800;
+    static constexpr long NSEC = 123456789L;
+    setKnownTimestamps(src, SEC, NSEC);
 
     copyTimestamps(src, dst);
 
     auto [dstAtime, dstMtime] = getTimestamps(dst);
-    CPPUNIT_ASSERT_EQUAL(kSec, dstMtime.tv_sec);
+    CPPUNIT_ASSERT_EQUAL(SEC, dstMtime.tv_sec);
     // Nanosecond precision depends on the filesystem; only assert if the FS
     // stored non-zero nsec in the source (i.e., it supports sub-second).
     auto [srcAtime, srcMtime] = getTimestamps(src);
@@ -218,8 +217,8 @@ public:
     auto jpeg = makeMinimalJpeg();
     auto srcPath = writeTempFile(srcDir, "photo.jpg", jpeg);
 
-    static constexpr time_t kKnown = 1577836800; // 2020-01-01 00:00:00 UTC
-    setKnownTimestamps(srcPath, kKnown, 0);
+    static constexpr time_t KNOWN = 1577836800; // 2020-01-01 00:00:00 UTC
+    setKnownTimestamps(srcPath, KNOWN, 0);
 
     Imager imager(cfg);
     auto result = imager.addFile(srcPath, "photo.jpg");
@@ -230,7 +229,7 @@ public:
 
     auto [storedAtimeA, storedMtimeA] = getTimestamps(stored);
     (void)storedAtimeA;
-    CPPUNIT_ASSERT_EQUAL_MESSAGE("stored mtime must match source", kKnown, storedMtimeA.tv_sec);
+    CPPUNIT_ASSERT_EQUAL_MESSAGE("stored mtime must match source", KNOWN, storedMtimeA.tv_sec);
 
     std::error_code ec;
     fs::remove_all(srcDir, ec);
@@ -248,8 +247,8 @@ public:
     auto jpeg = makeMinimalJpeg();
     auto srcPath = writeTempFile(srcDir, "photo2.jpg", jpeg);
 
-    static constexpr time_t kKnown = 1609459200; // 2021-01-01 00:00:00 UTC
-    setKnownTimestamps(srcPath, kKnown, 0);
+    static constexpr time_t KNOWN = 1609459200; // 2021-01-01 00:00:00 UTC
+    setKnownTimestamps(srcPath, KNOWN, 0);
 
     Imager imager(cfg);
     auto result = imager.addFile(srcPath, "photo2.jpg");
@@ -257,8 +256,8 @@ public:
 
     auto stored = storedFilePath(root, result.id, ".jpg");
     auto [storedAtime, storedMtime] = getTimestamps(stored);
-    CPPUNIT_ASSERT_EQUAL_MESSAGE("stored atime must match source", kKnown, storedAtime.tv_sec);
-    CPPUNIT_ASSERT_EQUAL_MESSAGE("stored mtime must match source", kKnown, storedMtime.tv_sec);
+    CPPUNIT_ASSERT_EQUAL_MESSAGE("stored atime must match source", KNOWN, storedAtime.tv_sec);
+    CPPUNIT_ASSERT_EQUAL_MESSAGE("stored mtime must match source", KNOWN, storedMtime.tv_sec);
 
     std::error_code ec;
     fs::remove_all(srcDir, ec);
@@ -276,9 +275,9 @@ public:
     auto jpeg = makeMinimalJpeg();
     auto srcPath = writeTempFile(srcDir, "photo3.jpg", jpeg);
 
-    static constexpr time_t kSec = 1577836800;
-    static constexpr long kNsec = 987654321L;
-    setKnownTimestamps(srcPath, kSec, kNsec);
+    static constexpr time_t SEC = 1577836800;
+    static constexpr long NSEC = 987654321L;
+    setKnownTimestamps(srcPath, SEC, NSEC);
 
     // Verify the source FS actually stored the nsec (skip assertion if not).
     auto [srcAtime, srcMtime] = getTimestamps(srcPath);
@@ -291,7 +290,7 @@ public:
     auto [storedAtimeC, storedMtimeC] = getTimestamps(stored);
     (void)storedAtimeC;
 
-    CPPUNIT_ASSERT_EQUAL_MESSAGE("stored mtime seconds must match", kSec, storedMtimeC.tv_sec);
+    CPPUNIT_ASSERT_EQUAL_MESSAGE("stored mtime seconds must match", SEC, storedMtimeC.tv_sec);
     if (srcMtime.tv_nsec != 0) {
       CPPUNIT_ASSERT_EQUAL_MESSAGE("stored mtime nanoseconds must match", srcMtime.tv_nsec, storedMtimeC.tv_nsec);
     }
@@ -311,8 +310,8 @@ public:
     auto jpeg = makeMinimalJpeg();
     auto srcPath = writeTempFile(srcDir, "multi.jpg", jpeg);
 
-    static constexpr time_t kKnown = 1640995200; // 2022-01-01 00:00:00 UTC
-    setKnownTimestamps(srcPath, kKnown, 0);
+    static constexpr time_t KNOWN = 1640995200; // 2022-01-01 00:00:00 UTC
+    setKnownTimestamps(srcPath, KNOWN, 0);
 
     Imager imager(cfg);
     auto result = imager.addFile(srcPath, "multi.jpg");
@@ -324,7 +323,7 @@ public:
       auto [storedAtimeD, storedMtimeD] = getTimestamps(stored);
       (void)storedAtimeD;
       CPPUNIT_ASSERT_EQUAL_MESSAGE(
-        "stored mtime must match source on root " + std::to_string(i), kKnown, storedMtimeD.tv_sec
+        "stored mtime must match source on root " + std::to_string(i), KNOWN, storedMtimeD.tv_sec
       );
     }
 

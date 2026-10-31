@@ -1,10 +1,12 @@
 #pragma once
 
+#include <database/File.h>
+#include <database/Pagination.h>
+
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -15,43 +17,6 @@ class Metrics;
 } // namespace metrics
 
 namespace db {
-
-// ---------------------------------------------------------------------------
-// Error handling
-// ---------------------------------------------------------------------------
-
-enum class DatabaseErrorCode {
-  CreationFailed,      ///< New database file could not be created
-  OpenFailed,          ///< Existing database file could not be opened
-  QueryFailed,         ///< A SQL statement failed to execute
-  NotFound,            ///< Requested entity does not exist
-  ConstraintViolation, ///< Unique/FK constraint was violated
-};
-
-class DatabaseException: public std::runtime_error {
-public:
-  DatabaseException(DatabaseErrorCode code, const std::string& message);
-  DatabaseErrorCode code() const noexcept;
-
-private:
-  DatabaseErrorCode m_code;
-};
-
-// ---------------------------------------------------------------------------
-// Supporting types
-// ---------------------------------------------------------------------------
-
-struct File {
-  std::string id;
-  std::string name;
-  uint64_t size{0}; ///< File size in bytes; values up to 2^63-1 are exact
-  std::string ext;
-};
-
-struct Pagination {
-  uint32_t offset{0};
-  uint32_t limit{50};
-};
 
 // ---------------------------------------------------------------------------
 // Database

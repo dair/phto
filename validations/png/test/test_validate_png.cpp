@@ -6,12 +6,13 @@
 #include <cppunit/ui/text/TestRunner.h>
 #include <png.h>
 #include <setjmp.h>
+#include <validations/png/validate_png.h>
 
 #include <cstdint>
 #include <cstring>
 #include <vector>
 
-#include <validations/png/validate_png.h>
+using namespace png_detail;
 
 // ---------------------------------------------------------------------------
 // Helper: write a minimal 1x1 grayscale PNG into a memory buffer

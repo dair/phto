@@ -5,8 +5,12 @@ MOV/MP4 video validator using the system-installed FFmpeg libraries (libavformat
 ## Public API
 
 ```cpp
+namespace mov_detail {
+
 enum ValidationResult { INVALID = -1, VALID = 0, WRONG = 1 };
 ValidationResult validateMov(const void* data, size_t dataSize);
+
+} // namespace mov_detail
 ```
 
 Returns `WRONG` if the data lacks a recognized ISOBMFF box type at offset 4, `INVALID` if the container is

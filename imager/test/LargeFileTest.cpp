@@ -1,6 +1,8 @@
+#include <config/Config.h>
 #include <cppunit/TestFixture.h>
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
+#include <imager/Imager.h>
 
 #include <atomic>
 #include <cstdint>
@@ -8,9 +10,6 @@
 #include <fstream>
 #include <string>
 #include <vector>
-
-#include "config/Config.h"
-#include "imager/Imager.h"
 
 namespace fs = std::filesystem;
 using namespace imager;
@@ -30,16 +29,16 @@ static config::AppConfig makeTempConfig(const std::string& suffix) {
   config::AppConfig cfg;
   cfg.targets.push_back({base / "storage", base / "imager.db"});
   // Populate defaults (same as loadConfig would do)
-  static constexpr uint64_t kMB = 1024ULL * 1024ULL;
-  cfg.fileSizeLimits["jpg"] = 250ULL * kMB;
-  cfg.fileSizeLimits["jpeg"] = 250ULL * kMB;
-  cfg.fileSizeLimits["png"] = 500ULL * kMB;
-  cfg.fileSizeLimits["heic"] = 250ULL * kMB;
-  cfg.fileSizeLimits["heif"] = 250ULL * kMB;
-  cfg.fileSizeLimits["nef"] = 500ULL * kMB;
-  cfg.fileSizeLimits["aae"] = 1ULL * kMB;
-  cfg.fileSizeLimits["mov"] = 100ULL * 1024ULL * kMB;
-  cfg.fileSizeLimits["mp4"] = 100ULL * 1024ULL * kMB;
+  static constexpr uint64_t MB = 1024ULL * 1024ULL;
+  cfg.fileSizeLimits["jpg"] = 250ULL * MB;
+  cfg.fileSizeLimits["jpeg"] = 250ULL * MB;
+  cfg.fileSizeLimits["png"] = 500ULL * MB;
+  cfg.fileSizeLimits["heic"] = 250ULL * MB;
+  cfg.fileSizeLimits["heif"] = 250ULL * MB;
+  cfg.fileSizeLimits["nef"] = 500ULL * MB;
+  cfg.fileSizeLimits["aae"] = 1ULL * MB;
+  cfg.fileSizeLimits["mov"] = 100ULL * 1024ULL * MB;
+  cfg.fileSizeLimits["mp4"] = 100ULL * 1024ULL * MB;
   return cfg;
 }
 
@@ -91,8 +90,8 @@ public:
 
   /// A 1-byte-over-limit JPEG should be rejected as TooLarge.
   void testJpegTooLargeRejected() {
-    static constexpr uint64_t kMB = 1024ULL * 1024ULL;
-    uint64_t overLimit = 250ULL * kMB + 1;
+    static constexpr uint64_t MB = 1024ULL * 1024ULL;
+    uint64_t overLimit = 250ULL * MB + 1;
     auto p = writeTempFile(m_tmpDir, "big.jpg", overLimit);
     Imager img(m_cfg);
     auto res = img.addFile(p, "big.jpg");
@@ -105,8 +104,8 @@ public:
 
   /// An AAE file > 1 MB should be rejected as TooLarge.
   void testAaeTooLargeRejected() {
-    static constexpr uint64_t kMB = 1024ULL * 1024ULL;
-    uint64_t overLimit = 1ULL * kMB + 1;
+    static constexpr uint64_t MB = 1024ULL * 1024ULL;
+    uint64_t overLimit = 1ULL * MB + 1;
     auto p = writeTempFile(m_tmpDir, "big.aae", overLimit);
     Imager img(m_cfg);
     auto res = img.addFile(p, "big.aae");
@@ -116,8 +115,8 @@ public:
   /// An unknown extension has no size limit — should not get TooLarge.
   /// It will get UnsupportedFormat since no validator handles it.
   void testUnknownExtNoLimit() {
-    static constexpr uint64_t kMB = 1024ULL * 1024ULL;
-    auto p = writeTempFile(m_tmpDir, "data.xyz", 500ULL * kMB);
+    static constexpr uint64_t MB = 1024ULL * 1024ULL;
+    auto p = writeTempFile(m_tmpDir, "data.xyz", 500ULL * MB);
     Imager img(m_cfg);
     auto res = img.addFile(p, "data.xyz");
     CPPUNIT_ASSERT(res.code != ErrorCode::TooLarge);
@@ -127,8 +126,8 @@ public:
   /// A JPEG 1 byte under the limit should not get TooLarge.
   /// It will fail validation (garbage content), not TooLarge.
   void testJpegJustUnderLimit() {
-    static constexpr uint64_t kMB = 1024ULL * 1024ULL;
-    uint64_t underLimit = 250ULL * kMB - 1;
+    static constexpr uint64_t MB = 1024ULL * 1024ULL;
+    uint64_t underLimit = 250ULL * MB - 1;
     auto p = writeTempFile(m_tmpDir, "notreal.jpg", underLimit);
     Imager img(m_cfg);
     auto res = img.addFile(p, "notreal.jpg");
@@ -168,7 +167,7 @@ public:
     fs::remove_all(m_base);
   }
 
-  /// Generate a valid MOV larger than kStreamingThreshold (256 MB) by
+  /// Generate a valid MOV larger than STREAMING_THRESHOLD (256 MB) by
   /// wrapping a real MOV fixture in extra padding. This exercises the
   /// streaming write path without needing a real camera MOV.
   ///
@@ -185,8 +184,8 @@ public:
     }
 
     // Build a >256 MB file: real MOV header + padding zeros.
-    static constexpr uint64_t kStreamingThreshold = 256ULL * 1024ULL * 1024ULL;
-    static constexpr uint64_t kTargetSize = kStreamingThreshold + 1024ULL * 1024ULL; // 257 MB
+    static constexpr uint64_t STREAMING_THRESHOLD = 256ULL * 1024ULL * 1024ULL;
+    static constexpr uint64_t TARGET_SIZE = STREAMING_THRESHOLD + 1024ULL * 1024ULL; // 257 MB
 
     // Read real MOV fixture.
     std::vector<uint8_t> movData;
@@ -210,15 +209,15 @@ public:
       static constexpr size_t CHUNK = 64 * 1024;
       std::vector<uint8_t> zeros(CHUNK, 0);
       uint64_t written = movData.size();
-      while (written < kTargetSize) {
-        size_t n = std::min<uint64_t>(CHUNK, kTargetSize - written);
+      while (written < TARGET_SIZE) {
+        size_t n = std::min<uint64_t>(CHUNK, TARGET_SIZE - written);
         out.write(reinterpret_cast<const char*>(zeros.data()), static_cast<std::streamsize>(n));
         written += n;
       }
       CPPUNIT_ASSERT(out.good());
     }
 
-    CPPUNIT_ASSERT(fs::file_size(largeMov) >= kStreamingThreshold);
+    CPPUNIT_ASSERT(fs::file_size(largeMov) >= STREAMING_THRESHOLD);
 
     Imager img(m_cfg);
     auto res = img.addFile(largeMov, "large.mov");
@@ -238,7 +237,7 @@ public:
       for (auto& entry : fs::recursive_directory_iterator(storageRoot)) {
         if (entry.path().extension() == ".mov") {
           found = true;
-          CPPUNIT_ASSERT(fs::file_size(entry.path()) >= kStreamingThreshold);
+          CPPUNIT_ASSERT(fs::file_size(entry.path()) >= STREAMING_THRESHOLD);
           break;
         }
       }
@@ -253,8 +252,8 @@ public:
       return; // skip
     }
 
-    static constexpr uint64_t kStreamingThreshold = 256ULL * 1024ULL * 1024ULL;
-    static constexpr uint64_t kTargetSize = kStreamingThreshold + 512ULL * 1024ULL;
+    static constexpr uint64_t STREAMING_THRESHOLD = 256ULL * 1024ULL * 1024ULL;
+    static constexpr uint64_t TARGET_SIZE = STREAMING_THRESHOLD + 512ULL * 1024ULL;
 
     std::vector<uint8_t> movData;
     {
@@ -275,8 +274,8 @@ public:
       static constexpr size_t CHUNK = 64 * 1024;
       std::vector<uint8_t> zeros(CHUNK, 0);
       uint64_t written = movData.size();
-      while (written < kTargetSize) {
-        size_t n = std::min<uint64_t>(CHUNK, kTargetSize - written);
+      while (written < TARGET_SIZE) {
+        size_t n = std::min<uint64_t>(CHUNK, TARGET_SIZE - written);
         out.write(reinterpret_cast<const char*>(zeros.data()), static_cast<std::streamsize>(n));
         written += n;
       }
@@ -295,8 +294,8 @@ public:
 
   /// validateOnlyFile rejects files that exceed their format limit.
   void testValidateOnlyFileLargeRejectsOversized() {
-    static constexpr uint64_t kMB = 1024ULL * 1024ULL;
-    uint64_t overLimit = 250ULL * kMB + 1; // just over JPEG limit
+    static constexpr uint64_t MB = 1024ULL * 1024ULL;
+    uint64_t overLimit = 250ULL * MB + 1; // just over JPEG limit
     auto p = writeTempFile(m_tmpDir, "toobig.jpg", overLimit);
     Imager img(m_cfg);
     auto res = img.validateOnlyFile(p, "toobig.jpg");

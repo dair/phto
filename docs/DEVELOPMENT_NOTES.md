@@ -8,7 +8,7 @@ For build/run basics see the top-level [`README.md`](../README.md) and
 
 ## `Imager::addFile` has two write paths (small vs large)
 
-`Imager::addFile` routes on the streaming threshold (`kStreamingThreshold`, 256 MB):
+`Imager::addFile` routes on the streaming threshold (`STREAMING_THRESHOLD` in `imager/Imager.cpp`, 256 MB):
 
 - **< 256 MB:** the whole file is read into a `Blob`, then `addImageImpl(blob, …)`
   → `writeFileAsync` → `writeToRoot`. **The source path is not passed into

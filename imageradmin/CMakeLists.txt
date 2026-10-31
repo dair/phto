@@ -4,10 +4,6 @@ add_executable(imageradmin main.cpp)
 
 target_link_libraries(imageradmin PRIVATE auth_lib config_lib)
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-  target_compile_options(imageradmin PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 # ---------------------------------------------------------------------------
 # CLI tests (shell script, no external test framework needed)
 # ---------------------------------------------------------------------------

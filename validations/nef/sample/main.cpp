@@ -1,9 +1,11 @@
+#include <validations/nef/nef_validator.h>
+
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <vector>
 
-#include <validations/nef/nef_validator.h>
+using namespace nef_detail;
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {

@@ -40,9 +40,5 @@ target_link_libraries(database_tests
         ${CPPUNIT_LIBRARIES}
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(database_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 include(CTest)
 add_test(NAME DatabaseTests COMMAND database_tests)

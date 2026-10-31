@@ -12,10 +12,6 @@ target_include_directories(imagestore PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(imagestore PRIVATE libimager config_lib)
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(imagestore PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 # ---------------------------------------------------------------------------
 # CLI tests (shell script, no external test framework needed)
 # ---------------------------------------------------------------------------
@@ -102,10 +98,6 @@ if(CPPUNIT_LIB AND CPPUNIT_INCLUDE)
     )
 
     target_link_libraries(imagestore_output_tests PRIVATE "${CPPUNIT_LIB}")
-
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-        target_compile_options(imagestore_output_tests PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
 
     add_test(
         NAME imagestore_output_tests

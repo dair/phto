@@ -5,8 +5,12 @@ HEIC/HEIF image validator using the system-installed libheif library.
 ## Public API
 
 ```cpp
+namespace heic_detail {
+
 enum ValidationResult { INVALID = -1, VALID = 0, WRONG = 1 };
 ValidationResult validateHeic(const void* data, size_t dataSize);
+
+} // namespace heic_detail
 ```
 
 Returns `WRONG` if the data lacks an ISOBMFF ftyp box, `INVALID` if the container is corrupt or undecodable, `VALID` if fully decoded successfully.

@@ -5,6 +5,7 @@
 #include <auth/types/User.h>
 #include <config/Config.h>
 #include <database/Database.h>
+#include <database/Pagination.h>
 #include <termios.h>
 #include <unistd.h>
 

@@ -7,6 +7,7 @@
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
 #include <database/Database.h>
+#include <database/Pagination.h>
 
 #include <atomic>
 #include <filesystem>

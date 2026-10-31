@@ -39,9 +39,5 @@ target_link_libraries(coro_tests
         ${CPPUNIT_LIBRARIES}
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(coro_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 include(CTest)
 add_test(NAME coro_tests COMMAND coro_tests)

@@ -1,11 +1,13 @@
 // Separate TU to avoid enum name collisions with other validator headers.
-#include <imager/ImageValidator.h>
+#include <imager/IStreamValidator.h>
 #include <validations/aae/aae_validator.h>
 
 #include <cstdio>
 #include <memory>
 
 #include "AaeStreamValidator.h"
+
+using namespace aae_detail;
 
 namespace {
 
@@ -22,7 +24,7 @@ using FilePtr = std::unique_ptr<FILE, FileCloser>;
 // AAE files are tiny XML sidecar files (typically < 10 KB).
 // Read up to 64 KB and delegate to the existing memory-based validator.
 // If the file is larger than 64 KB it cannot be a valid AAE.
-static constexpr size_t kMaxAaeReadBytes = 65536;
+static constexpr size_t MAX_AAE_READ_BYTES = 65536;
 
 class AaeStreamValidator final: public validation::IStreamValidator {
 public:
@@ -36,7 +38,7 @@ public:
       return {false, "Cannot open file: " + path.string()};
     }
 
-    char buf[kMaxAaeReadBytes];
+    char buf[MAX_AAE_READ_BYTES];
     size_t n = fread(buf, 1, sizeof(buf), f.get());
 
     switch (validateAae(buf, n)) {

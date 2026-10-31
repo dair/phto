@@ -1,9 +1,11 @@
+#include <validations/jpeg/jpeg_validator.h>
+
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <vector>
 
-#include <validations/jpeg/jpeg_validator.h>
+using namespace jpeg_detail;
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {

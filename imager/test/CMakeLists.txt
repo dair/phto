@@ -43,10 +43,6 @@ target_link_libraries(imager_tests
         ${CPPUNIT_LIBRARIES}
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(imager_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 include(CTest)
 add_test(NAME ImagerTests COMMAND imager_tests)
 
@@ -61,9 +57,5 @@ target_link_libraries(timestamp_tests
         libimager
         ${CPPUNIT_LIBRARIES}
 )
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(timestamp_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
 
 add_test(NAME TimestampTests COMMAND timestamp_tests)

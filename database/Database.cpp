@@ -1,5 +1,6 @@
 #include "Database.h"
 
+#include <database/DatabaseException.h>
 #include <metrics/Metrics.h>
 #include <metrics/Timer.h>
 #include <sqlite3.h>
@@ -12,18 +13,6 @@
 #include <string>
 
 namespace db {
-
-// ---------------------------------------------------------------------------
-// Exception
-// ---------------------------------------------------------------------------
-
-DatabaseException::DatabaseException(DatabaseErrorCode code, const std::string& message)
-  : std::runtime_error(message),
-    m_code(code) {}
-
-DatabaseErrorCode DatabaseException::code() const noexcept {
-  return m_code;
-}
 
 // ---------------------------------------------------------------------------
 // RAII wrappers
@@ -222,7 +211,9 @@ struct Database::Impl {
 // Helpers (file row extraction)
 // ---------------------------------------------------------------------------
 
-static File rowToFile(sqlite3_stmt* stmt) {
+namespace {
+
+File rowToFile(sqlite3_stmt* stmt) {
   File f;
   f.id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
   f.name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
@@ -230,6 +221,8 @@ static File rowToFile(sqlite3_stmt* stmt) {
   f.ext = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
   return f;
 }
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Constructor / destructor
@@ -657,6 +650,9 @@ std::vector<File> Database::getFilesByTags(const std::vector<std::string>& tagNa
   auto t = m_impl->readTimer();
 
   // Build: SELECT files that carry ALL listed tags (intersection semantics).
+  // Dynamic IN-clause: the placeholder count matches the tag vector size at runtime.
+  // This is the sole intentional exception to the static constexpr SQL rule — the
+  // clause length is only known at call time. All values are still bound, never interpolated.
   std::string placeholders;
   placeholders.reserve(tagNames.size() * 2);
   for (size_t i = 0; i < tagNames.size(); ++i) {

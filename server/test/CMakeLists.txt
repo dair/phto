@@ -124,10 +124,6 @@ else()
             ${CPPUNIT_LIBRARIES}
     )
 
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-        target_compile_options(server_json_tests PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-
     include(CTest)
     add_test(NAME server_json_tests COMMAND server_json_tests)
 
@@ -135,9 +131,6 @@ else()
     add_executable(server_clientip_tests "${CMAKE_CURRENT_SOURCE_DIR}/ClientIpTest.cpp")
     target_include_directories(server_clientip_tests PRIVATE ${CPPUNIT_INCLUDE_DIRS})
     target_link_libraries(server_clientip_tests PRIVATE server_lib ${CPPUNIT_LIBRARIES})
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-        target_compile_options(server_clientip_tests PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
     add_test(NAME server_clientip_tests COMMAND server_clientip_tests)
 endif()
 

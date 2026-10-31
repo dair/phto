@@ -7,6 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a C++23 JPEG validation library that exposes a single function:
 
 ```cpp
+namespace jpeg_detail {
+
 enum ValidationResult {
     INVALID = -1, // the input is JPEG data that is actually broken
     VALID = 0,    // the input is valid JPEG data
@@ -14,6 +16,8 @@ enum ValidationResult {
 };
 
 ValidationResult validateJpeg(const void* data, size_t dataSize);
+
+} // namespace jpeg_detail
 ```
 
 ## Build System

@@ -1,9 +1,11 @@
+#include <validations/heic/heic_validator.h>
+
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <vector>
 
-#include <validations/heic/heic_validator.h>
+using namespace heic_detail;
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {

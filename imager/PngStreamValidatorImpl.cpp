@@ -1,5 +1,5 @@
 // Separate TU to avoid enum name collisions with other validator headers.
-#include <imager/ImageValidator.h>
+#include <imager/IStreamValidator.h>
 #include <png.h>
 #include <setjmp.h>
 

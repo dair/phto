@@ -2,6 +2,8 @@
 
 #include "Validators.h"
 
+using namespace nef_detail;
+
 namespace {
 
 class NefValidator final: public validation::IValidator {

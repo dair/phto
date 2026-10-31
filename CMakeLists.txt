@@ -12,6 +12,7 @@ FetchContent_Declare(
     tomlplusplus
     GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
     GIT_TAG v3.4.0
+    SYSTEM # third-party headers must not trip first-party -Werror
 )
 FetchContent_MakeAvailable(tomlplusplus)
 
@@ -31,6 +32,7 @@ FetchContent_Declare(
     crow
     GIT_REPOSITORY https://github.com/CrowCpp/Crow.git
     GIT_TAG v1.2.1.2
+    SYSTEM # third-party headers must not trip first-party -Werror
     # Body-sink / header-filter hooks so the server can bound and stream uploads (third_party/crow/*.patch).
     PATCH_COMMAND ${CMAKE_COMMAND}
         -DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/third_party/crow/crow-body-sink.patch
@@ -43,6 +45,17 @@ target_compile_definitions(Crow INTERFACE CROW_ENABLE_SSL)
 target_link_libraries(Crow INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 
 enable_testing()
+
+# Warning policy for all first-party targets (added after the third-party
+# dependencies above, so it does not apply to them). Turn -Werror off with
+# -DIMAGER_WERROR=OFF, e.g. when packaging against a newer compiler.
+option(IMAGER_WERROR "Treat compiler warnings as errors in first-party targets" ON)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    add_compile_options(-Wall -Wextra -Wpedantic)
+    if(IMAGER_WERROR)
+        add_compile_options(-Werror)
+    endif()
+endif()
 
 add_subdirectory(metrics)
 add_subdirectory(blob)

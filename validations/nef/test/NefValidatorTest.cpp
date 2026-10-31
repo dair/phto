@@ -2,6 +2,7 @@
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
+#include <validations/nef/nef_validator.h>
 
 #include <cstdint>
 #include <cstring>
@@ -9,7 +10,7 @@
 #include <fstream>
 #include <vector>
 
-#include <validations/nef/nef_validator.h>
+using namespace nef_detail;
 
 // ---------------------------------------------------------------------------
 // Minimal TIFF-based header bytes for constructing test data.

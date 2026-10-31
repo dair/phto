@@ -1,7 +1,10 @@
+#include <config/Config.h>
 #include <cppunit/TestFixture.h>
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
+#include <database/Database.h>
+#include <imager/Imager.h>
 #include <unistd.h>
 
 #include <chrono>
@@ -10,10 +13,6 @@
 #include <fstream>
 #include <string>
 #include <vector>
-
-#include "config/Config.h"
-#include "database/Database.h"
-#include "imager/Imager.h"
 
 namespace fs = std::filesystem;
 using namespace imager;

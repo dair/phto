@@ -7,6 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a C++23 PNG validation library that exposes a single function:
 
 ```cpp
+namespace png_detail {
+
 enum ValidationResult {
     INVALID = -1, // the input is PNG data that is actually broken
     VALID = 0,    // the input is valid PNG data
@@ -14,6 +16,8 @@ enum ValidationResult {
 };
 
 ValidationResult validatePng(const void* data, size_t dataSize);
+
+} // namespace png_detail
 ```
 
 ## Build System

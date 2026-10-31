@@ -263,3 +263,9 @@
 - **Task**: Fix gaps from the J4 audit: imageradmin last-admin guard + shared validation, imagerd startup errors, empty auth db, JWT-secret message, bounded shutdown drain, /auth/password throttle.
 - **Outcome**: Removed unguarded UserStore remove/setEnabled/setAdmin (tests use update/removeGuarded); new `auth/Validation.{h,cpp}` used by server and imageradmin; config rejects `[auth].database = ""`; imagerd catches Imager/UserStore/TokenService/run failures (exit 2), distinct no-secret message; signals now consumed by a sigwait watcher thread (Crow's own signal handling cleared) with 30 s drain bound then `_Exit(3)`; /auth/password shares LoginThrottle counters with login (429 + Retry-After). Tests: new auth_validation_tests, config cases, UserStoreTest helpers; adjusted test_auth.sh.in (hunter2→hunter22) and test_cli.sh.in (passwd pw 'pw'→'password1'). Docs: DEPLOYMENT.md, API.md.
 - **Next Step**: fx-test finishes test_fixups.sh (DPID lost in `check` subshell) and takes the build.
+
+## [2026-10-31 20:00] - Plan 0012 tidy-up: code items
+- **Agent**: cpp-spec-coder (td-dev)
+- **Task**: C1 (-Werror), L3 (header splits), L5, plus re-verification of H2/H3/M1/M2/M3/L1/L2/L4/L6.
+- **Outcome**: Root CMake `IMAGER_WERROR` (default ON) + central -Wall -Wextra -Wpedantic; toml++/Crow FetchContent `SYSTEM`. database/{File,Pagination,DatabaseException}.h(+.cpp) split out of Database.h; imager/ImageValidator.h split into ValidationResult.h, IValidator.h, IStreamValidator.h (clean cut). Validator C headers namespaced `<fmt>_detail` (L2). L1 anonymous namespaces, L4 constant renames, L5 specific catches, L6 comment, Imager.cpp self-include. g++ -Werror fix in server/ItemRoutes.cpp. clang build + g++ build warning-free; 37/37 tests green.
+- **Next Step**: td-test re-verifies full suite on both compilers; td-docs updates plan 0012 and docs.

@@ -1,9 +1,11 @@
+#include <validations/png/validate_png.h>
+
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <vector>
 
-#include <validations/png/validate_png.h>
+using namespace png_detail;
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {

@@ -1,5 +1,5 @@
 // Separate TU to avoid enum name collisions with other validator headers.
-#include <imager/ImageValidator.h>
+#include <imager/IStreamValidator.h>
 
 #include "MovStreamValidator.h"
 
@@ -74,8 +74,8 @@ struct FFmpegState {
   }
 };
 
-static constexpr size_t kIoBufferSize = 32768;
-static constexpr int kMaxPacketsToTry = 8;
+static constexpr size_t IO_BUFFER_SIZE = 32768;
+static constexpr int MAX_PACKETS_TO_TRY = 8;
 
 static bool isIsobmffBoxType(const uint8_t* p) {
   static constexpr const char* types[] = {"ftyp", "moov", "mdat", "free", "wide", "skip", "pnot"};
@@ -114,13 +114,13 @@ public:
 
     FFmpegState ff;
 
-    uint8_t* ioBuf = static_cast<uint8_t*>(av_malloc(kIoBufferSize));
+    uint8_t* ioBuf = static_cast<uint8_t*>(av_malloc(IO_BUFFER_SIZE));
     if (!ioBuf) {
       return {false, "av_malloc failed"};
     }
 
     ff.avioCtx =
-      avio_alloc_context(ioBuf, static_cast<int>(kIoBufferSize), 0, &state, readPacketFile, nullptr, seekFile);
+      avio_alloc_context(ioBuf, static_cast<int>(IO_BUFFER_SIZE), 0, &state, readPacketFile, nullptr, seekFile);
     if (!ff.avioCtx) {
       av_free(ioBuf);
       return {false, "avio_alloc_context failed"};
@@ -174,7 +174,7 @@ public:
 
     int attempts = 0;
     bool decoded = false;
-    while (attempts < kMaxPacketsToTry && av_read_frame(ff.fmtCtx, ff.pkt) >= 0) {
+    while (attempts < MAX_PACKETS_TO_TRY && av_read_frame(ff.fmtCtx, ff.pkt) >= 0) {
       if (ff.pkt->stream_index != videoStream) {
         av_packet_unref(ff.pkt);
         continue;

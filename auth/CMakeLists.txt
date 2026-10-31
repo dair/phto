@@ -13,8 +13,4 @@ target_link_libraries(auth_lib
     PRIVATE cpp-jwt::cpp-jwt
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(auth_lib PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 add_subdirectory(test)
