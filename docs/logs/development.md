@@ -215,3 +215,9 @@
 - **Task**: `GET /items/{id}/content` (Range/ETag/304) and `DELETE /items/{id}` in `server/ItemRoutes.cpp`.
 - **Outcome**: 200 streams via `set_static_file_info_unsafe` (Crow has no Range support); 206 buffers a range clamped to 8 MiB (shorter 206 is legal); 416 with `Content-Range: bytes */size`; malformed/multi-range -> 200; strong ETag `"<id>"`, `If-None-Match` -> 304. DELETE is not admin-only (plan §6.2), 204/404/400.
 - **Next Step**: build + ctest, hand build to g3-test.
+
+## [2026-10-31 13:00] - M-G G2 GET /items listing
+- **Agent**: cpp-spec-coder
+- **Task**: `GET /items` (tags AND / untagged / all, pagination) in `server/ItemRoutes.cpp`.
+- **Outcome**: Reuses existing facade (`getImagesByTags`, `getUntaggedImages`, `listImages`; SQL-side LIMIT/OFFSET, no new DB code). Envelope `{items, offset, limit}` per plan §6.2. `offset` 0..2^31-1, `limit` 1..500 default 50; out-of-range/non-numeric -> 400 (no clamping, unlike `/users`). `tags` comma list and/or repeated, deduped (SQL uses COUNT DISTINCT = n); empty element -> 400; `untagged` must be true/false; untagged+tags -> 400. Factored `imageToJson` shared with `GET /items/{id}`.
+- **Next Step**: g2-test builds/runs test_list.

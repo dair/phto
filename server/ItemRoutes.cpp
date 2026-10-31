@@ -11,6 +11,7 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "AuthRoutes.h"
 #include "Json.h"
@@ -85,6 +86,106 @@ crow::response jsonOk(int status, const crow::json::wvalue& body) {
   crow::response res{status, body.dump()};
   res.add_header("Content-Type", "application/json");
   return res;
+}
+
+crow::json::wvalue imageToJson(const imager::ImageInfo& info) {
+  crow::json::wvalue body;
+  body["id"] = info.id;
+  body["name"] = info.name;
+  body["size"] = info.size;
+  body["ext"] = info.ext;
+  auto tags = crow::json::wvalue::list();
+  for (const auto& t : info.tags) {
+    tags.emplace_back(t);
+  }
+  body["tags"] = std::move(tags);
+  return body;
+}
+
+constexpr uint32_t DEFAULT_LIMIT = 50;
+constexpr uint32_t MAX_LIMIT = 500;
+
+/// Parses an optional unsigned query parameter in [lo, hi]; false on non-numeric/out-of-range.
+bool parseUintParam(const crow::request& req, const char* name, uint32_t lo, uint32_t hi, uint32_t& out) {
+  const char* v = req.url_params.get(name);
+  if (!v) {
+    return true;
+  }
+  std::string_view sv{v};
+  uint64_t n = 0;
+  auto [p, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), n);
+  if (sv.empty() || ec != std::errc{} || p != sv.data() + sv.size() || n < lo || n > hi) {
+    return false;
+  }
+  out = static_cast<uint32_t>(n);
+  return true;
+}
+
+/// GET /items: ?tags=a,b (AND; `tags` may repeat) | ?untagged=true | none; ?offset&limit.
+crow::response listItems(imager::Imager& imager, const crow::request& req) {
+  uint32_t offset = 0, limit = DEFAULT_LIMIT;
+  if (!parseUintParam(req, "offset", 0, UINT32_MAX >> 1, offset)) {
+    return badRequest("offset must be an integer in [0, 2147483647]");
+  }
+  if (!parseUintParam(req, "limit", 1, MAX_LIMIT, limit)) {
+    return badRequest("limit must be an integer in [1, 500]");
+  }
+
+  bool untagged = false;
+  if (const char* u = req.url_params.get("untagged")) {
+    std::string_view sv{u};
+    if (sv != "true" && sv != "false") {
+      return badRequest("untagged must be true or false");
+    }
+    untagged = sv == "true";
+  }
+
+  std::vector<std::string> tags;
+  const auto tagParams = req.url_params.get_list("tags", false);
+  for (const std::string& raw : tagParams) {
+    std::string_view rest = raw;
+    while (true) {
+      auto comma = rest.find(',');
+      std::string_view t = rest.substr(0, comma);
+      if (t.empty()) {
+        return badRequest("tags must be a comma-separated list of non-empty names");
+      }
+      if (std::ranges::find(tags, t) == tags.end()) {
+        tags.emplace_back(t);
+      }
+      if (comma == std::string_view::npos) {
+        break;
+      }
+      rest.remove_prefix(comma + 1);
+    }
+  }
+  if (req.url_params.get("tags") && tagParams.empty()) {
+    return badRequest("tags must not be empty");
+  }
+  if (untagged && !tags.empty()) {
+    return badRequest("untagged=true cannot be combined with tags");
+  }
+
+  std::vector<imager::ImageInfo> items;
+  try {
+    items = untagged       ? imager.getUntaggedImages(offset, limit)
+            : tags.empty() ? imager.listImages(offset, limit)
+                           : imager.getImagesByTags(tags, offset, limit);
+  } catch (const std::exception& e) {
+    CROW_LOG_ERROR << "GET /items: listing threw: " << e.what();
+    return errorResponse(imager::ErrorCode::DatabaseError, "internal error");
+  }
+
+  std::vector<crow::json::wvalue> arr;
+  arr.reserve(items.size());
+  for (const auto& it : items) {
+    arr.push_back(imageToJson(it));
+  }
+  crow::json::wvalue body;
+  body["items"] = std::move(arr);
+  body["offset"] = offset;
+  body["limit"] = limit;
+  return jsonOk(200, body);
 }
 
 crow::response putItem(imager::Imager& imager, uint64_t maxUploadBytes, const crow::request& req) {
@@ -318,6 +419,13 @@ void registerItemRoutes(crow::App<AuthMiddleware>& app, imager::Imager& imager, 
     return putItem(imager, maxUploadBytes, req);
   });
 
+  CROW_ROUTE(app, "/items").methods(crow::HTTPMethod::Get)([&app, &imager](const crow::request& req) {
+    if (!requireAuth(app, req)) {
+      return unauthorized("authentication required");
+    }
+    return listItems(imager, req);
+  });
+
   CROW_ROUTE(app, "/items/<string>")
     .methods(crow::HTTPMethod::Get)([&app, &imager](const crow::request& req, const std::string& id) {
       if (!requireAuth(app, req)) {
@@ -336,16 +444,7 @@ void registerItemRoutes(crow::App<AuthMiddleware>& app, imager::Imager& imager, 
       if (!info) {
         return errorResponse(imager::ErrorCode::FileNotFound, "item not found");
       }
-      crow::json::wvalue body;
-      body["id"] = info->id;
-      body["name"] = info->name;
-      body["size"] = info->size;
-      body["ext"] = info->ext;
-      auto tags = crow::json::wvalue::list();
-      for (const auto& t : info->tags) {
-        tags.emplace_back(t);
-      }
-      body["tags"] = std::move(tags);
+      crow::json::wvalue body = imageToJson(*info);
       return jsonOk(200, body);
     });
 

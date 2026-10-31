@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+# server/test/test_list.sh.in — G2 GET /items listing end-to-end test
+#
+# Covers (docs/plan/0022.SERVER.md §6.2, §7, §14.2–14.3, §16 G2):
+#   - empty library → empty list
+#   - no filter → all items (count == uploads), each with {id,name,size,ext,tags}
+#   - ?tags=a        → items carrying a
+#   - ?tags=a,b      → AND semantics (items with only one tag excluded)
+#   - ?tags=unknown  → empty list
+#   - ?untagged=true → exactly the items without tags
+#   - pagination: offset/limit walk the set without duplicates or gaps;
+#     page past the end is empty; negative / non-numeric / over-cap → 400
+#   - no token → 401
+#
+# Two targets are configured; tags are seeded into BOTH per-target DBs
+# (tag routes arrive in milestone H). Registered as "server_list_test".
+# Configured by CMake configure_file(@ONLY).
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+MOV_FIXTURE="@MOV_FIXTURE@"
+
+PASS=0
+FAIL=0
+
+check() {
+  local name="$1"; shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "PASS: $name"; PASS=$((PASS + 1))
+  else echo "FAIL: $name"; FAIL=$((FAIL + 1)); fi
+}
+
+for tool in curl python3; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_list_test skipped"
+    exit 0
+  fi
+done
+for f in "$JPEG_FIXTURE" "$MOV_FIXTURE"; do
+  if [ ! -f "$f" ]; then echo "FATAL: fixture $f missing"; exit 1; fi
+done
+
+pick_port() {
+  for port in 19520 19521 19522 19523 19524; do
+    if ! ss -tlnp 2>/dev/null | grep -q ":${port} "; then echo "$port"; return 0; fi
+  done
+  echo "19520"
+}
+PORT=$(pick_port)
+
+TMPDIR_TEST=$(mktemp -d)
+T="$TMPDIR_TEST"
+ROOT1="$T/storage1"; ROOT2="$T/storage2"
+DB1="$T/imager1.db"; DB2="$T/imager2.db"
+AUTH_DB="$T/auth.db"
+CFG="$T/test.toml"
+mkdir -p "$ROOT1" "$ROOT2"
+
+cat > "$CFG" <<CFGEOF
+[[targets]]
+root = "$ROOT1"
+database = "$DB1"
+
+[[targets]]
+root = "$ROOT2"
+database = "$DB2"
+
+[server]
+bind = "127.0.0.1"
+port = $PORT
+threads = 2
+max_upload_mb = 8
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+CFGEOF
+
+printf '%s' "alicepass1" | "$IMAGERADMIN_BIN" "$CFG" user add alice "Alice User" --password-stdin || {
+  echo "FATAL: seeding user failed"; rm -rf "$TMPDIR_TEST"; exit 1; }
+
+"$IMAGERD_BIN" "$CFG" >"$T/daemon.stdout" 2>"$T/daemon.stderr" &
+DAEMON_PID=$!
+cleanup() {
+  if [ "${DAEMON_PID:-0}" -gt 0 ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
+
+BASE_URL="http://127.0.0.1:${PORT}"
+READY=$(curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 \
+  --retry-delay 1 --retry-connrefused --max-time 12 "$BASE_URL/health" 2>/dev/null) || READY="000"
+if [ "$READY" != "200" ]; then
+  echo "FATAL: daemon not ready ($READY)"; cat "$T/daemon.stderr" || true; exit 1
+fi
+
+json_get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+
+http() {
+  local prefix="$1"; shift
+  curl --silent --output "$prefix.body" --write-out "%{http_code}" "$@" > "$prefix.status" 2>/dev/null || echo 000 > "$prefix.status"
+}
+
+LOGIN=$(curl --silent --request POST --header "Content-Type: application/json" \
+  --data '{"login":"alice","password":"alicepass1"}' "$BASE_URL/auth/login")
+TOKEN=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$LOGIN" 2>/dev/null || true)
+check "setup: login returns a token" test -n "$TOKEN"
+AUTH="Authorization: Bearer $TOKEN"
+
+# list <prefix> <query-string>: GET /items?<query> with auth
+list() { http "$1" -H "$AUTH" "$BASE_URL/items$2"; }
+# names <body> : sorted item names, comma-joined
+names() { json_get "$1" "','.join(sorted(i['name'] for i in d['items']))"; }
+
+# ---- empty library ---------------------------------------------------------
+list "$T/empty" ""
+check "empty library: GET /items → 200" test "$(cat $T/empty.status)" = 200
+check "empty library: items is an empty list" test "$(json_get $T/empty.body "d['items']")" = "[]"
+list "$T/emptyu" "?untagged=true"
+check "empty library: untagged=true → empty list" test "$(json_get $T/emptyu.body "len(d['items'])")" = 0
+list "$T/emptyt" "?tags=a"
+check "empty library: tags=a → empty list" test "$(json_get $T/emptyt.body "len(d['items'])")" = 0
+
+# ---- fixtures: 6 distinct JPEGs (COM segment after SOI) + 1 MOV ------------
+python3 - "$JPEG_FIXTURE" "$T" <<'PYEOF'
+import sys
+data = open(sys.argv[1], "rb").read()
+assert data[:2] == b"\xff\xd8"
+for n in range(1, 7):
+    com = b"variant-%d" % n
+    seg = b"\xff\xfe" + (len(com) + 2).to_bytes(2, "big") + com
+    open("%s/p%d.jpg" % (sys.argv[2], n), "wb").write(data[:2] + seg + data[2:])
+PYEOF
+
+upload() { # <file> <name>
+  http "$T/up_$2" -X PUT -H "$AUTH" -H "X-Filename: $2" --data-binary "@$1" "$BASE_URL/items"
+}
+for n in 1 2 3 4 5 6; do upload "$T/p$n.jpg" "p$n.jpg"; done
+upload "$MOV_FIXTURE" "clip.mov"
+check "setup: all 6 JPEG uploads → 201" test "$(cat $T/up_p1.jpg.status $T/up_p2.jpg.status $T/up_p3.jpg.status $T/up_p4.jpg.status $T/up_p5.jpg.status $T/up_p6.jpg.status | tr -d '\n')" = 201201201201201201
+check "setup: MOV upload → 201" test "$(cat $T/up_clip.mov.status)" = 201
+
+# duplicate upload must not add an item
+upload "$T/p1.jpg" "p1-copy.jpg"
+check "setup: duplicate upload → 200" test "$(cat $T/up_p1-copy.jpg.status)" = 200
+
+id_of() { json_get "$T/up_$1.body" "d['id']"; }
+
+# Seed tags into every per-target DB.
+#   p1: alpha,beta   p2: alpha   p3: beta   p6: gamma   p4,p5,clip.mov: none
+python3 - "$DB1" "$DB2" \
+  "$(id_of p1.jpg)=alpha,beta" "$(id_of p2.jpg)=alpha" \
+  "$(id_of p3.jpg)=beta" "$(id_of p6.jpg)=gamma" <<'PYEOF'
+import sqlite3, sys
+for dbp in sys.argv[1:3]:
+    c = sqlite3.connect(dbp, timeout=10)
+    for spec in sys.argv[3:]:
+        fid, tags = spec.split("=")
+        for t in tags.split(","):
+            c.execute("INSERT OR IGNORE INTO tag(name) VALUES (?)", (t,))
+            c.execute("INSERT OR IGNORE INTO file_tag(file_id, tag_name) VALUES (?, ?)", (fid, t))
+    c.commit(); c.close()
+PYEOF
+
+# ---- all items -------------------------------------------------------------
+list "$T/all" ""
+check "all: GET /items → 200" test "$(cat $T/all.status)" = 200
+check "all: count equals number of distinct uploads (7)" test "$(json_get $T/all.body "len(d['items'])")" = 7
+check "all: names are exactly the uploads" \
+  test "$(names $T/all.body)" = "clip.mov,p1.jpg,p2.jpg,p3.jpg,p4.jpg,p5.jpg,p6.jpg"
+check "all: no duplicate ids" test "$(json_get $T/all.body "len(set(i['id'] for i in d['items']))")" = 7
+check "all: every item has exactly {id,name,size,ext,tags}" \
+  test "$(json_get $T/all.body "all(set(i.keys())=={'id','name','size','ext','tags'} for i in d['items'])")" = True
+check "all: field types (id 64-hex, size int, ext str, tags list)" \
+  test "$(json_get $T/all.body "all(len(i['id'])==64 and isinstance(i['size'],int) and isinstance(i['ext'],str) and isinstance(i['tags'],list) for i in d['items'])")" = True
+check "all: p1 carries its seeded tags" \
+  test "$(json_get $T/all.body "[sorted(i['tags']) for i in d['items'] if i['name']=='p1.jpg'][0]")" = "['alpha', 'beta']"
+check "all: untagged item has empty tags list" \
+  test "$(json_get $T/all.body "[i['tags'] for i in d['items'] if i['name']=='p4.jpg'][0]")" = "[]"
+check "all: mov item has ext .mov" \
+  test "$(json_get $T/all.body "[i['ext'] for i in d['items'] if i['name']=='clip.mov'][0]")" = ".mov"
+check "all: jpeg size equals file size" \
+  test "$(json_get $T/all.body "[i['size'] for i in d['items'] if i['name']=='p2.jpg'][0]")" = "$(stat -c %s $T/p2.jpg)"
+check "all: envelope echoes offset 0" test "$(json_get $T/all.body "d['offset']")" = 0
+check "all: envelope has numeric limit" test "$(json_get $T/all.body "isinstance(d['limit'], int)")" = True
+
+# ---- tag filter ------------------------------------------------------------
+list "$T/ta" "?tags=alpha"
+check "tags=alpha → 200" test "$(cat $T/ta.status)" = 200
+check "tags=alpha → p1,p2" test "$(names $T/ta.body)" = "p1.jpg,p2.jpg"
+list "$T/tab" "?tags=alpha,beta"
+check "tags=alpha,beta → 200" test "$(cat $T/tab.status)" = 200
+check "tags=alpha,beta (AND) → only p1" test "$(names $T/tab.body)" = "p1.jpg"
+list "$T/tag" "?tags=alpha,gamma"
+check "tags=alpha,gamma (no item has both) → empty" test "$(json_get $T/tag.body "len(d['items'])")" = 0
+list "$T/tu" "?tags=nosuchtag"
+check "tags=unknown → 200 with empty result" test "$(cat $T/tu.status)" = 200
+check "tags=unknown → empty items" test "$(json_get $T/tu.body "d['items']")" = "[]"
+list "$T/tau" "?tags=alpha,nosuchtag"
+check "tags=known,unknown → empty (AND)" test "$(json_get $T/tau.body "len(d['items'])")" = 0
+
+# ---- untagged --------------------------------------------------------------
+list "$T/un" "?untagged=true"
+check "untagged=true → 200" test "$(cat $T/un.status)" = 200
+check "untagged=true → exactly p4,p5,clip.mov" test "$(names $T/un.body)" = "clip.mov,p4.jpg,p5.jpg"
+check "untagged=true → every item has empty tags" test "$(json_get $T/un.body "all(i['tags']==[] for i in d['items'])")" = True
+
+# ---- pagination ------------------------------------------------------------
+list "$T/pg0" "?offset=0&limit=3"
+list "$T/pg1" "?offset=3&limit=3"
+list "$T/pg2" "?offset=6&limit=3"
+check "page 0: 3 items" test "$(json_get $T/pg0.body "len(d['items'])")" = 3
+check "page 1: 3 items" test "$(json_get $T/pg1.body "len(d['items'])")" = 3
+check "page 2 (last): 1 item" test "$(json_get $T/pg2.body "len(d['items'])")" = 1
+check "pages echo offset and limit" \
+  test "$(json_get $T/pg1.body "(d['offset'], d['limit'])")" = "(3, 3)"
+check "pages cover the whole set with no duplicates or gaps" \
+  test "$(python3 -c '
+import json,sys
+ids=[]
+for p in sys.argv[2:]:
+    ids += [i["id"] for i in json.load(open(p))["items"]]
+full=[i["id"] for i in json.load(open(sys.argv[1]))["items"]]
+print(len(ids)==len(set(ids))==7 and sorted(ids)==sorted(full))' $T/all.body $T/pg0.body $T/pg1.body $T/pg2.body)" = True
+check "pagination is stable: concatenated pages match the unpaged order" \
+  test "$(python3 -c '
+import json,sys
+ids=[]
+for p in sys.argv[2:]:
+    ids += [i["id"] for i in json.load(open(p))["items"]]
+full=[i["id"] for i in json.load(open(sys.argv[1]))["items"]]
+print(ids==full)' $T/all.body $T/pg0.body $T/pg1.body $T/pg2.body)" = True
+
+list "$T/past" "?offset=100&limit=3"
+check "page past the end → 200" test "$(cat $T/past.status)" = 200
+check "page past the end → empty items" test "$(json_get $T/past.body "d['items']")" = "[]"
+list "$T/exact" "?offset=7&limit=3"
+check "offset == total → empty items" test "$(json_get $T/exact.body "len(d['items'])")" = 0
+list "$T/lim1" "?limit=1"
+check "limit=1 → exactly one item" test "$(json_get $T/lim1.body "len(d['items'])")" = 1
+
+# pagination combined with filters
+list "$T/tpg" "?tags=alpha&limit=1&offset=1"
+check "tags filter + pagination: second page has one item" test "$(json_get $T/tpg.body "len(d['items'])")" = 1
+list "$T/upg" "?untagged=true&limit=2&offset=2"
+check "untagged + pagination: last page has one item" test "$(json_get $T/upg.body "len(d['items'])")" = 1
+
+# bad values → 400
+for q in "offset=-1" "limit=-1" "limit=0" "offset=abc" "limit=abc" "limit=1.5" "limit=100000" "limit=99999999999999999999"; do
+  list "$T/bad" "?$q"
+  check "bad pagination '$q' → 400" test "$(cat $T/bad.status)" = 400
+done
+for q in "limit=501" "offset=2147483648" "limit=" "offset=" "limit=5x" "limit=%2B1" \
+         "tags=" "tags=alpha,,beta" "tags=,alpha" "untagged=yes" "untagged=1" "untagged=" \
+         "untagged=true&tags=alpha"; do
+  list "$T/bad" "?$q"
+  check "bad query '$q' → 400" test "$(cat $T/bad.status)" = 400
+done
+list "$T/lim500" "?limit=500"
+check "limit=500 (the cap) → 200, echoed, all 7 items" \
+  test "$(cat $T/lim500.status) $(json_get $T/lim500.body "(d['limit'], len(d['items']))")" = "200 (500, 7)"
+check "default limit echoed as 50" test "$(json_get $T/all.body "d['limit']")" = 50
+list "$T/off0" "?offset=2147483647"
+check "max offset 2147483647 → 200, empty" test "$(cat $T/off0.status) $(json_get $T/off0.body "len(d['items'])")" = "200 0"
+list "$T/unf" "?untagged=false"
+check "untagged=false behaves as no filter (7 items)" test "$(json_get $T/unf.body "len(d['items'])")" = 7
+list "$T/unft" "?untagged=false&tags=alpha"
+check "untagged=false&tags=alpha → tag filter (p1,p2)" test "$(names $T/unft.body)" = "p1.jpg,p2.jpg"
+list "$T/trep" "?tags=alpha&tags=beta"
+check "repeated tags params combine (AND) → p1" test "$(names $T/trep.body)" = "p1.jpg"
+list "$T/tdup" "?tags=alpha,alpha"
+check "duplicate tag names are deduped → p1,p2" test "$(names $T/tdup.body)" = "p1.jpg,p2.jpg"
+list "$T/tws" "?tags=alpha,%20beta"
+check "tag names are not trimmed (' beta' unknown) → empty" test "$(json_get $T/tws.body "len(d['items'])")" = 0
+check "tag-filtered results are ordered by id ascending" \
+  test "$(json_get $T/ta.body "[i['id'] for i in d['items']]==sorted(i['id'] for i in d['items'])")" = True
+check "no-filter results are ordered by id ascending" \
+  test "$(json_get $T/all.body "[i['id'] for i in d['items']]==sorted(i['id'] for i in d['items'])")" = True
+check "untagged results are ordered by id ascending" \
+  test "$(json_get $T/un.body "[i['id'] for i in d['items']]==sorted(i['id'] for i in d['items'])")" = True
+list "$T/bad" "?limit=abc"
+check "400 body has error envelope code BadRequest" test "$(json_get $T/bad.body "d['error']['code']")" = BadRequest
+
+# ---- auth ------------------------------------------------------------------
+http "$T/noauth" "$BASE_URL/items"
+check "GET /items without token → 401" test "$(cat $T/noauth.status)" = 401
+http "$T/badtok" -H "Authorization: Bearer not.a.token" "$BASE_URL/items"
+check "GET /items with invalid token → 401" test "$(cat $T/badtok.status)" = 401
+http "$T/noauthf" "$BASE_URL/items?untagged=true"
+check "GET /items?untagged=true without token → 401" test "$(cat $T/noauthf.status)" = 401
+
+# ---- graceful shutdown -----------------------------------------------------
+SIGTERM_OK=0
+if kill -TERM "$DAEMON_PID" 2>/dev/null; then
+  for _i in $(seq 1 50); do kill -0 "$DAEMON_PID" 2>/dev/null || break; sleep 0.1; done
+  if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+    EXIT=0; wait "$DAEMON_PID" 2>/dev/null || EXIT=$?
+    [ "$EXIT" -eq 0 ] && SIGTERM_OK=1
+  else kill -KILL "$DAEMON_PID" 2>/dev/null || true; fi
+fi
+if [ "$SIGTERM_OK" -eq 1 ]; then echo "PASS: SIGTERM causes clean exit (status 0)"; PASS=$((PASS+1))
+else echo "FAIL: SIGTERM causes clean exit (status 0)"; FAIL=$((FAIL+1)); fi
+DAEMON_PID=0
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

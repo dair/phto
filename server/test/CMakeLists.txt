@@ -179,3 +179,25 @@ add_test(
 )
 
 set_tests_properties(server_content_test PROPERTIES TIMEOUT 90)
+
+# ---- server_list_test — G2 GET /items listing (filters, untagged, pagination) ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_list.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_list.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_list.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_list_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_list.sh"
+)
+
+set_tests_properties(server_list_test PROPERTIES TIMEOUT 120)

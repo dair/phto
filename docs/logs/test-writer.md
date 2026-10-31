@@ -86,3 +86,10 @@
 - **Outcome**: Added `server/test/test_content.sh.in` (52 assertions), registered `server_content_test` (ports 19510–14) in `server/test/CMakeLists.txt`, wrote `docs/testing/items-content.md` and README row. Not yet run — build owned by g3-dev.
 - **Next Step**: On "build is yours": regenerate, build, run `server_content_test` and the full suite; report server bugs to g3-dev.
 - **Update 2026-10-31**: Ran after handover: server_content_test 52 passed / 0 failed; full ctest result recorded in final report.
+
+## [2026-10-31 13:00] - G2 GET /items listing shell test
+- **Agent**: test-spec-writer
+- **Task**: Write tests for checkpoint G2 (M-G): `GET /items` by-tags (AND), `untagged=true`, all, pagination bounds, 401.
+- **Outcome**: Added `server/test/test_list.sh.in`, registered `server_list_test` (ports 19520–24), wrote `docs/testing/items-list.md` and README row. Not yet run — build owned by g2-dev; contract (envelope/cap/untagged+tags) awaiting confirmation.
+- **Next Step**: On "build is yours": regenerate, build, run `server_list_test` and the full suite; align assertions to the confirmed contract.
+- **Update 2026-10-31**: After handover, contract confirmed; added 400/edge cases. server_list_test 79 passed / 0 failed; full ctest 27/27.

@@ -23,3 +23,4 @@ Cross-cutting test structure, build/run commands, and conventions live in
 | Auth authz, throttle, password change (0022.SERVER §6.1/§6.5/§13, F2) | [auth-authz.md](auth-authz.md) | complete | 11/11 (100%) |
 | Items upload & fetch — `PUT /items`, `GET /items/{id}` (0022.SERVER §6.2/§7/§9, G1) | [items-upload.md](items-upload.md) | complete | 9/9 (100%) |
 | Item content download & delete — `GET /items/{id}/content`, `DELETE /items/{id}` (0022.SERVER §6.2/§7/§14, G3) | [items-content.md](items-content.md) | complete | 8/8 (100%) |
+| Item listing — `GET /items` (filters, untagged, pagination) (0022.SERVER §6.2/§7/§14, G2) | [items-list.md](items-list.md) | complete | 8/8 (100%) |
