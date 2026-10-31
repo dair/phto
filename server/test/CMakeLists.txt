@@ -130,6 +130,15 @@ else()
 
     include(CTest)
     add_test(NAME server_json_tests COMMAND server_json_tests)
+
+    # ClientIp: trusted-proxy CIDR matching + X-Forwarded-For resolution
+    add_executable(server_clientip_tests "${CMAKE_CURRENT_SOURCE_DIR}/ClientIpTest.cpp")
+    target_include_directories(server_clientip_tests PRIVATE ${CPPUNIT_INCLUDE_DIRS})
+    target_link_libraries(server_clientip_tests PRIVATE server_lib ${CPPUNIT_LIBRARIES})
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(server_clientip_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME server_clientip_tests COMMAND server_clientip_tests)
 endif()
 
 # ---- server_items_test — G1 PUT /items + GET /items/{id} (shell script) ----
@@ -356,3 +365,25 @@ add_test(
 )
 
 set_tests_properties(server_fixups_test PROPERTIES TIMEOUT 240)
+
+# ---- server_loose_ends_test — bounded uploads (413/spool), trusted proxies/XFF, access log, timing knobs ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_loose_ends.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_loose_ends.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_loose_ends.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_loose_ends_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_loose_ends.sh"
+)
+
+set_tests_properties(server_loose_ends_test PROPERTIES TIMEOUT 300)

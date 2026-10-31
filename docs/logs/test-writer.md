@@ -140,3 +140,15 @@
 - **Task**: Tests for the 7 fix-up gaps (imageradmin last-admin guard + add validation; imagerd startup errors; SIGTERM drain; /auth/password throttle).
 - **Outcome**: Extended `imageradmin/test/test_cli.sh.in` (75 passed / 0 failed); new `server/test/test_fixups.sh.in` → `server_fixups_test` (ports 19590–19593; 88 passed / 0 failed). Full ctest 35/35. Docs: `docs/testing/fixups.md`, `imageradmin-cli.md`, README row. Finding: mid-body uploads are not drained by SIGTERM (documented Crow behaviour); a stale imagerd from an earlier failed run held port 19591 and had to be killed.
 - **Next Step**: Root reviews and commits.
+
+## [2026-10-31 18:00] - Loose-ends tests (L1–L4)
+- **Agent**: le-test (test-spec-writer)
+- **Task**: Test bounded uploads/early 413/spool, trusted proxies + XFF, access log, configurable timings.
+- **Outcome**: Added `server_loose_ends_test` (115 checks, ports 19600–19608) and `server_clientip_tests` (18 CPPUnit cases). Full suite 37/37 green, twice.
+- **Next Step**: Superseded by the 19:00 entry (memory test now uses a padded MOV above the 256 MB threshold).
+
+## [2026-10-31 19:00] - Loose-ends tests: TLS, MOV memory, AccessLog unit tests
+- **Agent**: le-test (test-spec-writer)
+- **Task**: Follow-up decisions from team-lead.
+- **Outcome**: loose_ends test now 122 checks (290 MB MOV memory test (201, VmHWM ≈ 50 MB), TLS 413 case); `server_clientip_tests` has 26 cases incl. AccessLog::format. ctest -N = 37; green twice.
+- **Next Step**: None.

@@ -18,10 +18,15 @@ class LoginThrottle {
 public:
   static constexpr int MAX_FAILURES = 5;      // default per-login threshold
   static constexpr int MAX_IP_FAILURES = 20;  // default per-IP threshold
-  static constexpr int LOCKOUT_SECONDS = 900; // 15 minutes
+  static constexpr int LOCKOUT_SECONDS = 900; // default: 15 minutes ([auth].lockout_seconds)
 
-  explicit LoginThrottle(int maxFailures = MAX_FAILURES)
-    : m_maxFailures(maxFailures) {}
+  explicit LoginThrottle(int maxFailures = MAX_FAILURES, int lockoutSeconds = LOCKOUT_SECONDS)
+    : m_maxFailures(maxFailures),
+      m_lockout(lockoutSeconds) {}
+
+  int lockoutSeconds() const noexcept {
+    return static_cast<int>(m_lockout.count());
+  }
 
   /// Returns true if the key is currently locked out (too many recent failures).
   bool isLockedOut(const std::string& key);
@@ -47,6 +52,7 @@ private:
   static constexpr size_t PRUNE_THRESHOLD = 4096;
 
   const int m_maxFailures;
+  const std::chrono::seconds m_lockout;
   std::mutex m_mutex;
   std::unordered_map<std::string, Entry> m_entries;
 };

@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <memory>
+#include <string>
 
 #include "Json.h"
 #include "LoginThrottle.h"
@@ -41,27 +43,33 @@ std::optional<auth::TokenService::Claims> requireAdmin(
 
 namespace {
 
-/// Shared throttle instances — one per process, live for the duration of the daemon.
-LoginThrottle& throttle() {
-  static LoginThrottle instance{LoginThrottle::MAX_FAILURES};
-  return instance;
-}
+/// Throttles shared by the login and password-change routes; one pair per registerAuthRoutes() call.
+struct Throttles {
+  LoginThrottle login; ///< per login name
+  LoginThrottle ip;    ///< per client IP (higher threshold): rotating logins cannot dodge it
+  const TrustedProxies& proxies;
+  const int lockoutSeconds;
 
-/// Per-client-IP throttle (higher threshold): rotating logins cannot dodge it.
-/// Behind a reverse proxy every client shares the proxy's address; X-Forwarded-For is deliberately not trusted.
-LoginThrottle& ipThrottle() {
-  static LoginThrottle instance{LoginThrottle::MAX_IP_FAILURES};
-  return instance;
-}
+  explicit Throttles(const config::AuthConfig& cfg, const TrustedProxies& tp)
+    : login(static_cast<int>(cfg.maxLoginFailures), static_cast<int>(cfg.lockoutSeconds)),
+      ip(static_cast<int>(cfg.maxIpFailures), static_cast<int>(cfg.lockoutSeconds)),
+      proxies(tp),
+      lockoutSeconds(static_cast<int>(cfg.lockoutSeconds)) {}
+
+  /// Throttle key for the caller: the forwarded client behind a trusted proxy, else the peer address.
+  std::string clientKey(const crow::request& req) const {
+    return proxies.clientIp(req.remote_ip_address, req.get_header_value("X-Forwarded-For"));
+  }
+
+  crow::response tooMany(const char* what) const {
+    auto res = jsonError(429, "TooManyRequests", what);
+    res.add_header("Retry-After", std::to_string(lockoutSeconds));
+    return res;
+  }
+};
 
 constexpr size_t MAX_LOGIN_BYTES = auth::MAX_LOGIN_LEN;
 constexpr size_t MAX_PASSWORD_BYTES = auth::MAX_PASSWORD_LEN;
-
-crow::response tooManyAttempts(const char* what) {
-  auto res = jsonError(429, "TooManyRequests", what);
-  res.add_header("Retry-After", std::to_string(LoginThrottle::LOCKOUT_SECONDS));
-  return res;
-}
 
 } // namespace
 
@@ -69,12 +77,16 @@ void registerAuthRoutes(
   crow::App<AuthMiddleware>& app,
   auth::UserStore& userStore,
   auth::TokenService& tokenService,
-  uint32_t tokenTtlSeconds,
-  uint32_t pbkdf2Iterations
+  const config::AuthConfig& authCfg,
+  const TrustedProxies& proxies
 ) {
+  const uint32_t tokenTtlSeconds = authCfg.tokenTtlSeconds;
+  const uint32_t pbkdf2Iterations = authCfg.pbkdf2Iterations;
+  auto throttles = std::make_shared<Throttles>(authCfg, proxies);
+
   // POST /auth/login — issue a JWT for valid credentials (brute-force throttled)
   CROW_ROUTE(app, "/auth/login")
-    .methods(crow::HTTPMethod::Post)([&userStore, &tokenService, tokenTtlSeconds](const crow::request& req) {
+    .methods(crow::HTTPMethod::Post)([&userStore, &tokenService, tokenTtlSeconds, throttles](const crow::request& req) {
       auto body = crow::json::load(req.body);
       if (!body || body.t() != crow::json::type::Object || !body.has("login") || !body.has("password") ||
           body["login"].t() != crow::json::type::String || body["password"].t() != crow::json::type::String) {
@@ -88,8 +100,9 @@ void registerAuthRoutes(
       }
 
       // Throttle check — precedes any credential verification.
-      if (ipThrottle().isLockedOut(req.remote_ip_address) || throttle().isLockedOut(login)) {
-        return tooManyAttempts("too many failed login attempts — try again later");
+      const std::string clientKey = throttles->clientKey(req);
+      if (throttles->ip.isLockedOut(clientKey) || throttles->login.isLockedOut(login)) {
+        return throttles->tooMany("too many failed login attempts — try again later");
       }
 
       auto userOpt = userStore.get(login);
@@ -97,8 +110,8 @@ void registerAuthRoutes(
 
       // Generic failure for missing user or wrong password — no user enumeration.
       if (!userOpt || !pwOpt || !auth::verifyPassword(password, *pwOpt)) {
-        throttle().recordFailure(login);
-        ipThrottle().recordFailure(req.remote_ip_address);
+        throttles->login.recordFailure(login);
+        throttles->ip.recordFailure(clientKey);
         return unauthorized("invalid credentials");
       }
 
@@ -108,7 +121,7 @@ void registerAuthRoutes(
         return forbidden("account disabled");
       }
 
-      throttle().recordSuccess(login);
+      throttles->login.recordSuccess(login);
 
       const std::string token = tokenService.issue(user);
       const uint64_t expiresAt =
@@ -148,7 +161,7 @@ void registerAuthRoutes(
 
   // POST /auth/password — self-service password change (authenticated users only)
   CROW_ROUTE(app, "/auth/password")
-    .methods(crow::HTTPMethod::Post)([&app, &userStore, pbkdf2Iterations](const crow::request& req) {
+    .methods(crow::HTTPMethod::Post)([&app, &userStore, pbkdf2Iterations, throttles](const crow::request& req) {
       auto claims = requireAuth(app, req);
       if (!claims) {
         return unauthorized("authentication required");
@@ -173,17 +186,18 @@ void registerAuthRoutes(
       // Brute-force guard: shares the per-login and per-IP counters with POST /auth/login, so guessing the
       // current password through either endpoint draws from one budget. Checked before any PBKDF2 work.
       const std::string& login = claims->login;
-      if (ipThrottle().isLockedOut(req.remote_ip_address) || throttle().isLockedOut(login)) {
-        return tooManyAttempts("too many failed password attempts — try again later");
+      const std::string clientKey = throttles->clientKey(req);
+      if (throttles->ip.isLockedOut(clientKey) || throttles->login.isLockedOut(login)) {
+        return throttles->tooMany("too many failed password attempts — try again later");
       }
 
       auto pwOpt = userStore.getPassword(login);
       if (!pwOpt || !auth::verifyPassword(oldPassword, *pwOpt)) {
-        throttle().recordFailure(login);
-        ipThrottle().recordFailure(req.remote_ip_address);
+        throttles->login.recordFailure(login);
+        throttles->ip.recordFailure(clientKey);
         return unauthorized("current password is incorrect");
       }
-      throttle().recordSuccess(login);
+      throttles->login.recordSuccess(login);
 
       const auth::PasswordRecord newRec = auth::hashPassword(newPassword, pbkdf2Iterations);
       userStore.setPassword(claims->login, newRec);

@@ -26,7 +26,7 @@ void LoginThrottle::recordFailure(const std::string& key) {
     pruneLocked(now);
   }
   Entry& e = m_entries[key];
-  if (e.failures > 0 && e.failures < m_maxFailures && now - e.windowStart > std::chrono::seconds{LOCKOUT_SECONDS}) {
+  if (e.failures > 0 && e.failures < m_maxFailures && now - e.windowStart > m_lockout) {
     e.failures = 0; // stale partial count: start a new window
   }
   if (e.failures == 0) {
@@ -34,7 +34,7 @@ void LoginThrottle::recordFailure(const std::string& key) {
   }
   e.failures++;
   if (e.failures >= m_maxFailures) {
-    e.lockedUntil = now + std::chrono::seconds{LOCKOUT_SECONDS};
+    e.lockedUntil = now + m_lockout;
   }
 }
 
@@ -44,7 +44,7 @@ void LoginThrottle::recordSuccess(const std::string& key) {
 }
 
 void LoginThrottle::pruneLocked(Clock::time_point now) {
-  const auto window = std::chrono::seconds{LOCKOUT_SECONDS};
+  const auto window = m_lockout;
   for (auto it = m_entries.begin(); it != m_entries.end();) {
     const Entry& e = it->second;
     const bool locked = e.failures >= m_maxFailures;

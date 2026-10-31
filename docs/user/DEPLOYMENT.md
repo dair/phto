@@ -14,6 +14,7 @@ How to build, configure, run, and operate the `imagerd` HTTP(S) daemon. The endp
 - [Large uploads and memory](#large-uploads-and-memory)
 - [Backups and multiple targets](#backups-and-multiple-targets)
 - [Logging](#logging)
+- [Access log](#access-log)
 - [Troubleshooting](#troubleshooting)
 
 ## Build
@@ -49,7 +50,10 @@ Build output is under `build/` (see `CMakePresets.json`). The relevant executabl
 | `tls_cert` | string (path) | empty | PEM certificate or full chain. Required when `tls = true`. |
 | `tls_key` | string (path) | empty | PEM private key. Required when `tls = true`. |
 | `threads` | integer | `0` | Worker threads; `0` means `std::thread::hardware_concurrency()`. |
-| `max_upload_mb` | integer | `4096` | Cap for `PUT /items`, in MiB; must be > 0. Over the cap gives `413 TooLarge`. |
+| `max_upload_mb` | integer | `4096` | Cap for `PUT /items`, in MiB; must be > 0. Over the cap gives `413 TooLarge` before the body is read. |
+| `trusted_proxies` | array of strings | `[]` | IPv4/IPv6 addresses or CIDRs of reverse proxies whose `X-Forwarded-For` is trusted. Empty means the header is ignored. An invalid entry is a startup error (exit 2). See [Reverse proxy](#reverse-proxy). |
+| `access_log` | boolean | `true` | One log line per request on stderr. See [Access log](#access-log). |
+| `drain_timeout_s` | integer | `30` | Seconds to wait for running requests on `SIGINT`/`SIGTERM` before forcing exit `3`. Range 1..3600. |
 
 ### `[auth]`
 
@@ -61,6 +65,11 @@ Build output is under `build/` (see `CMakePresets.json`). The relevant executabl
 | `token_ttl_seconds` | integer | `43200` (12 h) | Must be > 0. |
 | `issuer` | string | `"phto"` | JWT `iss`; tokens with a different issuer are rejected. Changing it invalidates all tokens. |
 | `pbkdf2_iterations` | integer | `310000` | PBKDF2 iterations for new password hashes; must be >= 1000. Existing hashes keep working. |
+| `lockout_seconds` | integer | `900` | Login throttle window and lockout duration; also the `Retry-After` value on `429`. Range 1..86400. |
+| `max_login_failures` | integer | `5` | Failures per login name before lockout. Range 1..1000. |
+| `max_ip_failures` | integer | `20` | Failures per client IP before lockout. Range 1..100000. |
+
+A value outside its range, or of the wrong type, makes `imagerd` exit `2` with an `imagerd:` message naming the key.
 
 ### Example
 
@@ -153,7 +162,7 @@ curl http://127.0.0.1:8443/health
 # {"status":"ok"}
 ```
 
-**Signals.** `SIGINT` and `SIGTERM` are blocked in every thread and consumed by one watcher thread via `sigwait()`, so no code runs in signal-handler context. On a signal the daemon prints `imagerd: signal N, draining (up to 30s)` and calls Crow's `stop()`: the listener stops accepting and no further requests are read. A request whose handler has already started finishes (Crow writes the response, including streamed downloads, synchronously inside that handler, and `run()` joins its workers), so in-flight downloads, and uploads whose body has been fully received, complete. The wait is bounded by a fixed 30 s constant (`DRAIN_TIMEOUT` in `server/main.cpp`); if a request is still running after that (for example a client that stopped reading a download), the daemon prints `imagerd: drain timeout, forcing exit` and exits `3`. Otherwise the facade is destroyed (closing the databases), it prints `imagerd: shutdown complete` and exits `0`. Idle keep-alive connections and requests not yet fully received are dropped (an upload whose body is still arriving at SIGTERM is cut off, the client gets no response). There is no reload on `SIGHUP`; restart for config changes. The login throttle counters are in memory and reset on restart.
+**Signals.** `SIGINT` and `SIGTERM` are blocked in every thread and consumed by one watcher thread via `sigwait()`, so no code runs in signal-handler context. On a signal the daemon prints `imagerd: signal N, draining (up to 30s)` (the number is `[server].drain_timeout_s`) and calls Crow's `stop()`: the listener stops accepting and no further requests are read. A request whose handler has already started finishes (Crow writes the response, including streamed downloads, synchronously inside that handler, and `run()` joins its workers), so in-flight downloads, and uploads whose body has been fully received, complete. The wait is bounded by `[server].drain_timeout_s` (default 30; 1..3600); if a request is still running after that (for example a client that stopped reading a download), the daemon prints `imagerd: drain timeout, forcing exit` and exits `3`. Otherwise the facade is destroyed (closing the databases), it prints `imagerd: shutdown complete` and exits `0`. Idle keep-alive connections and requests not yet fully received are dropped (an upload whose body is still arriving at SIGTERM is cut off, the client gets no response). There is no reload on `SIGHUP`; restart for config changes. The login throttle counters are in memory and reset on restart.
 
 **Exit codes:** `0` clean shutdown, `1` wrong argument count, `2` startup error (config, secret, TLS, database open, bind), `3` drain timeout on shutdown.
 
@@ -238,21 +247,28 @@ server {
 
 Caveats:
 
-- **`X-Forwarded-For` is not trusted.** `imagerd` uses the TCP peer address for the per-IP login throttle, so behind a proxy every client appears as `127.0.0.1`. The 20-failure per-IP limit then applies to all users together: an attacker spraying wrong passwords can lock out the whole IP bucket (the per-login limit of 5 also still applies). Apply rate limiting for `/auth/login` at the proxy as well.
+- **`X-Forwarded-For` is ignored unless you configure `trusted_proxies`.** By default `imagerd` uses the TCP peer address for the per-IP login throttle and the access log, so behind a proxy every client appears as `127.0.0.1`, and the per-IP limit applies to all users together: an attacker spraying wrong passwords can lock out the whole IP bucket. List your proxy to fix this:
+
+  ```toml
+  [server]
+  trusted_proxies = ["127.0.0.1", "::1"]   # addresses or CIDRs, e.g. "10.0.0.0/8"
+  ```
+
+  If the TCP peer is in the list, `imagerd` walks `X-Forwarded-For` from right to left, skipping entries that are themselves trusted; the first untrusted entry is the client. A malformed or empty entry, or a chain made only of trusted addresses, falls back to the peer address. The header is never trusted from a peer that is not listed. Make sure the proxy overwrites or appends to `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`), and never list addresses that clients can reach directly.
 - The proxy must pass `Range`, `If-None-Match` and `ETag` unchanged for resumable downloads and caching.
 - The server does not read `X-Forwarded-Proto` or `Host`.
 
 ## Large uploads and memory
 
-Crow reads the whole request body into memory before the handler runs; there is no streaming request body. The consequences (plan 0022 §9, as implemented in `server/ItemRoutes.cpp`):
+Stock Crow buffers the whole request body before any handler runs. `imagerd` builds Crow with a small patch (`third_party/crow/crow-body-sink.patch`, applied by CMake at configure time) that adds a header filter and a body sink, so the body is no longer buffered. Policy lives in `server/Upload.cpp`.
 
-- An upload of N bytes needs about N bytes of RAM while it is received. Concurrent uploads add up. Size `max_upload_mb` and `threads` accordingly; the default cap of 4096 MiB is high for small machines.
-- The `max_upload_mb` check happens after the body has been received (the body is already buffered), so it protects the disk and facade but not RAM. Limit the body at a reverse proxy (`client_max_body_size`, `request_body max_size`) to reject early.
-- After the checks the body is written to a temp file `phto-upload-XXXXXX` in the system temp directory (`$TMPDIR`, else `/tmp`) and ingested via `Imager::addFile`, which streams large files through validation and hashing. The temp file is deleted on every path. So the temp directory needs free space of at least the largest upload, and `/tmp` on tmpfs counts against RAM.
-- Request bodies other than uploads are capped at 64 KiB.
+- **Early rejection.** The limit is checked when the headers arrive: `max_upload_mb` for authenticated `PUT /items`, 64 KiB for every other route. A larger `Content-Length` gets `413 TooLarge` with `Connection: close` without the body being read. Chunked bodies are cut off with `413` once they pass the limit.
+- **Streaming spool.** An authenticated upload is written to `phto-upload-XXXXXX` in the system temp directory (`$TMPDIR`, else `/tmp`) in 64 KiB blocks, then ingested via `Imager::addFile`. The temp file is deleted on every path: success, error, client abort and forced exit. The temp directory needs free space of at least the largest concurrent uploads, and `/tmp` on tmpfs counts against RAM.
+- **Memory is bounded, but not by chunk size.** `Imager::addFile` loads files of 256 MB or less into memory in one piece; only larger files use the streaming pipeline (plan 0017). Peak RSS per concurrent upload is therefore about the file size, up to 256 MB, and peak server memory is about the sum of the concurrent uploads below 256 MB. As a sizing rule, budget `256 MB x (expected concurrent uploads)` plus the base process; `threads` limits how many requests run at once. Rejected requests (413, 401) close the connection.
+- Uploads still arriving at shutdown are cut off and their temp files removed.
 - Downloads do not buffer the file: full responses are streamed in 16 KiB chunks. Range responses buffer up to 8 MiB each.
 
-For multi-gigabyte videos, expect high peak memory unless a proxy spools bodies; true streaming upload is deferred (plan 0022 §13).
+A reverse proxy limit (`client_max_body_size`, `request_body max_size`) is still worthwhile, but is no longer needed to protect RAM from a declared oversized body.
 
 ## Backups and multiple targets
 
@@ -268,10 +284,31 @@ Each `[[targets]]` entry is a full replica: files are written to every root and 
 `imagerd` writes to stderr only; use systemd/journald or redirect. Contents:
 
 - Startup line `imagerd: serving ... on <bind>:<port>`, error lines prefixed `imagerd:`, and `imagerd: shutdown complete`.
-- Crow's own log lines (connection and request-level messages at its default level), plus handler error lines such as `GET /stats: count failed (database error)` or `PUT /items: cannot spool upload to temp file`. Handlers log the cause of every 500 here, because the response body is only `internal error`.
+- One [access log](#access-log) line per request (unless `access_log = false`). Crow's own per-request INFO lines are suppressed.
+- Handler error lines such as `GET /stats: count failed (database error)` or `PUT /items: cannot spool upload to temp file`. Handlers log the cause of every 500 here, because the response body is only `internal error`.
 - Tokens, passwords and Authorization headers are not logged.
 
-There is no structured access log (plan 0022 §12 describes one; it is not implemented). Enable access logging at the reverse proxy if you need it. `GET /stats` returns library counts only, not pipeline metrics.
+`GET /stats` returns library counts only, not pipeline metrics.
+
+## Access log
+
+With `[server].access_log = true` (the default), `imagerd` writes one line to stderr per request, after the response has been produced:
+
+```
+<YYYY-MM-DDTHH:MM:SSZ> <client-ip> <login|-> <METHOD> <path> <status> <bytes|-> <ms>ms
+```
+
+| Field | Meaning |
+|-------|---------|
+| time | UTC, ISO 8601 |
+| client-ip | The [client IP](#reverse-proxy) (peer address, or the `X-Forwarded-For` client for a trusted proxy) |
+| login | Authenticated login, or `-` for unauthenticated requests |
+| path | Request path without the query string; spaces and non-printable bytes are written as `\xHH` |
+| status | HTTP status code |
+| bytes | Response bytes, or `-` if unknown |
+| duration | Time spent handling the request, in milliseconds |
+
+A line always has exactly eight space-separated fields, and lines from different threads never interleave. `Authorization` headers, cookies, tokens, passwords and request bodies are never logged. Set `access_log = false` to turn it off.
 
 ## Troubleshooting
 
@@ -280,7 +317,7 @@ Startup messages from `server/main.cpp` and `server/App.cpp`. Exit code is shown
 | Message | Cause and fix |
 |---------|---------------|
 | `Usage: imagerd <config.toml>` (1) | Wrong number of arguments. |
-| `imagerd: config error: ...` (2) | TOML parse failure or invalid value: no `[[targets]]`, duplicate root or database, `port` outside 1..65535, `max_upload_mb`/`token_ttl_seconds` <= 0, `pbkdf2_iterations` < 1000, wrong value type. The message names the key. |
+| `imagerd: config error: ...` (2) | TOML parse failure or invalid value: no `[[targets]]`, duplicate root or database, `port` outside 1..65535, `max_upload_mb`/`token_ttl_seconds` <= 0, `pbkdf2_iterations` < 1000, `drain_timeout_s`, `lockout_seconds`, `max_login_failures` or `max_ip_failures` out of range, an invalid `trusted_proxies` entry, wrong value type. The message names the key. |
 | `imagerd: cannot stat jwt_secret_file: <path>` (empty secret, exit 2) | The file does not exist or its directory is not traversable. |
 | `imagerd: jwt_secret_file must be a regular file not readable by others (chmod 600): <path>` | Mode has the world-read bit, or it is a directory/device. `chmod 600`. |
 | `imagerd: cannot open jwt_secret_file: <path>` | The daemon user lacks read permission. |
@@ -304,7 +341,7 @@ Runtime symptoms:
 |---------|-------|
 | Every request returns `401 Unauthorized` after a restart | The secret or `issuer` changed, so old tokens fail. Log in again. |
 | A user gets `401` mid-session | The account was deleted or disabled (tokens are re-checked on every request). |
-| `429 TooManyRequests` on login or `POST /auth/password` | Throttle (shared counters); wait `Retry-After` (900 s) or restart the daemon. Behind a proxy see [Reverse proxy](#reverse-proxy). |
+| `429 TooManyRequests` on login or `POST /auth/password` | Throttle (shared counters); wait `Retry-After` (`[auth].lockout_seconds`, default 900 s) or restart the daemon. Behind a proxy see [Reverse proxy](#reverse-proxy). |
 | `413 TooLarge` on small JSON | Body over 64 KiB. |
 | `400 BrokenFile` on upload | The file failed validation; see [Supported Formats](formats.md). |
 | `500 Internal` | Read the stderr log for the cause. |

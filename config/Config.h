@@ -21,6 +21,9 @@ struct ServerConfig {
   std::filesystem::path tlsKey;                        ///< [server].tls_key
   uint32_t threads = 0;                                ///< [server].threads (0 = hardware_concurrency)
   uint64_t maxUploadBytes = 4ULL * 1024 * 1024 * 1024; ///< [server].max_upload_mb (MB -> bytes)
+  std::vector<std::string> trustedProxies; ///< [server].trusted_proxies (IPs/CIDRs; empty = ignore X-Forwarded-For)
+  bool accessLog = true;                   ///< [server].access_log
+  uint32_t drainTimeoutSeconds = 30;       ///< [server].drain_timeout_s (1..3600)
 };
 
 struct AuthConfig {
@@ -30,6 +33,9 @@ struct AuthConfig {
   uint32_t tokenTtlSeconds = 43200;    ///< [auth].token_ttl_seconds (12h)
   std::string issuer = "phto";         ///< [auth].issuer
   uint32_t pbkdf2Iterations = 310000;  ///< [auth].pbkdf2_iterations
+  uint32_t lockoutSeconds = 900;       ///< [auth].lockout_seconds (1..86400)
+  uint32_t maxLoginFailures = 5;       ///< [auth].max_login_failures (1..1000), per login
+  uint32_t maxIpFailures = 20;         ///< [auth].max_ip_failures (1..100000), per client IP
 };
 
 struct AppConfig {

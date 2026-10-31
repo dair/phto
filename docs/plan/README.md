@@ -47,16 +47,26 @@ Each plan carries its own `Status` line; this table is a summary. Per-plan desig
 | Plan | Status |
 |---|---|
 | 0001–0004 | Implemented |
-| 0005 MONITORING, 0006 UTILITY | No status line; partially wired / substantially implemented per [ANALYSIS](../analysis/ANALYSIS.md) |
+| 0005 MONITORING | Substantially implemented (no export layer, no metrics in `imagerd`) |
+| 0006 UTILITY | Implemented (`--graph` later removed by 0016; `--delete`, `--memory-report` added) |
 | 0007–0010 (HEIC, NEF, MOV, AAE) | Implemented |
 | 0011 ARCHIVES | Planned, not implemented |
-| 0012 CODING_STANDARDS | In progress |
+| 0012 CODING_STANDARDS | In progress (open: C1 `-Werror`, L3 `Database.h` split) |
 | 0013 PROGRESS | Implemented |
 | 0014 DISPLAY | Partially superseded (`--graph` removed by 0016) |
-| 0015 GAPS | No status line |
+| 0015 GAPS | Historical snapshot, not maintained |
 | 0016 VERBOSE_OUTPUT, 0017 LARGE_FILES | Implemented |
 | 0018 MEMORY | Instrumentation implemented; investigation open |
 | 0019 DELETE, 0020 TIMESTAMPS | Implemented |
-| 0021 REORGANIZATION | Partially implemented (settings hygiene open) |
+| 0021 REORGANIZATION | Implemented (settings hygiene done 2026-10-31) |
 | 0022 SERVER (Phase 2) | Implemented; see [API](../user/API.md), [DEPLOYMENT](../user/DEPLOYMENT.md) |
 | 0023 TRANSCODING | Proposal, not implemented |
+
+## Next work
+
+1. **[0023 TRANSCODING](0023.TRANSCODING.md)** — design only so far; the next piece of planned work.
+2. **[0011 ARCHIVES](0011.ARCHIVES.md)** — needs a decision on which archive library to use before implementation (the project allows no new libraries without discussion).
+3. **[0018 MEMORY](0018.MEMORY.md)** — the instrumentation exists; the memory-growth investigation itself is still open.
+4. **Known behaviour:** uploads still in progress when `imagerd` shuts down are cut off once the drain timeout expires (exit code 3); there is no resumable upload. Not planned to change.
+5. **Possible follow-up:** `Imager::addFile` holds files of 256 MB or less fully in RAM during ingest (`imager/Imager.cpp:37`, [0017](0017.LARGE_FILES.md)), so server memory is about the sum of the concurrent sub-256 MB uploads. Lowering the streaming threshold or streaming all sizes would make upload memory O(chunk).
+6. **[0012 CODING_STANDARDS](0012.CODING_STANDARDS.md)** — remaining items: `-Werror` (C1) and the `Database.h` split (L3).

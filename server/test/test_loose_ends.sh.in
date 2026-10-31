@@ -1,0 +1,539 @@
+#!/usr/bin/env bash
+# server/test/test_loose_ends.sh.in — "loose-ends" step end-to-end test
+#
+#   L1  bounded upload memory: early 413, running cap, streaming spool, no spool leftovers
+#   L2  [server].trusted_proxies / X-Forwarded-For client identification for the throttle
+#   L3  access log line format, secrets never logged, [server].access_log = false
+#   L4  [auth].lockout_seconds / max_*_failures, [server].drain_timeout_s, bad values → exit 2
+# Registered as "server_loose_ends_test". Configured by CMake configure_file(@ONLY).
+# Ports 19600–19619.
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+MOV_FIXTURE="@MOV_FIXTURE@"
+
+HUGE_MB=290               # > 256 MB (kStreamingThreshold): a padded valid MOV
+HWM_LIMIT_MB=120          # daemon VmHWM must stay below this after the HUGE_MB upload
+BIG_MB=6                  # drain-test download size
+SMALL_LIMIT_MB=2          # max_upload_mb for the 413 tests
+
+PASS=0
+FAIL=0
+check() {
+  local name="$1"; shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "PASS: $name"; PASS=$((PASS + 1))
+  else echo "FAIL: $name"; FAIL=$((FAIL + 1)); fi
+}
+
+for tool in curl python3 timeout sha256sum cmp; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_loose_ends_test skipped"
+    exit 0
+  fi
+done
+if [ ! -f "$JPEG_FIXTURE" ]; then echo "FATAL: fixture $JPEG_FIXTURE missing"; exit 1; fi
+
+P_MAIN=19600; P_TRUST=19601; P_NOTRUST=19602; P_UNTRUST=19603
+P_TLS=19609; P_LOCK=19604; P_NOLOG=19605; P_DRAIN=19606; P_BAD=19607; P_MEM=19608
+
+T=$(mktemp -d)
+SPOOL="$T/spool"; mkdir -p "$SPOOL"
+ROOT1="$T/storage1"; mkdir -p "$ROOT1"
+AUTH_DB="$T/auth.db"
+SECRET="this-is-a-32-byte-test-secret-ok"
+PIDS=()
+cleanup() {
+  for p in "${PIDS[@]:-}"; do
+    if [ -n "${p:-}" ] && kill -0 "$p" 2>/dev/null; then
+      kill -KILL "$p" 2>/dev/null || true
+      wait "$p" 2>/dev/null || true
+    fi
+  done
+  rm -rf "$T"
+}
+trap cleanup EXIT
+
+# make_cfg <file> <port> <db-name> <server-extra> <auth-extra> [max_upload_mb]
+make_cfg() {
+  cat > "$1" <<CFGEOF
+[[targets]]
+root = "$ROOT1/$3"
+database = "$T/imager-$3.db"
+
+[server]
+bind = "127.0.0.1"
+port = $2
+threads = 4
+max_upload_mb = ${6:-512}
+$4
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "$SECRET"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+$5
+CFGEOF
+  mkdir -p "$ROOT1/$3"
+}
+
+http() { # http <prefix> curl-args...
+  local prefix="$1"; shift
+  curl --silent --dump-header "$prefix.hdr" --output "$prefix.body" --write-out "%{http_code}" "$@" \
+    > "$prefix.status" 2>/dev/null || echo 000 > "$prefix.status"
+}
+st() { cat "$1.status"; }
+hdr() { grep -i "^$2:" "$1.hdr" | tail -1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'; }
+json_get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+wait_ready() {
+  curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 --retry-delay 1 \
+    --retry-connrefused --max-time 12 "http://127.0.0.1:$1/health" 2>/dev/null || echo 000
+}
+login() { # login <port> <login> <password> [extra curl args] → token
+  local r p="$1" l="$2" pw="$3"; shift 3
+  r=$(curl --silent --request POST --header "Content-Type: application/json" "$@" \
+    --data "{\"login\":\"$l\",\"password\":\"$pw\"}" "http://127.0.0.1:$p/auth/login")
+  python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$r" 2>/dev/null || true
+}
+login_status() { # login_status <port> <login> <password> [extra curl args] → http code
+  local p="$1" l="$2" pw="$3"; shift 3
+  curl --silent --output /dev/null --write-out "%{http_code}" --request POST \
+    --header "Content-Type: application/json" "$@" \
+    --data "{\"login\":\"$l\",\"password\":\"$pw\"}" "http://127.0.0.1:$p/auth/login" 2>/dev/null || echo 000
+}
+# start_daemon <cfg> <port> <tag> → DPID ; TMPDIR points at $SPOOL
+start_daemon() {
+  TMPDIR="$SPOOL" "$IMAGERD_BIN" "$1" >"$T/$3.stdout" 2>"$T/$3.stderr" &
+  DPID=$!
+  PIDS+=("$DPID")
+  [ "$(wait_ready "$2")" = "200" ]
+}
+wait_exit() { # wait_exit <pid> <max-secs> → EXIT_RC, EXIT_SECS ; 1 if still running
+  local pid="$1" max="$2" start=$SECONDS
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ $((SECONDS - start)) -ge "$max" ]; then EXIT_SECS=$((SECONDS - start)); return 1; fi
+    sleep 0.1
+  done
+  wait "$pid" 2>/dev/null
+  EXIT_RC=$?
+  EXIT_SECS=$((SECONDS - start))
+  return 0
+}
+stop_daemon() { kill -TERM "$1" 2>/dev/null; wait_exit "$1" 15 || true; }
+spool_empty() { # wait up to 5 s for the spool dir to hold no phto-upload-* files
+  local i
+  for i in $(seq 1 50); do
+    if ! compgen -G "$SPOOL/phto-upload-*" >/dev/null; then return 0; fi
+    sleep 0.1
+  done
+  return 1
+}
+
+# ---- seed users --------------------------------------------------------------
+make_cfg "$T/seed.toml" $P_MAIN main "" ""
+printf '%s' "alicepass1" | "$IMAGERADMIN_BIN" "$T/seed.toml" user add alice "Alice" --password-stdin || { echo "FATAL: seed alice"; exit 1; }
+printf '%s' "bobpass123" | "$IMAGERADMIN_BIN" "$T/seed.toml" user add bob "Bob" --password-stdin || { echo "FATAL: seed bob"; exit 1; }
+
+# ---- fixtures ----------------------------------------------------------------
+python3 -I - "$JPEG_FIXTURE" "$T" "$BIG_MB" "$HUGE_MB" "$SMALL_LIMIT_MB" "$MOV_FIXTURE" <<'PYEOF'
+import sys, os
+data = open(sys.argv[1], "rb").read()
+d = sys.argv[2]
+def padded(mb, tag):
+    segs = bytearray(); i = 0; total = mb * 1024 * 1024
+    while len(segs) < total:
+        body = (b"%s-%d-" % (tag, i)) + os.urandom(65000 - 20)
+        segs += b"\xff\xfe" + (len(body) + 2).to_bytes(2, "big") + body
+        i += 1
+    return data[:2] + bytes(segs) + data[2:]
+open(d + "/big.jpg", "wb").write(padded(int(sys.argv[3]), b"big"))
+mov = open(sys.argv[6], "rb").read()
+with open(d + "/huge.mov", "wb") as f:
+    f.write(mov); left = int(sys.argv[4]) * 1024 * 1024 - len(mov); z = bytes(1 << 20)
+    while left > 0:
+        f.write(z[:min(left, len(z))]); left -= len(z)
+open(d + "/over.jpg", "wb").write(padded(int(sys.argv[5]) + 2, b"over"))
+open(d + "/broken.jpg", "wb").write(data[: len(data) // 2] + b"\x00" * 100)
+open(d + "/junk70k.json", "wb").write(b"{\"login\":\"" + b"a" * 70000 + b"\"}")
+PYEOF
+cp "$JPEG_FIXTURE" "$T/ok.jpg"
+OK_SHA=$(sha256sum "$T/ok.jpg" | cut -d' ' -f1)
+BIG_SHA=$(sha256sum "$T/big.jpg" | cut -d' ' -f1)
+
+# raw(): python helper for protocol-level tests.
+# raw.py <port> <mode> <token> [args]; prints "status elapsed eof"
+cat > "$T/raw.py" <<'PYEOF'
+import socket, sys, time
+port, mode, tok = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+s = socket.create_connection(("127.0.0.1", port)); s.settimeout(8)
+if mode.startswith("tls-"):
+    import ssl
+    ctx = ssl.create_default_context(cafile=sys.argv[4])
+    s = ctx.wrap_socket(s, server_hostname="localhost"); mode = mode[4:]
+def head(method, path, cl, extra=""):
+    return ("%s %s HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\nX-Filename: r.jpg\r\n%s"
+            "Content-Length: %d\r\n\r\n" % (method, path, tok, extra, cl)).encode()
+t0 = time.time()
+if mode == "huge-put":          # declared 10 GiB, no body sent
+    s.sendall(head("PUT", "/items", 10 * 1024**3))
+elif mode == "huge-post":       # declared 10 GiB on a JSON route
+    s.sendall(head("POST", "/auth/login", 10 * 1024**3, "Content-Type: application/json\r\n"))
+elif mode == "abort":           # partial body then close
+    s.sendall(head("PUT", "/items", 5_000_000) + b"x" * 200000)
+    time.sleep(0.5); s.close(); print("aborted"); sys.exit(0)
+elif mode == "hold":            # partial body, hold open until killed
+    s.sendall(head("PUT", "/items", 5_000_000) + b"x" * 200000)
+    open(sys.argv[4], "w").write("held"); time.sleep(60); sys.exit(0)
+buf = b""
+try:
+    while b"\r\n\r\n" not in buf:
+        c = s.recv(4096)
+        if not c: break
+        buf += c
+    status = buf.split(b" ")[1].decode() if buf.startswith(b"HTTP/") else "none"
+    # connection must be closed by the server afterwards
+    eof = "no"
+    try:
+        while True:
+            c = s.recv(4096)
+            if not c: eof = "yes"; break
+    except socket.timeout:
+        eof = "timeout"
+except socket.timeout:
+    status = "timeout"; eof = "-"
+print(status, "%.2f" % (time.time() - t0), eof)
+PYEOF
+
+# ===========================================================================
+# 1. L1 — upload limits + spool (daemon on P_MAIN, max_upload_mb = 2)
+# ===========================================================================
+make_cfg "$T/main.toml" $P_MAIN main "" "" $SMALL_LIMIT_MB
+start_daemon "$T/main.toml" $P_MAIN main; STARTED=$?
+check "l1: daemon starts" test "$STARTED" -eq 0
+MAIN_PID=$DPID
+TOK=$(login $P_MAIN alice alicepass1)
+check "l1: alice token" test -n "$TOK"
+B="http://127.0.0.1:$P_MAIN"
+AUTHH="Authorization: Bearer $TOK"
+
+# normal upload round-trips
+http "$T/up1" -X PUT -H "$AUTHH" -H "X-Filename: ok.jpg" --data-binary "@$T/ok.jpg" "$B/items"
+check "l1: normal upload → 201" test "$(st $T/up1)" = 201
+check "l1: normal upload id == sha256" test "$(json_get $T/up1.body "d['id']")" = "$OK_SHA"
+http "$T/dl1" -H "$AUTHH" "$B/items/$OK_SHA/content"
+check "l1: content round-trips byte-for-byte" cmp -s "$T/dl1.body" "$T/ok.jpg"
+http "$T/up1b" -X PUT -H "$AUTHH" -H "X-Filename: ok.jpg" --data-binary "@$T/ok.jpg" "$B/items"
+check "l1: duplicate upload → 200" test "$(st $T/up1b)" = 200
+check "l1: spool empty after success" spool_empty
+
+# early 413 by Content-Length (file larger than limit)
+http "$T/up2" -X PUT -H "$AUTHH" -H "X-Filename: over.jpg" --data-binary "@$T/over.jpg" "$B/items"
+check "l1: Content-Length over max_upload_mb → 413" test "$(st $T/up2)" = 413
+check "l1: early 413 is access-logged with status 413" bash -c 'sleep 0.3; grep -Eq " PUT /items 413 " "$1"' _ "$T/main.stderr"
+check "l1: 413 has TooLarge error envelope" test "$(json_get $T/up2.body "d['error']['code']")" = TooLarge
+check "l1: 413 is not persisted" bash -c '[ "$(curl -s -o /dev/null -w "%{http_code}" -H "$1" "$2")" = 404 ]' _ "$AUTHH" \
+  "$B/items/$(sha256sum $T/over.jpg | cut -d' ' -f1)"
+check "l1: spool empty after 413" spool_empty
+
+# huge declared length, no body: prompt 413 + close
+RES=$(python3 -I "$T/raw.py" $P_MAIN huge-put "$TOK")
+check "l1: huge Content-Length, no body → 413 ($RES)" bash -c '[ "${1%% *}" = 413 ]' _ "$RES"
+check "l1: huge Content-Length 413 arrives promptly (<3s)" bash -c 'python3 -c "import sys; sys.exit(0 if float(sys.argv[1].split()[1])<3 else 1)" "$1"' _ "$RES"
+check "l1: connection closed after early 413" bash -c '[ "${1##* }" = yes ]' _ "$RES"
+check "l1: spool empty after huge declared length" spool_empty
+
+# non-upload route: 64 KiB cap
+http "$T/js1" -X POST -H "Content-Type: application/json" --data-binary "@$T/junk70k.json" "$B/auth/login"
+check "l1: 70 KB body on POST /auth/login → 413" test "$(st $T/js1)" = 413
+check "l1: 70 KB 413 has TooLarge envelope" test "$(json_get $T/js1.body "d['error']['code']")" = TooLarge
+RES=$(python3 -I "$T/raw.py" $P_MAIN huge-post "$TOK")
+check "l1: huge declared length on JSON route → prompt 413 ($RES)" bash -c '[ "${1%% *}" = 413 ]' _ "$RES"
+check "l1: JSON route small request still works" test -n "$(login $P_MAIN alice alicepass1)"
+
+# chunked body over the limit (no Content-Length)
+http "$T/ch1" -X PUT -H "$AUTHH" -H "X-Filename: over.jpg" -H "Transfer-Encoding: chunked" \
+  --data-binary "@$T/over.jpg" "$B/items"
+check "l1: chunked body over limit → 413 or connection closed" bash -c '[ "$1" = 413 ] || [ "$1" = 000 ]' _ "$(st $T/ch1)"
+check "l1: chunked over-limit leaves spool empty" spool_empty
+http "$T/ch1c" -X POST -H "Content-Type: application/json" -H "Transfer-Encoding: chunked" \
+  --data-binary "@$T/junk70k.json" "$B/auth/login"
+check "l1: chunked 70 KB JSON body → 413 or closed" bash -c '[ "$1" = 413 ] || [ "$1" = 000 ]' _ "$(st $T/ch1c)"
+http "$T/ch2" -X PUT -H "$AUTHH" -H "X-Filename: ok2.jpg" -H "Transfer-Encoding: chunked" \
+  --data-binary "@$T/ok.jpg" "$B/items"
+check "l1: small chunked upload still accepted (200/201)" bash -c '[ "$1" = 201 ] || [ "$1" = 200 ]' _ "$(st $T/ch2)"
+
+# BrokenFile
+http "$T/up3" -X PUT -H "$AUTHH" -H "X-Filename: broken.jpg" --data-binary "@$T/broken.jpg" "$B/items"
+check "l1: broken JPEG → 400" test "$(st $T/up3)" = 400
+check "l1: broken JPEG error code BrokenFile" test "$(json_get $T/up3.body "d['error']['code']")" = BrokenFile
+check "l1: spool empty after BrokenFile" spool_empty
+# empty body
+http "$T/up4" -X PUT -H "$AUTHH" -H "X-Filename: e.jpg" --data-binary "" "$B/items"
+check "l1: empty body → 400" test "$(st $T/up4)" = 400
+check "l1: spool empty after empty body" spool_empty
+
+# client abort mid-body
+python3 -I "$T/raw.py" $P_MAIN abort "$TOK" >/dev/null
+check "l1: spool empty after client abort mid-body" spool_empty
+check "l1: daemon still healthy after abort" test "$(wait_ready $P_MAIN)" = 200
+
+# shutdown cut-off with a stalled upload
+python3 -I "$T/raw.py" $P_MAIN hold "$TOK" "$T/hold.flag" &
+HOLD_PID=$!; PIDS+=("$HOLD_PID")
+for _ in $(seq 1 50); do [ -e "$T/hold.flag" ] && break; sleep 0.1; done
+kill -TERM "$MAIN_PID"
+wait_exit "$MAIN_PID" 40; MAIN_EXITED=$?
+kill "$HOLD_PID" 2>/dev/null || true
+check "l1: daemon exits on SIGTERM with a stalled upload" test "$MAIN_EXITED" -eq 0
+check "l1: exit code 0 or 3 after cut-off" bash -c '[ "$1" = 0 ] || [ "$1" = 3 ]' _ "${EXIT_RC:-99}"
+check "l1: spool empty after shutdown cut-off" spool_empty
+
+# ===========================================================================
+# 2. L1 — memory boundedness (200 MB upload, large max_upload_mb)
+# ===========================================================================
+make_cfg "$T/mem.toml" $P_MEM mem "" "" 1024
+start_daemon "$T/mem.toml" $P_MEM mem; STARTED=$?
+check "mem: daemon starts" test "$STARTED" -eq 0
+MEM_PID=$DPID
+MEM_TOK=$(login $P_MEM alice alicepass1)
+http "$T/memup" -X PUT -H "Authorization: Bearer $MEM_TOK" -H "X-Filename: huge.mov" \
+  --data-binary "@$T/huge.mov" "http://127.0.0.1:$P_MEM/items"
+echo "info: mem upload status=$(st $T/memup) body=$(head -c 300 $T/memup.body)"
+check "mem: ${HUGE_MB} MB (> streaming threshold) MOV upload → 201" test "$(st $T/memup)" = 201
+HWM_KB=$(grep '^VmHWM:' "/proc/$MEM_PID/status" | tr -s ' ' | cut -d' ' -f2)
+echo "info: daemon VmHWM after ${HUGE_MB} MB upload: ${HWM_KB} kB"
+check "mem: VmHWM < ${HWM_LIMIT_MB} MB after ${HUGE_MB} MB upload" test "${HWM_KB:-999999999}" -lt $((HWM_LIMIT_MB * 1024))
+check "mem: spool empty after big upload" spool_empty
+stop_daemon "$MEM_PID"
+rm -f "$T/huge.mov"
+
+# ===========================================================================
+# 3. L2 + L3 — trusted proxies, access log (P_TRUST: proxies = 127.0.0.0/8)
+# ===========================================================================
+# max_ip_failures = 3 (per forwarded client); login limit high so only the IP counter trips.
+IPLIM='max_login_failures = 100
+max_ip_failures = 3
+lockout_seconds = 60'
+make_cfg "$T/trust.toml" $P_TRUST trust 'trusted_proxies = ["127.0.0.0/8", "::1"]' "$IPLIM"
+start_daemon "$T/trust.toml" $P_TRUST trust; STARTED=$?
+check "trust: daemon starts" test "$STARTED" -eq 0
+TRUST_PID=$DPID
+
+xff_fail() { # xff_fail <port> <xff> <n> → status of last attempt (distinct logins)
+  local s=000 i
+  for i in $(seq 1 "$3"); do s=$(login_status "$1" "nouser-$RANDOM-$i" "wrongpass" -H "X-Forwarded-For: $2"); done
+  echo "$s"
+}
+check "trust: client A failures below limit → 401" test "$(xff_fail $P_TRUST 203.0.113.1 3)" = 401
+check "trust: client A locked out (429) after limit" test "$(login_status $P_TRUST alice alicepass1 -H 'X-Forwarded-For: 203.0.113.1')" = 429
+check "trust: client B via same proxy NOT locked (own counter)" test "$(login_status $P_TRUST alice alicepass1 -H 'X-Forwarded-For: 203.0.113.2')" = 200
+check "trust: no-XFF request (peer 127.0.0.1) not locked" test "$(login_status $P_TRUST alice alicepass1)" = 200
+check "trust: chain 'spoof, A' → rightmost untrusted (A) is the client → 429" \
+  test "$(login_status $P_TRUST alice alicepass1 -H 'X-Forwarded-For: 198.51.100.77, 203.0.113.1')" = 429
+check "trust: chain 'A, trusted-proxy' skips trusted entry → 429" \
+  test "$(login_status $P_TRUST alice alicepass1 -H 'X-Forwarded-For: 203.0.113.1, 127.0.0.5')" = 429
+check "trust: chain 'B, A-trusted' for unlocked B → 200" \
+  test "$(login_status $P_TRUST alice alicepass1 -H 'X-Forwarded-For: 203.0.113.2, 127.0.0.9')" = 200
+# IPv6 client
+check "trust: IPv6 client failures → locked (own counter)" test "$(xff_fail $P_TRUST 2001:db8::1 3)" = 401
+check "trust: IPv6 client locked out" test "$(login_status $P_TRUST alice alicepass1 -H 'X-Forwarded-For: 2001:db8::1')" = 429
+check "trust: other IPv6 client unaffected" test "$(login_status $P_TRUST alice alicepass1 -H 'X-Forwarded-For: 2001:db8::2')" = 200
+# malformed / empty / all-trusted fall back to the peer address (127.0.0.1); peer not yet locked
+check "trust: malformed XFF falls back to peer (200)" test "$(login_status $P_TRUST alice alicepass1 -H 'X-Forwarded-For: not-an-ip')" = 200
+check "trust: empty XFF falls back to peer (200)" test "$(login_status $P_TRUST alice alicepass1 -H 'X-Forwarded-For:')" = 200
+check "trust: all-trusted XFF falls back to peer (200)" test "$(login_status $P_TRUST alice alicepass1 -H 'X-Forwarded-For: 127.0.0.2, 127.0.0.3')" = 200
+# now lock the peer address itself through malformed headers: fallback must be keyed on the peer
+check "trust: malformed-XFF failures count against the peer" test "$(xff_fail $P_TRUST not-an-ip 3)" = 401
+check "trust: peer now locked (no XFF → 429)" test "$(login_status $P_TRUST alice alicepass1)" = 429
+check "trust: client A still locked too" test "$(login_status $P_TRUST bob bobpass123 -H 'X-Forwarded-For: 203.0.113.1')" = 429
+
+# ---- access log (L3) on this daemon: generate known traffic, then inspect ----
+TOK_T=$(login $P_TRUST alice alicepass1 -H 'X-Forwarded-For: 203.0.113.50')
+check "log: token obtained for log checks" test -n "$TOK_T"
+curl -s -o /dev/null "http://127.0.0.1:$P_TRUST/health" -H "X-Forwarded-For: 203.0.113.50"
+curl -s -o /dev/null -H "Authorization: Bearer $TOK_T" -H "X-Forwarded-For: 203.0.113.50" "http://127.0.0.1:$P_TRUST/items?limit=1"
+curl -s -o /dev/null -H "X-Forwarded-For: 203.0.113.50" "http://127.0.0.1:$P_TRUST/nope-$$"
+sleep 0.5
+LOG="$T/trust.stderr"
+LINE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z [^ ]+ [^ ]+ [A-Z]+ [^ ]+ [0-9]{3} ([0-9]+|-) [0-9]+ms$'
+check "log: GET /health line has ISO time, forwarded client ip, '-' login, 200, duration" \
+  grep -Eq '^[0-9T:.Z-]+ 203\.0\.113\.50 - GET /health 200 ([0-9]+|-) [0-9]+ms$' "$LOG"
+check "log: authenticated request logs the login" \
+  grep -Eq '^[0-9T:.Z-]+ 203\.0\.113\.50 alice GET /items[^ ]* 200 ([0-9]+|-) [0-9]+ms$' "$LOG"
+check "log: 404 request logged with status 404" grep -Eq " GET /nope-$$ 404 " "$LOG"
+check "log: POST /auth/login 401 line present" grep -Eq ' POST /auth/login 401 ' "$LOG"
+check "log: 429 line present" grep -Eq ' POST /auth/login 429 ' "$LOG"
+check "log: every timestamped line matches the documented format" \
+  bash -c '! grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}T" "$1" | grep -Ev "$2"' _ "$LOG" "$LINE_RE"
+curl -s -o /dev/null -H "Authorization: Bearer $TOK_T" -H "X-Forwarded-For: 203.0.113.50" "http://127.0.0.1:$P_TRUST/items?filename=querysecret-$$"
+sleep 0.3
+check "log: query string is not logged" bash -c '! grep -q "querysecret" "$1"' _ "$LOG"
+check "log: request with query still logged (path only)" grep -Eq ' GET /items 200 ' "$LOG"
+check "log: middleware 4xx (no token → 401) is logged" bash -c 'curl -s -o /dev/null "http://127.0.0.1:$1/items"; sleep 0.3; grep -Eq " GET /items 401 " "$2"' _ "$P_TRUST" "$LOG"
+check "log: Authorization token never appears in the log" bash -c '! grep -qF -- "$1" "$2"' _ "$TOK_T" "$LOG"
+check "log: no 'Bearer' / password material in the log" bash -c '! grep -Eqi "Bearer|alicepass1|bobpass123|wrongpass" "$1"' _ "$LOG"
+
+# concurrent requests must not interleave lines
+CPIDS=()
+for i in $(seq 1 40); do
+  curl -s -o /dev/null "http://127.0.0.1:$P_TRUST/health?i=$i" &
+  CPIDS+=("$!")
+done
+for cp in "${CPIDS[@]}"; do wait "$cp" 2>/dev/null; done
+sleep 0.5
+check "log: 40 concurrent requests → 40 intact lines" \
+  bash -c '[ "$(grep -E " GET /health(\?i=[0-9]+)? 200 " "$1" | grep -Ec "$2")" -ge 40 ]' _ "$LOG" "$LINE_RE"
+# control characters in the path are escaped (one line, no raw ESC / CR)
+curl -s -o /dev/null --path-as-is "http://127.0.0.1:$P_TRUST/ctl%1b%0d%0aFORGED-LINE"
+sleep 0.3
+check "log: control chars in path do not forge a new line / emit raw ESC" \
+  bash -c '! grep -q "^FORGED-LINE" "$1" && ! grep -qP "\x1b" "$1"' _ "$LOG"
+stop_daemon "$TRUST_PID"
+
+# ---- XFF ignored when no proxies configured ----
+make_cfg "$T/notrust.toml" $P_NOTRUST notrust "" "$IPLIM"
+start_daemon "$T/notrust.toml" $P_NOTRUST notrust; STARTED=$?
+check "notrust: daemon starts" test "$STARTED" -eq 0
+NT_PID=$DPID
+check "notrust: failures with rotating XFF all count against the peer → 401s" test "$(xff_fail $P_NOTRUST 203.0.113.1 1)" = 401
+xff_fail $P_NOTRUST 203.0.113.2 1 >/dev/null; xff_fail $P_NOTRUST 203.0.113.3 1 >/dev/null
+check "notrust: XFF ignored — different XFF value is locked out (shared peer counter)" \
+  test "$(login_status $P_NOTRUST alice alicepass1 -H 'X-Forwarded-For: 192.0.2.99')" = 429
+stop_daemon "$NT_PID"
+
+# ---- spoofed XFF from an untrusted peer ignored (proxy list does not include the peer) ----
+make_cfg "$T/untrust.toml" $P_UNTRUST untrust 'trusted_proxies = ["10.0.0.0/8", "192.168.1.1"]' "$IPLIM"
+start_daemon "$T/untrust.toml" $P_UNTRUST untrust; STARTED=$?
+check "untrusted-peer: daemon starts" test "$STARTED" -eq 0
+UT_PID=$DPID
+xff_fail $P_UNTRUST 10.1.2.3 1 >/dev/null; xff_fail $P_UNTRUST 10.9.9.9 1 >/dev/null; xff_fail $P_UNTRUST 198.51.100.4 1 >/dev/null
+check "untrusted-peer: spoofing XFF cannot evade the peer lockout (429)" \
+  test "$(login_status $P_UNTRUST alice alicepass1 -H 'X-Forwarded-For: 172.16.0.1')" = 429
+stop_daemon "$UT_PID"
+
+# ===========================================================================
+# 4. L4 — lockout expiry with lockout_seconds = 2
+# ===========================================================================
+make_cfg "$T/lock.toml" $P_LOCK lock "" 'max_login_failures = 3
+max_ip_failures = 100
+lockout_seconds = 2'
+start_daemon "$T/lock.toml" $P_LOCK lock; STARTED=$?
+check "lockout: daemon starts" test "$STARTED" -eq 0
+LK_PID=$DPID
+for i in 1 2 3; do login_status $P_LOCK bob wrong-$i >/dev/null; done
+http "$T/lk1" -X POST -H "Content-Type: application/json" --data '{"login":"bob","password":"bobpass123"}' "http://127.0.0.1:$P_LOCK/auth/login"
+check "lockout: after max_login_failures → 429 even with correct password" test "$(st $T/lk1)" = 429
+check "lockout: Retry-After follows lockout_seconds (1..2)" bash -c '[ "$1" = 1 ] || [ "$1" = 2 ]' _ "$(hdr $T/lk1 Retry-After)"
+OK_AFTER=000
+for _ in $(seq 1 40); do   # poll up to ~8 s
+  OK_AFTER=$(login_status $P_LOCK bob bobpass123)
+  [ "$OK_AFTER" = 200 ] && break
+  sleep 0.2
+done
+check "lockout: lock expires after ~2 s (login works again)" test "$OK_AFTER" = 200
+check "lockout: other user unaffected throughout" test "$(login_status $P_LOCK alice alicepass1)" = 200
+stop_daemon "$LK_PID"
+
+# ===========================================================================
+# 5. L3 — access_log = false silences it
+# ===========================================================================
+make_cfg "$T/nolog.toml" $P_NOLOG nolog 'access_log = false' ""
+start_daemon "$T/nolog.toml" $P_NOLOG nolog; STARTED=$?
+check "nolog: daemon starts" test "$STARTED" -eq 0
+NL_PID=$DPID
+login $P_NOLOG alice alicepass1 >/dev/null
+curl -s -o /dev/null "http://127.0.0.1:$P_NOLOG/health"
+sleep 0.3
+check "nolog: no access-log lines on stderr" bash -c '! grep -Eq "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.* (GET|POST) " "$1"' _ "$T/nolog.stderr"
+stop_daemon "$NL_PID"
+# default (key absent) logs: main.stderr from section 1 had traffic
+check "log: access_log defaults to true (lines present in section-1 daemon log)" \
+  grep -Eq ' PUT /items 201 ' "$T/main.stderr"
+
+# ===========================================================================
+# 6. L4 — drain_timeout_s = 1: slow download in flight at SIGTERM → exit 3
+# ===========================================================================
+make_cfg "$T/drain.toml" $P_DRAIN drain 'drain_timeout_s = 1' "" 64
+start_daemon "$T/drain.toml" $P_DRAIN drain; STARTED=$?
+check "drain: daemon starts" test "$STARTED" -eq 0
+DR_PID=$DPID
+DR_TOK=$(login $P_DRAIN alice alicepass1)
+http "$T/drup" -X PUT -H "Authorization: Bearer $DR_TOK" -H "X-Filename: big.jpg" --data-binary "@$T/big.jpg" "http://127.0.0.1:$P_DRAIN/items"
+check "drain: setup upload → 201" test "$(st $T/drup)" = 201
+curl --silent --limit-rate 300k --output "$T/dr.out" -H "Authorization: Bearer $DR_TOK" \
+  "http://127.0.0.1:$P_DRAIN/items/$BIG_SHA/content" >/dev/null 2>&1 &
+DRC_PID=$!; PIDS+=("$DRC_PID")
+sleep 1
+check "drain: precondition — download still in flight" kill -0 "$DRC_PID"
+kill -TERM "$DR_PID"
+wait_exit "$DR_PID" 8; DR_EXITED=$?
+check "drain: daemon exits within ~1 s drain + slack (<8 s)" test "$DR_EXITED" -eq 0
+check "drain: forced exit status is 3" test "${EXIT_RC:-99}" -eq 3
+check "drain: 'drain timeout' logged" grep -q 'drain timeout' "$T/drain.stderr"
+kill "$DRC_PID" 2>/dev/null || true
+check "drain: spool empty" spool_empty
+
+# ===========================================================================
+# 6b. L1 over TLS — huge declared Content-Length gets a prompt 413 and a clean close
+# ===========================================================================
+if command -v openssl >/dev/null 2>&1 && openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
+     -addext subjectAltName=DNS:localhost,IP:127.0.0.1 -keyout "$T/key.pem" -out "$T/cert.pem" >/dev/null 2>&1; then
+  chmod 0600 "$T/key.pem"
+  make_cfg "$T/tls.toml" $P_TLS tls "tls = true
+tls_cert = \"$T/cert.pem\"
+tls_key = \"$T/key.pem\"" ""
+  TMPDIR="$SPOOL" "$IMAGERD_BIN" "$T/tls.toml" >"$T/tls.stdout" 2>"$T/tls.stderr" &
+  TLS_PID=$!; PIDS+=("$TLS_PID")
+  READY=$(curl --silent --output /dev/null --write-out "%{http_code}" --cacert "$T/cert.pem" --retry 10 --retry-delay 1 \
+    --retry-connrefused --max-time 12 "https://localhost:$P_TLS/health" 2>/dev/null || echo 000)
+  check "tls: daemon starts" test "$READY" = 200
+  TLS_TOK=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$(curl --silent --cacert "$T/cert.pem" \
+    --request POST --header "Content-Type: application/json" --data '{"login":"alice","password":"alicepass1"}' \
+    "https://localhost:$P_TLS/auth/login")" 2>/dev/null || true)
+  check "tls: alice token" test -n "$TLS_TOK"
+  RES=$(python3 -I "$T/raw.py" $P_TLS tls-huge-put "$TLS_TOK" "$T/cert.pem")
+  check "tls: huge Content-Length → 413 ($RES)" bash -c '[ "${1%% *}" = 413 ]' _ "$RES"
+  check "tls: 413 arrives promptly (<3s)" bash -c 'python3 -c "import sys; sys.exit(0 if float(sys.argv[1].split()[1])<3 else 1)" "$1"' _ "$RES"
+  check "tls: connection closed after 413" bash -c '[ "${1##* }" = yes ]' _ "$RES"
+  check "tls: daemon still healthy afterwards" test "$(curl --silent --output /dev/null --write-out '%{http_code}' --cacert "$T/cert.pem" "https://localhost:$P_TLS/health")" = 200
+  check "tls: spool empty" spool_empty
+  stop_daemon "$TLS_PID"
+else
+  echo "NOTE: openssl unavailable — TLS 413 case skipped"
+fi
+
+# ===========================================================================
+# 7. L4 — bad config values exit 2 with an 'imagerd:' line
+# ===========================================================================
+bad_cfg() { # bad_cfg <tag> <server-extra> <auth-extra>
+  make_cfg "$T/bad-$1.toml" $P_BAD "bad-$1" "$2" "$3"
+  timeout 10 "$IMAGERD_BIN" "$T/bad-$1.toml" >"$T/bad-$1.out" 2>"$T/bad-$1.err"
+  BAD_RC=$?
+}
+bad_case() { # bad_case <label> <tag> <server-extra> <auth-extra>
+  bad_cfg "$2" "$3" "$4"
+  check "bad config ($1): exit status 2" test "$BAD_RC" -eq 2
+  check "bad config ($1): 'imagerd:' line on stderr" grep -q '^imagerd:' "$T/bad-$2.err"
+}
+bad_case "lockout_seconds = 0"        a ""                          "lockout_seconds = 0"
+bad_case "lockout_seconds = -5"       b ""                          "lockout_seconds = -5"
+bad_case "lockout_seconds = 10^9"     c ""                          "lockout_seconds = 1000000000"
+bad_case "max_login_failures = 0"     d ""                          "max_login_failures = 0"
+bad_case "max_ip_failures = 0"        e ""                          "max_ip_failures = 0"
+bad_case "drain_timeout_s = 0"        f "drain_timeout_s = 0"       ""
+bad_case "drain_timeout_s = -1"       g "drain_timeout_s = -1"      ""
+bad_case "drain_timeout_s = 10^9"     h "drain_timeout_s = 1000000000" ""
+bad_case "trusted_proxies bad CIDR /33" i 'trusted_proxies = ["10.0.0.0/33"]' ""
+bad_case "trusted_proxies garbage"    j 'trusted_proxies = ["not-an-ip"]' ""
+bad_case "trusted_proxies bad v6 prefix" k 'trusted_proxies = ["::1/129"]' ""
+bad_case "trusted_proxies wrong type" l 'trusted_proxies = "10.0.0.1"' ""
+bad_case "lockout_seconds wrong type" m "" 'lockout_seconds = "soon"'
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

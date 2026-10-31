@@ -18,11 +18,9 @@
 #include <thread>
 
 #include "App.h"
+#include "Upload.h"
 
 namespace {
-
-/// Upper bound on how long shutdown waits for in-flight requests before the process is forced down.
-constexpr std::chrono::seconds DRAIN_TIMEOUT{30};
 
 /// Load JWT secret: prefer jwtSecretFile, fall back to jwtSecret inline.
 /// Returns the secret string, or empty on error (after printing to stderr).
@@ -120,7 +118,15 @@ int main(int argc, char* argv[]) {
   }
 
   // --- Build App + register routes ---
-  server::App app{cfg.server, *imager, *userStore, *tokenService, cfg.auth.tokenTtlSeconds, cfg.auth.pbkdf2Iterations};
+  try {
+    (void)server::TrustedProxies::parse(cfg.server.trustedProxies); // fail fast with a clear message
+  } catch (const std::exception& e) {
+    std::cerr << "imagerd: " << e.what() << "\n";
+    return 2;
+  }
+  // Our access log replaces Crow's per-request INFO lines (which would also echo query strings).
+  crow::logger::setLogLevel(crow::LogLevel::Warning);
+  server::App app{cfg.server, *imager, *userStore, *tokenService, cfg.auth};
   app.registerRoutes();
   try {
     app.enableTls();
@@ -145,11 +151,13 @@ int main(int argc, char* argv[]) {
         return; // woken by main() after a normal return
       }
     }
-    std::cerr << "imagerd: signal " << sig << ", draining (up to " << DRAIN_TIMEOUT.count() << "s)\n";
+    const std::chrono::seconds drainTimeout{cfg.server.drainTimeoutSeconds};
+    std::cerr << "imagerd: signal " << sig << ", draining (up to " << drainTimeout.count() << "s)\n";
     app.stop();
     std::unique_lock lock(mu);
-    if (!cv.wait_for(lock, DRAIN_TIMEOUT, [&] { return stopped; })) {
+    if (!cv.wait_for(lock, drainTimeout, [&] { return stopped; })) {
       std::cerr << "imagerd: drain timeout, forcing exit\n";
+      server::removeAllSpools(); // destructors will not run: unlink in-flight upload spool files
       std::_Exit(3);
     }
   });
@@ -165,6 +173,7 @@ int main(int argc, char* argv[]) {
     rc = 2;
   }
 
+  server::removeAllSpools(); // uploads cut off by shutdown (normally already removed with their connections)
   {
     std::lock_guard lock(mu);
     stopped = true;

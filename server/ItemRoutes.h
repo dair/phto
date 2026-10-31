@@ -15,6 +15,7 @@ class Imager;
 namespace server {
 
 /// Registers PUT /items, GET/DELETE /items/{id}, GET /items/{id}/content. All require a Bearer token.
-void registerItemRoutes(crow::App<AuthMiddleware>& app, imager::Imager& imager, uint64_t maxUploadBytes);
+/// Upload size limits are enforced while the request is read (server/Upload: installRequestPolicy).
+void registerItemRoutes(crow::App<AuthMiddleware>& app, imager::Imager& imager);
 
 } // namespace server

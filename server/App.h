@@ -6,7 +6,9 @@
 #include <atomic>
 #include <thread>
 
+#include "AccessLog.h"
 #include "AuthMiddleware.h"
+#include "ClientIp.h"
 
 namespace auth {
 
@@ -30,8 +32,7 @@ public:
     imager::Imager& imager,
     auth::UserStore& userStore,
     auth::TokenService& tokenService,
-    uint32_t tokenTtlSeconds,
-    uint32_t pbkdf2Iterations
+    const config::AuthConfig& authCfg
   );
   ~App();
 
@@ -40,7 +41,7 @@ public:
   App(App&&) = delete;
   App& operator=(App&&) = delete;
 
-  /// Register all routes. Call before run().
+  /// Register all routes and the request-size policy. Call before run().
   void registerRoutes();
 
   /// Configure native TLS from cfg (no-op when tls = false). Requires TLS >= 1.2.
@@ -63,9 +64,10 @@ private:
   imager::Imager& m_imager;
   auth::UserStore& m_userStore;
   auth::TokenService& m_tokenService;
-  uint32_t m_tokenTtlSeconds;
-  uint32_t m_pbkdf2Iterations;
+  const config::AuthConfig& m_authCfg;
 
+  TrustedProxies m_proxies; // before m_log / routes: both hold references to it
+  AccessLog m_log;
   crow::App<AuthMiddleware> m_crow;
 };
 

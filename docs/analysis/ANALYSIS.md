@@ -1,6 +1,22 @@
 # Imager Development Analysis
 
-> **Note (2026-10-31):** This analysis predates Phase 2. Statements below that Phase 2 network/HTTP work is "still absent" are out of date: Phase 2 is implemented per [plan 0022](../plan/0022.SERVER.md) (`auth/`, `server/` / `imagerd`, `imageradmin`). See [docs/user/API.md](../user/API.md) and [docs/user/DEPLOYMENT.md](../user/DEPLOYMENT.md). The rest of this document has not been re-audited.
+> **Note (2026-10-31):** The Phase 1 analysis below dates from 2026-04-11 and has not been re-audited. Statements in it that Phase 2 network/HTTP work is "still absent", and its test list of 13, are out of date. See [Phase 2 status](#phase-2-status-2026-10-31) below.
+
+## Phase 2 status (2026-10-31)
+
+Phase 2 ([plan 0022](../plan/0022.SERVER.md)) is implemented in three steps:
+
+1. **0022 checkpoints A1–J4:** `auth/` (SQLite user store, PBKDF2 hashing, HS256 JWT `TokenService`, input validation), `server/` (`imagerd`, built on Crow: health/stats, auth, users, items, content with Range/ETag, tags, hardening, native TLS) and the `imageradmin` CLI.
+2. **Post-0022 fix-up (commit 57d7784):** `imageradmin` last-admin guard, shared validation, startup error handling, bounded shutdown drain, `/auth/password` throttle.
+3. **Loose-ends step:**
+   - Upload bodies are bounded: a patched Crow (`third_party/crow/crow-body-sink.patch`) lets `server/Upload.cpp` reject on `Content-Length` with `413` before reading the body, cap chunked bodies, and stream `PUT /items` bodies to a temp-file spool. Remaining limit: `Imager::addFile` loads files of 256 MB or less into memory, so peak RSS per concurrent upload is about the file size, up to 256 MB.
+   - `[server].trusted_proxies` and a single client-IP helper (`server/ClientIp.*`) for the per-IP throttle and the access log.
+   - Access log on stderr (`[server].access_log`, `server/AccessLog.*`).
+   - Configurable `[server].drain_timeout_s`, `[auth].lockout_seconds`, `[auth].max_login_failures`, `[auth].max_ip_failures`.
+
+Known behaviour: uploads still arriving at shutdown are cut off. Not implemented: transcoding ([0023](../plan/0023.TRANSCODING.md)), metrics in `imagerd` (`GET /stats` returns counts only).
+
+**Test inventory** (`ctest --preset default -N`, 37 tests after the loose-ends step): the 13 Phase 1 tests listed under "Current passing test set", plus `TimestampTests`, `imagestore_memcheck`, `imagestore_output_tests`; the auth tests `auth_tests`, `auth_userstore_tests`, `auth_token_tests`, `auth_validation_tests`; `imageradmin_cli_tests`; and the server tests `server_health_test`, `server_auth_test`, `server_authz_test`, `server_json_tests`, `server_clientip_tests` (CPPUnit: `ClientIpTest`, `AccessLogFormatTest`), `server_items_test`, `server_content_test`, `server_list_test`, `server_item_tags_test`, `server_tags_test`, `server_users_test`, `server_hardening_test`, `server_tls_test`, `server_api_test`, `server_fixups_test`, `server_loose_ends_test`. The server shell tests start a live `imagerd`.
 
 ## Scope
 

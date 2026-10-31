@@ -34,14 +34,14 @@ All request and response bodies are JSON (`Content-Type: application/json`) exce
 
 **Revocation is live.** On every request the server re-reads the user from the user database after verifying the token. A deleted or disabled user gets `401` immediately even with an unexpired token. `isAdmin` and `fullName` come from the database, not the token, so promotion/demotion takes effect on the next request. Changing a password does not invalidate existing tokens.
 
-**Login throttle** (in memory, reset on restart, window and lockout 900 s):
+**Login throttle** (in memory, reset on restart; the window and lockout are `[auth].lockout_seconds`, default 900 s):
 
-| Key | Failures to lock out | Reset by |
-|-----|----------------------|----------|
-| login name | 5 | a successful login for that login |
-| client IP (`remote_ip_address`) | 20 | never (only expiry) |
+| Key | Failures to lock out (default) | Config key | Reset by |
+|-----|--------------------------------|------------|----------|
+| login name | 5 | `[auth].max_login_failures` | a successful login for that login |
+| client IP | 20 | `[auth].max_ip_failures` | never (only expiry) |
 
-Failures counted: unknown user or wrong password. A locked-out key gets `429 TooManyRequests` with `Retry-After: 900`, even for the correct password. The check runs before credential verification. Disabled-account attempts (correct password) return `403` and do not count. `X-Forwarded-For` is not trusted, so behind a reverse proxy the per-IP counter sees only the proxy's address (see [Deployment](DEPLOYMENT.md#reverse-proxy)).
+Failures counted: unknown user or wrong password. A locked-out key gets `429 TooManyRequests` with `Retry-After: <lockout_seconds>` (900 by default), even for the correct password. The check runs before credential verification. Disabled-account attempts (correct password) return `403` and do not count. The client IP is the TCP peer address, unless the peer is listed in `[server].trusted_proxies`, in which case it is taken from `X-Forwarded-For` (see [Deployment](DEPLOYMENT.md#reverse-proxy)).
 
 Every `401` carries `WWW-Authenticate: Bearer`.
 
@@ -94,7 +94,7 @@ Out-of-range or non-numeric values return `400 BadRequest` (no clamping). Only `
 | Login request | `login` <= 64 bytes, `password` <= 1024 bytes (no charset check, to avoid enumeration) |
 | fullName | 1..255 bytes |
 | Password (set/create/change) | 8..1024 bytes |
-| JSON body | <= 64 KiB (65536 bytes) on every route except `PUT /items`; larger gives `413 TooLarge` before parsing |
+| JSON body | <= 64 KiB (65536 bytes) on every route except `PUT /items`; larger gives `413 TooLarge` before the body is read (when `Content-Length` is declared) |
 | Upload body | non-empty and <= `[server].max_upload_mb` (default 4096 MiB); also per-format limits from `[file_size_limits]` |
 | Upload filename | at most 255 bytes after stripping directories (`/` and `\`), no control characters, not `.` or `..` |
 
@@ -211,10 +211,11 @@ Errors:
 | 400 | `BrokenFile` | content fails validation |
 | 401 | `Unauthorized` | |
 | 409 | `Conflict` | ambiguous AAE sidecar |
-| 413 | `TooLarge` | over `max_upload_mb` or the per-format limit |
+| 413 | `TooLarge` | over `max_upload_mb` or the per-format limit (see below) |
 | 415 | `UnsupportedFormat` | |
 | 500 | `Internal` | spool or storage/database failure |
 
+**Size limit and connection close.** The limit is checked when the request headers arrive. If `Content-Length` is above `max_upload_mb`, the server answers `413 TooLarge` without reading the body, sends `Connection: close`, drains at most 1 MiB of what the client is still sending, and closes the connection. A request with `Expect: 100-continue` gets the 413 instead of `100 Continue`. A chunked body, or one without `Content-Length`, is cut off with `413` as soon as the bytes received pass the limit. The same applies to every other route with the 64 KiB JSON limit. An unauthenticated `PUT /items` with a declared length above 64 KiB gets `401`, not `413`. Clients should be ready for the connection to close after a 413 and retry on a new one.
 Supported formats: [formats.md](formats.md). Memory behaviour for large uploads: [Deployment](DEPLOYMENT.md#large-uploads-and-memory).
 
 ### GET /items
@@ -345,5 +346,6 @@ Where [plan 0022](../plan/0022.SERVER.md) and the code differ, this document fol
 - `GET /stats` returns only `imageCount` and `tagCount`, not the metrics snapshot.
 - Range responses are capped at 8 MiB each.
 - Token validity is re-checked against the user database per request (live revocation, live admin flag).
-- A per-IP login throttle (20 failures) exists in addition to the per-login one (5).
-- The daemon has no structured access log; see [Deployment](DEPLOYMENT.md#logging).
+- A per-IP login throttle (20 failures by default) exists in addition to the per-login one (5); the limits and lockout time are configurable.
+- Oversized requests are rejected with `413` from the headers, before the body is read, and the upload body is streamed to a temp file instead of buffered in memory.
+- The daemon writes a plain-text access log to stderr, not the structured log of plan 0022 §12; see [Deployment](DEPLOYMENT.md#access-log).

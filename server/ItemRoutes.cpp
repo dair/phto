@@ -15,6 +15,7 @@
 
 #include "AuthRoutes.h"
 #include "Json.h"
+#include "Upload.h"
 
 namespace server {
 
@@ -23,53 +24,6 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr size_t ID_LEN = 64;
-
-/// Owns a spooled temp file; unlinks it on destruction (all paths).
-class TempFile {
-public:
-  /// Creates `<tmpdir>/phto-upload-XXXXXX`. Check ok() before use.
-  TempFile() {
-    std::error_code ec;
-    std::string tpl = (fs::temp_directory_path(ec) / "phto-upload-XXXXXX").string();
-    if (ec) {
-      return;
-    }
-    int fd = ::mkstemp(tpl.data());
-    if (fd < 0) {
-      return;
-    }
-    ::close(fd);
-    m_path = std::move(tpl);
-  }
-
-  ~TempFile() {
-    if (!m_path.empty()) {
-      std::error_code ec;
-      fs::remove(m_path, ec);
-    }
-  }
-
-  TempFile(const TempFile&) = delete;
-  TempFile& operator=(const TempFile&) = delete;
-
-  bool ok() const noexcept {
-    return !m_path.empty();
-  }
-
-  const fs::path& path() const noexcept {
-    return m_path;
-  }
-
-  bool write(const std::string& data) const {
-    std::ofstream f(m_path, std::ios::binary | std::ios::trunc);
-    f.write(data.data(), static_cast<std::streamsize>(data.size()));
-    f.close();
-    return static_cast<bool>(f);
-  }
-
-private:
-  fs::path m_path;
-};
 
 /// Strip any directory components (both separators) from a client-supplied name.
 std::string baseName(std::string name) {
@@ -169,7 +123,7 @@ crow::response listItems(imager::Imager& imager, const crow::request& req) {
   return jsonOk(200, body);
 }
 
-crow::response putItem(imager::Imager& imager, uint64_t maxUploadBytes, const crow::request& req) {
+crow::response storeUpload(imager::Imager& imager, const crow::request& req, Spool* spool) {
   std::string filename = req.get_header_value("X-Filename");
   if (filename.empty()) {
     if (const char* q = req.url_params.get("filename")) {
@@ -184,22 +138,28 @@ crow::response putItem(imager::Imager& imager, uint64_t maxUploadBytes, const cr
       std::ranges::any_of(filename, [](char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7F; })) {
     return badRequest("filename must be at most 255 bytes without control characters");
   }
-  if (req.body.empty()) {
-    return badRequest("empty request body");
-  }
-  if (maxUploadBytes != 0 && req.body.size() > maxUploadBytes) {
-    return errorResponse(imager::ErrorCode::TooLarge, "upload exceeds max_upload_mb");
+  // Fallback (no spool: the body is already in req.body, at most 64 KiB): spool it here.
+  std::optional<Spool> fallback;
+  if (spool == nullptr) {
+    fallback.emplace();
+    if (!fallback->ok() || fallback->write(req.body.data(), req.body.size()) != Spool::Result::Ok) {
+      CROW_LOG_ERROR << "PUT /items: cannot spool upload to temp file";
+      return errorResponse(imager::ErrorCode::StorageError, "internal storage error");
+    }
+    spool = &*fallback;
   }
 
-  TempFile tmp;
-  if (!tmp.ok() || !tmp.write(req.body)) {
-    CROW_LOG_ERROR << "PUT /items: cannot spool upload to temp file";
+  if (spool->size() == 0) {
+    return badRequest("empty request body");
+  }
+  if (!spool->finish()) {
+    CROW_LOG_ERROR << "PUT /items: cannot flush spooled upload";
     return errorResponse(imager::ErrorCode::StorageError, "internal storage error");
   }
 
   imager::AddResult r;
   try {
-    r = imager.addFile(tmp.path(), filename);
+    r = imager.addFile(spool->path(), filename);
   } catch (const std::exception& e) {
     CROW_LOG_ERROR << "PUT /items: addFile threw: " << e.what();
     return errorResponse(imager::ErrorCode::StorageError, "internal error");
@@ -228,6 +188,24 @@ crow::response putItem(imager::Imager& imager, uint64_t maxUploadBytes, const cr
     default:
       return errorResponse(r.code, r.message);
   }
+}
+
+crow::response putItem(imager::Imager& imager, const crow::request& req) {
+  // The request policy (server/Upload) streams an authenticated body into a spool file, bounded by max_upload_mb.
+  // Remove it before the response is sent, on every path (a bad filename, an empty body, a duplicate, ...).
+  Spool* spool = uploadSpool(req);
+
+  struct Cleanup {
+    Spool* s;
+
+    ~Cleanup() {
+      if (s != nullptr) {
+        s->discard();
+      }
+    }
+  } cleanup{spool};
+
+  return storeUpload(imager, req, spool);
 }
 
 /// Upper bound on bytes buffered for one 206 response (a shorter range than requested is legal).
@@ -396,12 +374,12 @@ crow::response getContent(imager::Imager& imager, const crow::request& req, cons
 
 } // namespace
 
-void registerItemRoutes(crow::App<AuthMiddleware>& app, imager::Imager& imager, uint64_t maxUploadBytes) {
-  CROW_ROUTE(app, "/items").methods(crow::HTTPMethod::Put)([&app, &imager, maxUploadBytes](const crow::request& req) {
+void registerItemRoutes(crow::App<AuthMiddleware>& app, imager::Imager& imager) {
+  CROW_ROUTE(app, "/items").methods(crow::HTTPMethod::Put)([&app, &imager](const crow::request& req) {
     if (!requireAuth(app, req)) {
       return unauthorized("authentication required");
     }
-    return putItem(imager, maxUploadBytes, req);
+    return putItem(imager, req);
   });
 
   CROW_ROUTE(app, "/items").methods(crow::HTTPMethod::Get)([&app, &imager](const crow::request& req) {

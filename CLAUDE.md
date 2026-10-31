@@ -38,7 +38,7 @@ Build artifacts go to `build/imager-build` (configured in `CMakePresets.json`).
 │   └── test/
 ├── imagestore/    # Batch import CLI: stdin pipe, bounded concurrency, progress, error file
 ├── auth/          # User store (SQLite), PBKDF2 password hashing, HS256 JWT TokenService, input Validation helpers (namespace auth)
-├── server/        # imagerd: Crow HTTP(S) REST daemon — routes, auth middleware, login throttle, native TLS (namespace server)
+├── server/        # imagerd: Crow HTTP(S) REST daemon — routes, auth middleware, login throttle, trusted-proxy client IP, access log, streaming upload spool, native TLS (namespace server)
 ├── imageradmin/   # User administration CLI (add/del/passwd/enable/disable/promote/demote/list)
 ├── metrics/       # Lock-free monitoring: Histogram, Counter, Gauge, Timer (namespace metrics)
 └── docs/
@@ -60,7 +60,7 @@ Build artifacts go to `build/imager-build` (configured in `CMakePresets.json`).
 | libavcodec | Video codec trial decode | System — `pkg_check_modules(LibAvCodec REQUIRED libavcodec)` |
 | libavutil | FFmpeg memory/error utilities | System — `pkg_check_modules(LibAvUtil REQUIRED libavutil)` |
 | toml++ | Config parsing | FetchContent from GitHub |
-| Crow (v1.2.1.2) | HTTP(S) server (`server/`) | FetchContent from GitHub (no Debian package); built without Boost, `CROW_ENABLE_SSL` |
+| Crow (v1.2.1.2) | HTTP(S) server (`server/`) | FetchContent from GitHub (no Debian package); built without Boost, `CROW_ENABLE_SSL`. **Patched** at configure time with `third_party/crow/crow-body-sink.patch` (via `apply_patch.cmake`, idempotent): adds `App::header_filter` and `request::body_sink` so oversized/streamed upload bodies are never buffered. Upload policy lives in `server/Upload.cpp` |
 | asio | Crow's networking layer | System — `libasio-dev`, found by Crow's `Findasio.cmake` |
 | cpp-jwt | JWT issue/verify (`auth/`) | System — `find_package(cpp-jwt CONFIG REQUIRED)` (`libcpp-jwt-dev`) |
 | CPPUnit | Testing | System dependency |
@@ -96,7 +96,7 @@ Config is read once at startup (no hot reload).
 
 ## Testing
 
-CPPUnit-based. Test suites (`ctest --preset default -N`, 35 tests): `metrics_tests`, `blob_tests`, `coro_tests`, `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `heic_validator_tests`, `nef_validator_tests`, `mov_validator_tests`, `aae_validator_tests`, `config_tests`, `auth_tests`, `auth_userstore_tests`, `auth_token_tests`, `auth_validation_tests`, `ImagerTests`, `TimestampTests`, `imagestore_cli_tests`, `imagestore_memcheck`, `imagestore_output_tests`, `imageradmin_cli_tests`, and the server tests `server_health_test`, `server_auth_test`, `server_authz_test`, `server_json_tests`, `server_items_test`, `server_content_test`, `server_list_test`, `server_item_tags_test`, `server_tags_test`, `server_users_test`, `server_hardening_test`, `server_tls_test`, `server_api_test`, `server_fixups_test` (shell tests run a live `imagerd`).
+CPPUnit-based. Test suites (`ctest --preset default -N`, 37 tests): `metrics_tests`, `blob_tests`, `coro_tests`, `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `heic_validator_tests`, `nef_validator_tests`, `mov_validator_tests`, `aae_validator_tests`, `config_tests`, `auth_tests`, `auth_userstore_tests`, `auth_token_tests`, `auth_validation_tests`, `ImagerTests`, `TimestampTests`, `imagestore_cli_tests`, `imagestore_memcheck`, `imagestore_output_tests`, `imageradmin_cli_tests`, and the server tests `server_health_test`, `server_auth_test`, `server_authz_test`, `server_json_tests`, `server_clientip_tests` (CPPUnit: client IP / `X-Forwarded-For`, access-log format), `server_items_test`, `server_content_test`, `server_list_test`, `server_item_tags_test`, `server_tags_test`, `server_users_test`, `server_hardening_test`, `server_tls_test`, `server_api_test`, `server_fixups_test`, `server_loose_ends_test` (shell tests run a live `imagerd`).
 
 Use temporary directories for test databases and file storage; clean up in `tearDown()`.
 
@@ -129,7 +129,7 @@ Detailed plans live in `docs/plan/`:
 - **[0022.SERVER](docs/plan/0022.SERVER.md)** — Phase 2 HTTP(S) REST server: Crow, JWT auth, users, items, tags, TLS
 - **[0023.TRANSCODING](docs/plan/0023.TRANSCODING.md)** — Content transcoding and format negotiation for `GET /items/{id}/content` (proposal, not implemented)
 
-Implementation status is tracked in **[docs/analysis/ANALYSIS.md](docs/analysis/ANALYSIS.md)** — Phase 1 core complete; 0002 (multi-target DB), 0003 (coroutine parallelism), 0004 (refactoring), 0007–0010 (HEIC/NEF/MOV/AAE validators), and 0013 (progress tracking) implemented. 0005 (metrics) partially wired. 0006 (`imagestore` CLI) substantially implemented. **Phase 2 (0022) is implemented** (`auth/`, `server/`/`imagerd`, `imageradmin`; checkpoints A1–J4); see [docs/user/API.md](docs/user/API.md) and [docs/user/DEPLOYMENT.md](docs/user/DEPLOYMENT.md). ANALYSIS.md predates Phase 2.
+Implementation status is tracked in **[docs/analysis/ANALYSIS.md](docs/analysis/ANALYSIS.md)** — Phase 1 core complete; 0002 (multi-target DB), 0003 (coroutine parallelism), 0004 (refactoring), 0007–0010 (HEIC/NEF/MOV/AAE validators), and 0013 (progress tracking) implemented. 0005 (metrics) partially wired. 0006 (`imagestore` CLI) substantially implemented. **Phase 2 (0022) is implemented** (`auth/`, `server/`/`imagerd`, `imageradmin`; checkpoints A1–J4); see [docs/user/API.md](docs/user/API.md) and [docs/user/DEPLOYMENT.md](docs/user/DEPLOYMENT.md). ANALYSIS.md covers Phase 1 in detail and has a dated Phase 2 summary section.
 
 ## Key conventions
 

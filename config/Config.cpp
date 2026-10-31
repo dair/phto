@@ -68,6 +68,25 @@ static uint64_t parseSizeString(const std::string& s) {
   return static_cast<uint64_t>(num * static_cast<double>(multiplier));
 }
 
+/// Reads an optional integer key in [lo, hi] from `tbl` into `out`; throws a "Config [section]: ..." error otherwise.
+void readRanged(const toml::table& tbl, const char* section, const char* key, int64_t lo, int64_t hi, uint32_t& out) {
+  const auto node = tbl[key];
+  if (!node) {
+    return;
+  }
+  const auto v = node.value<int64_t>();
+  if (!v) {
+    throw std::runtime_error(std::string("Config [") + section + "]: '" + key + "' must be an integer");
+  }
+  if (*v < lo || *v > hi) {
+    throw std::runtime_error(
+      std::string("Config [") + section + "]: '" + key + "' must be in range " + std::to_string(lo) + ".." +
+      std::to_string(hi) + ", got " + std::to_string(*v)
+    );
+  }
+  out = static_cast<uint32_t>(*v);
+}
+
 } // namespace
 
 AppConfig loadConfig(const std::filesystem::path& configPath) {
@@ -189,6 +208,28 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
     } else if ((*serverTbl)["max_upload_mb"]) {
       throw std::runtime_error("Config [server]: 'max_upload_mb' must be an integer");
     }
+
+    if (auto v = (*serverTbl)["access_log"].value<bool>()) {
+      cfg.server.accessLog = *v;
+    } else if ((*serverTbl)["access_log"]) {
+      throw std::runtime_error("Config [server]: 'access_log' must be a boolean");
+    }
+
+    readRanged(*serverTbl, "server", "drain_timeout_s", 1, 3600, cfg.server.drainTimeoutSeconds);
+
+    if (const auto node = (*serverTbl)["trusted_proxies"]) {
+      const auto* arr = node.as_array();
+      if (arr == nullptr) {
+        throw std::runtime_error("Config [server]: 'trusted_proxies' must be an array of strings");
+      }
+      for (const auto& e : *arr) {
+        const auto s = e.value<std::string>();
+        if (!s) {
+          throw std::runtime_error("Config [server]: 'trusted_proxies' must be an array of strings");
+        }
+        cfg.server.trustedProxies.push_back(*s); // syntax is validated by imagerd at startup (server/ClientIp)
+      }
+    }
   }
 
   // Parse optional [auth] section.
@@ -238,6 +279,10 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
     } else if ((*authTbl)["pbkdf2_iterations"]) {
       throw std::runtime_error("Config [auth]: 'pbkdf2_iterations' must be an integer");
     }
+
+    readRanged(*authTbl, "auth", "lockout_seconds", 1, 86400, cfg.auth.lockoutSeconds);
+    readRanged(*authTbl, "auth", "max_login_failures", 1, 1000, cfg.auth.maxLoginFailures);
+    readRanged(*authTbl, "auth", "max_ip_failures", 1, 100000, cfg.auth.maxIpFailures);
   }
 
   return cfg;

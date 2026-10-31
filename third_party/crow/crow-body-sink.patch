@@ -1,0 +1,210 @@
+Crow v1.2.1.2: bounded request bodies (phto plan: loose-ends L1).
+
+Stock Crow appends the whole request body to request::body before any middleware or
+handler runs, so the application cannot refuse or stream a large upload. This patch adds
+two generic, opt-in hooks; with neither used, behaviour is unchanged:
+
+  * App::header_filter(f): called when the request headers are complete, before the body
+    is read (and before "100 Continue"). f may set request::body_sink / request::user_data.
+    Returning false rejects the request: the response f filled in is sent, the connection
+    is closed and a bounded amount of the remaining input is swallowed (so the client can
+    read the response instead of seeing a reset).
+  * request::body_sink(chunk, len, res): when set, receives each body chunk instead of
+    request::body. Returning false rejects the request the same way.
+
+All policy (limits, spooling to disk) lives in the application, not here.
+
+diff --git a/include/crow/http_request.h b/include/crow/http_request.h
+--- a/include/crow/http_request.h
++++ b/include/crow/http_request.h
+@@ -9,12 +9,17 @@
+ #include <asio.hpp>
+ #endif
+
++#include <functional>
++#include <memory>
++
+ #include "crow/common.h"
+ #include "crow/ci_map.h"
+ #include "crow/query_string.h"
+
+ namespace crow // NOTE: Already documented in "crow/app.h"
+ {
++    struct response;
++
+ #ifdef CROW_USE_BOOST
+     namespace asio = boost::asio;
+ #endif
+@@ -40,6 +45,10 @@
+         query_string url_params; ///< The parameters associated with the request. (everything after the `?` in the URL)
+         ci_map headers;
+         std::string body;
++        /// Optional body consumer. When set, each parsed body chunk goes here instead of into `body`. Returning false
++        /// rejects the request: the sink must have filled the response, which is sent before the connection closes.
++        std::function<bool(const char*, size_t, response&)> body_sink;
++        std::shared_ptr<void> user_data; ///< Opaque per-request state owned by the request (freed with it).
+         std::string remote_ip_address; ///< The IP address from which the request was sent.
+         unsigned char http_ver_major, http_ver_minor;
+         bool keep_alive,    ///< Whether or not the server should send a `connection: Keep-Alive` header to the client.
+diff --git a/include/crow/parser.h b/include/crow/parser.h
+--- a/include/crow/parser.h
++++ b/include/crow/parser.h
+@@ -82,12 +82,15 @@
+
+             self->set_connection_parameters();
+
+-            self->process_header();
+-            return 0;
++            return self->process_header() ? 0 : 3; // 3 = abort parsing (the request was rejected)
+         }
+         static int on_body(http_parser* self_, const char* at, size_t length)
+         {
+             HTTPParser* self = static_cast<HTTPParser*>(self_);
++            if (self->req.body_sink)
++            {
++                return self->handler_->handle_body(at, length) ? 0 : 1;
++            }
+             self->req.body.insert(self->req.body.end(), at, at + length);
+             return 0;
+         }
+@@ -153,9 +156,9 @@
+             handler_->handle_url();
+         }
+
+-        inline void process_header()
++        inline bool process_header()
+         {
+-            handler_->handle_header();
++            return handler_->handle_header();
+         }
+
+         inline void process_message()
+diff --git a/include/crow/app.h b/include/crow/app.h
+--- a/include/crow/app.h
++++ b/include/crow/app.h
+@@ -232,6 +232,21 @@
+             return router_.handle_initial(req, res);
+         }
+
++        /// \brief Called once the request headers are complete, before any body is read
++        ///
++        /// The filter may set `req.body_sink` / `req.user_data`. Returning false rejects the request: `res` (filled by
++        /// the filter) is sent, the connection is closed and the body is never buffered.
++        self_t& header_filter(std::function<bool(request&, response&)> filter)
++        {
++            header_filter_ = std::move(filter);
++            return *this;
++        }
++
++        bool handle_headers(request& req, response& res)
++        {
++            return !header_filter_ || header_filter_(req, res);
++        }
++
+         /// \brief Process the fully parsed request and generate a response for it
+         void handle(request& req, response& res, std::unique_ptr<routing_handle_result>& found)
+         {
+@@ -764,6 +779,7 @@
+         std::string server_name_ = std::string("Crow/") + VERSION;
+         std::string bindaddr_ = "0.0.0.0";
+         size_t res_stream_threshold_ = 1048576;
++        std::function<bool(request&, response&)> header_filter_;
+         Router router_;
+         bool static_routes_added_{false};
+
+diff --git a/include/crow/http_connection.h b/include/crow/http_connection.h
+--- a/include/crow/http_connection.h
++++ b/include/crow/http_connection.h
+@@ -119,8 +119,40 @@
+             }
+         }
+
+-        void handle_header()
++        /// Body chunk for a request with a body_sink. False = rejected (response already sent, connection closing).
++        bool handle_body(const char* at, size_t length)
++        {
++            if (req_.body_sink(at, length, res))
++            {
++                return true;
++            }
++            reject_request();
++            return false;
++        }
++
++        /// Answer `res` right away, close after it and swallow (a bounded amount of) the rest of the request.
++        void reject_request()
++        {
++            close_connection_ = true;
++            add_keep_alive_ = false;
++            need_to_call_after_handlers_ = false;
++            discarding_ = true;
++            res.set_header("Connection", "close");
++            complete_request();
++            adaptor_.shutdown_write(); // FIN right after the response; input is still drained below
++        }
++
++        /// False = request rejected by the app's header filter (see App::header_filter) before its body was read.
++        bool handle_header()
+         {
++            req_.remote_ip_address = adaptor_.remote_endpoint().address().to_string();
++            if (!handler_->handle_headers(req_, res))
++            {
++                reject_request();
++                return false;
++            }
+             // HTTP 1.1 Expect: 100-continue
+             if (req_.http_ver_major == 1 && req_.http_ver_minor == 1 && get_header_value(req_.headers, "expect") == "100-continue")
+             {
+@@ -130,6 +162,7 @@
+                 buffers_.emplace_back(expect_100_continue.data(), expect_100_continue.size());
+                 do_write_sync(buffers_);
+             }
++            return true;
+         }
+
+         void handle()
+@@ -474,8 +507,28 @@
+               asio::buffer(buffer_),
+               [self](const error_code& ec, std::size_t bytes_transferred) {
+                   bool error_while_reading = true;
+-                  if (!ec)
++                  if (!ec && self->discarding_)
++                  {
++                      self->discarded_ += bytes_transferred;
++                  }
++                  else if (!ec)
+                   {
+                       bool ret = self->parser_.feed(self->buffer_.data(), bytes_transferred);
+                       if (ret && self->adaptor_.is_open())
+                       {
+                           error_while_reading = false;
+                       }
+                   }
+
++                  if (self->discarding_) // early rejection was already answered: drain a little, then close
++                  {
++                      if (!ec && self->discarded_ <= (1u << 20) && self->adaptor_.is_open())
++                      {
++                          self->start_deadline();
++                          self->do_read();
++                      }
++                      else
++                      {
++                          self->cancel_deadline_timer();
++                          self->adaptor_.shutdown_readwrite();
++                          self->adaptor_.close();
++                      }
++                      return;
++                  }
++
+                   if (error_while_reading)
+                   {
+@@ -664,6 +717,8 @@
+         bool need_to_call_after_handlers_{};
+         bool need_to_start_read_after_complete_{};
+         bool add_keep_alive_{};
++        bool discarding_{};
++        size_t discarded_{};
+
+         std::tuple<Middlewares...>* middlewares_;
+         detail::context<Middlewares...> ctx_;

@@ -14,6 +14,7 @@
 #include "ItemRoutes.h"
 #include "Json.h"
 #include "TagRoutes.h"
+#include "Upload.h"
 #include "UserRoutes.h"
 
 namespace server {
@@ -23,18 +24,20 @@ App::App(
   imager::Imager& imager,
   auth::UserStore& userStore,
   auth::TokenService& tokenService,
-  uint32_t tokenTtlSeconds,
-  uint32_t pbkdf2Iterations
+  const config::AuthConfig& authCfg
 )
   : m_cfg(cfg),
     m_imager(imager),
     m_userStore(userStore),
     m_tokenService(tokenService),
-    m_tokenTtlSeconds(tokenTtlSeconds),
-    m_pbkdf2Iterations(pbkdf2Iterations) {
+    m_authCfg(authCfg),
+    m_proxies(TrustedProxies::parse(cfg.trustedProxies)), // throws std::invalid_argument on a bad entry
+    m_log(cfg.accessLog, m_proxies) {
   // Wire TokenService into the middleware so it can verify tokens.
-  m_crow.get_middleware<AuthMiddleware>().service = &m_tokenService;
-  m_crow.get_middleware<AuthMiddleware>().users = &m_userStore;
+  auto& mw = m_crow.get_middleware<AuthMiddleware>();
+  mw.service = &m_tokenService;
+  mw.users = &m_userStore;
+  mw.accessLog = &m_log;
 }
 
 App::~App() = default;
@@ -69,10 +72,11 @@ void App::registerRoutes() {
     }
   });
 
-  registerAuthRoutes(m_crow, m_userStore, m_tokenService, m_tokenTtlSeconds, m_pbkdf2Iterations);
-  registerUserRoutes(m_crow, m_userStore, m_pbkdf2Iterations);
-  registerItemRoutes(m_crow, m_imager, m_cfg.maxUploadBytes);
+  registerAuthRoutes(m_crow, m_userStore, m_tokenService, m_authCfg, m_proxies);
+  registerUserRoutes(m_crow, m_userStore, m_authCfg.pbkdf2Iterations);
+  registerItemRoutes(m_crow, m_imager);
   registerTagRoutes(m_crow, m_imager);
+  installRequestPolicy(m_crow, m_cfg.maxUploadBytes, m_log);
 }
 
 namespace {
