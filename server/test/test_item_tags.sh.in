@@ -179,7 +179,7 @@ check "DELETE tag/zeta → 204" test "$(cat $T/d1.status)" = 204
 check "DELETE removes only that tag" test "$(gettags $A)" = "delta,dup,epsilon,gamma"
 req "$T/d2" DELETE "/items/$A/tags/zeta"
 check "DELETE tag not set on item → 404" test "$(cat $T/d2.status)" = 404
-check "DELETE absent tag 404 envelope code is FileNotFound" test "$(json_get $T/d2.body "d['error']['code']")" = FileNotFound
+check "DELETE absent tag 404 envelope code is NotFound" test "$(json_get $T/d2.body "d['error']['code']")" = NotFound
 check "DELETE absent tag leaves the set unchanged" test "$(gettags $A)" = "delta,dup,epsilon,gamma"
 req "$T/d3" DELETE "/items/$A/tags/neverseen"
 check "DELETE never-existing tag name → 404" test "$(cat $T/d3.status)" = 404

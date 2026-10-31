@@ -180,7 +180,7 @@ check "created tag exists in the tag table of both DBs, unbound" \
   test "$(dbcount $DB1 alpha) $(dbcount $DB2 alpha)" = "1,0 1,0"
 req "$T/c2" POST "/tags" '{"name":"alpha"}'
 check "duplicate POST /tags → 409" test "$(cat $T/c2.status)" = 409
-check "duplicate POST error code is DuplicateFile" test "$(json_get $T/c2.body "d['error']['code']")" = DuplicateFile
+check "duplicate POST error code is Conflict" test "$(json_get $T/c2.body "d['error']['code']")" = Conflict
 check "duplicate POST leaves a single alpha" test "$(alltags)" = "alpha"
 req "$T/c3" POST "/tags" '{"name":"alpha","extra":1}'
 check "POST on an existing name with extra keys is still 409" test "$(cat $T/c3.status)" = 409

@@ -193,6 +193,19 @@ struct Database::Impl {
     }
   }
 
+  // Step a read statement: true on a row, false when finished; throws on any error
+  // (so a failing query is never mistaken for an empty result).
+  bool stepRow(sqlite3_stmt* stmt) const {
+    const int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+      return true;
+    }
+    if (rc != SQLITE_DONE) {
+      throw DatabaseException(DatabaseErrorCode::QueryFailed, std::string("step failed: ") + sqlite3_errmsg(db.get()));
+    }
+    return false;
+  }
+
   // Step a statement that must produce SQLITE_DONE; throws on any other code.
   void mustDone(sqlite3_stmt* stmt, DatabaseErrorCode onConstraint, const std::string& constraintMsg) {
     int rc = sqlite3_step(stmt);
@@ -301,7 +314,7 @@ std::optional<File> Database::getFile(const std::string& id) {
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_SELECT_FILE);
   sqlite3_bind_text(stmt.get(), 1, id.c_str(), -1, SQLITE_STATIC);
-  if (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+  if (m_impl->stepRow(stmt.get())) {
     return rowToFile(stmt.get());
   }
   return std::nullopt;
@@ -319,7 +332,7 @@ std::vector<File> Database::getAllFiles(std::optional<Pagination> page) {
     stmt = m_impl->prepare(SQL_SELECT_ALL_FILES);
   }
   std::vector<File> result;
-  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+  while (m_impl->stepRow(stmt.get())) {
     result.push_back(rowToFile(stmt.get()));
   }
   return result;
@@ -330,14 +343,14 @@ bool Database::fileExists(const std::string& id) {
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_FILE_EXISTS);
   sqlite3_bind_text(stmt.get(), 1, id.c_str(), -1, SQLITE_STATIC);
-  return sqlite3_step(stmt.get()) == SQLITE_ROW;
+  return m_impl->stepRow(stmt.get());
 }
 
 uint64_t Database::fileCount() {
   auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_FILE_COUNT);
-  if (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+  if (m_impl->stepRow(stmt.get())) {
     return static_cast<uint64_t>(sqlite3_column_int64(stmt.get(), 0));
   }
   return 0;
@@ -378,7 +391,7 @@ std::vector<std::string> Database::getAllTags(std::optional<Pagination> page) {
     stmt = m_impl->prepare(SQL_SELECT_ALL_TAGS);
   }
   std::vector<std::string> result;
-  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+  while (m_impl->stepRow(stmt.get())) {
     result.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0)));
   }
   return result;
@@ -389,14 +402,14 @@ bool Database::tagExists(const std::string& name) {
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_TAG_EXISTS);
   sqlite3_bind_text(stmt.get(), 1, name.c_str(), -1, SQLITE_STATIC);
-  return sqlite3_step(stmt.get()) == SQLITE_ROW;
+  return m_impl->stepRow(stmt.get());
 }
 
 uint64_t Database::tagCount() {
   auto t = m_impl->readTimer();
   std::shared_lock lock(m_impl->mutex);
   auto stmt = m_impl->prepare(SQL_TAG_COUNT);
-  if (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+  if (m_impl->stepRow(stmt.get())) {
     return static_cast<uint64_t>(sqlite3_column_int64(stmt.get(), 0));
   }
   return 0;
@@ -447,7 +460,7 @@ std::vector<std::string> Database::getTagsForFile(const std::string& fileId, std
     sqlite3_bind_text(stmt.get(), 1, fileId.c_str(), -1, SQLITE_STATIC);
   }
   std::vector<std::string> result;
-  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+  while (m_impl->stepRow(stmt.get())) {
     result.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0)));
   }
   return result;
@@ -465,7 +478,7 @@ std::vector<File> Database::getUntaggedFiles(std::optional<Pagination> page) {
     stmt = m_impl->prepare(SQL_SELECT_UNTAGGED_FILES);
   }
   std::vector<File> result;
-  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+  while (m_impl->stepRow(stmt.get())) {
     result.push_back(rowToFile(stmt.get()));
   }
   return result;
@@ -538,7 +551,7 @@ std::vector<File> Database::getFilesBySourceAndBaseName(const std::string& sourc
   sqlite3_bind_text(stmt.get(), 1, sourceDir.c_str(), -1, SQLITE_STATIC);
   sqlite3_bind_text(stmt.get(), 2, baseName.c_str(), -1, SQLITE_STATIC);
   std::vector<File> result;
-  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+  while (m_impl->stepRow(stmt.get())) {
     result.push_back(rowToFile(stmt.get()));
   }
   return result;
@@ -594,7 +607,7 @@ std::vector<Database::CompanionInfo> Database::getOrphanCompanionsBySourceAndBas
   sqlite3_bind_text(stmt.get(), 1, sourceDir.c_str(), -1, SQLITE_STATIC);
   sqlite3_bind_text(stmt.get(), 2, baseName.c_str(), -1, SQLITE_STATIC);
   std::vector<CompanionInfo> result;
-  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+  while (m_impl->stepRow(stmt.get())) {
     CompanionInfo info;
     info.fileId = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0));
     // parent_id is NULL for orphans, so skip column 1
@@ -625,7 +638,7 @@ std::vector<Database::CompanionInfo> Database::getCompanionsForParent(const std:
   auto stmt = m_impl->prepare(SQL_SELECT_COMPANIONS_FOR_PARENT);
   sqlite3_bind_text(stmt.get(), 1, parentId.c_str(), -1, SQLITE_STATIC);
   std::vector<CompanionInfo> result;
-  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+  while (m_impl->stepRow(stmt.get())) {
     CompanionInfo info;
     info.fileId = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0));
     if (sqlite3_column_type(stmt.get(), 1) != SQLITE_NULL) {
@@ -682,7 +695,7 @@ std::vector<File> Database::getFilesByTags(const std::vector<std::string>& tagNa
   }
 
   std::vector<File> result;
-  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+  while (m_impl->stepRow(stmt.get())) {
     result.push_back(rowToFile(stmt.get()));
   }
   return result;

@@ -1142,16 +1142,22 @@ std::optional<ImageInfo> Imager::getImage(const std::string& id) {
 // getImagesByTags — parallel tag fan-out
 // ---------------------------------------------------------------------------
 
-std::vector<ImageInfo> Imager::getImagesByTags(const std::vector<std::string>& tags, uint32_t offset, uint32_t limit) {
+Imager::ImageList Imager::getImagesByTagsChecked(
+  const std::vector<std::string>& tags, uint32_t offset, uint32_t limit
+) {
   if (tags.empty()) {
-    return {};
+    return std::vector<ImageInfo>{};
   }
   try {
     auto files = m_impl->dbs.getFilesByTags(tags, db::Pagination{offset, limit});
     return coro::blockOn(m_impl->pool, m_impl->enrichWithTags(std::move(files)));
   } catch (const db::DatabaseException&) {
-    return {};
+    return std::unexpected(ErrorCode::DatabaseError);
   }
+}
+
+std::vector<ImageInfo> Imager::getImagesByTags(const std::vector<std::string>& tags, uint32_t offset, uint32_t limit) {
+  return getImagesByTagsChecked(tags, offset, limit).value_or(std::vector<ImageInfo>{});
 }
 
 // ---------------------------------------------------------------------------
@@ -1159,6 +1165,10 @@ std::vector<ImageInfo> Imager::getImagesByTags(const std::vector<std::string>& t
 // ---------------------------------------------------------------------------
 
 std::vector<ImageInfo> Imager::getUntaggedImages(uint32_t offset, uint32_t limit) {
+  return getUntaggedImagesChecked(offset, limit).value_or(std::vector<ImageInfo>{});
+}
+
+Imager::ImageList Imager::getUntaggedImagesChecked(uint32_t offset, uint32_t limit) {
   try {
     auto files = m_impl->dbs.getUntaggedFiles(db::Pagination{offset, limit});
     std::vector<ImageInfo> result;
@@ -1168,7 +1178,7 @@ std::vector<ImageInfo> Imager::getUntaggedImages(uint32_t offset, uint32_t limit
     }
     return result;
   } catch (const db::DatabaseException&) {
-    return {};
+    return std::unexpected(ErrorCode::DatabaseError);
   }
 }
 
@@ -1513,33 +1523,53 @@ ErrorCode Imager::deleteTag(const std::string& name) {
   }
 }
 
-std::vector<std::string> Imager::listTags(uint32_t offset, uint32_t limit) {
+std::expected<std::vector<std::string>, ErrorCode> Imager::listTagsChecked(uint32_t offset, uint32_t limit) {
   try {
     return m_impl->dbs.getAllTags(db::Pagination{offset, limit});
   } catch (const db::DatabaseException&) {
-    return {};
+    return std::unexpected(ErrorCode::DatabaseError);
   }
+}
+
+std::vector<std::string> Imager::listTags(uint32_t offset, uint32_t limit) {
+  return listTagsChecked(offset, limit).value_or(std::vector<std::string>{});
 }
 
 // ---------------------------------------------------------------------------
 // List / count
 // ---------------------------------------------------------------------------
 
-std::vector<ImageInfo> Imager::listImages(uint32_t offset, uint32_t limit) {
+Imager::ImageList Imager::listImagesChecked(uint32_t offset, uint32_t limit) {
   try {
     auto files = m_impl->dbs.getAllFiles(db::Pagination{offset, limit});
     return coro::blockOn(m_impl->pool, m_impl->enrichWithTags(std::move(files)));
   } catch (const db::DatabaseException&) {
-    return {};
+    return std::unexpected(ErrorCode::DatabaseError);
+  }
+}
+
+std::vector<ImageInfo> Imager::listImages(uint32_t offset, uint32_t limit) {
+  return listImagesChecked(offset, limit).value_or(std::vector<ImageInfo>{});
+}
+
+std::expected<uint64_t, ErrorCode> Imager::imageCountChecked() {
+  try {
+    return m_impl->dbs.fileCount();
+  } catch (const db::DatabaseException&) {
+    return std::unexpected(ErrorCode::DatabaseError);
+  }
+}
+
+std::expected<uint64_t, ErrorCode> Imager::tagCountChecked() {
+  try {
+    return m_impl->dbs.tagCount();
+  } catch (const db::DatabaseException&) {
+    return std::unexpected(ErrorCode::DatabaseError);
   }
 }
 
 uint64_t Imager::imageCount() {
-  try {
-    return m_impl->dbs.fileCount();
-  } catch (const db::DatabaseException&) {
-    return 0;
-  }
+  return imageCountChecked().value_or(0);
 }
 
 const metrics::Metrics& Imager::metrics() const noexcept {

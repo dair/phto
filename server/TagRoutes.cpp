@@ -14,8 +14,6 @@ namespace server {
 
 namespace {
 
-constexpr size_t MAX_TAG_LEN = 255;
-
 /// Serializes tag mutations so POST's read-modify-write cannot lose a concurrent update.
 std::mutex g_tagMutex;
 
@@ -29,10 +27,8 @@ crow::response tagsResponse(const std::vector<std::string>& tags) {
   return jsonOk(200, body);
 }
 
-/// Non-empty, <= 255 bytes, no commas (GET /items?tags= splits on commas). Full charset rules: J1.
-bool validTagName(const std::string& t) {
-  return !t.empty() && t.size() <= MAX_TAG_LEN && t.find(',') == std::string::npos;
-}
+constexpr const char* TAG_NAME_RULE =
+  "tag names must be 1-255 bytes of valid UTF-8 without commas or control characters";
 
 /// Parses {"tags":[...]} (or, if `allowSingle`, {"tag":"x"}). Returns an error message, empty on success.
 std::string parseTags(const crow::request& req, bool allowSingle, std::vector<std::string>& out) {
@@ -60,7 +56,7 @@ std::string parseTags(const crow::request& req, bool allowSingle, std::vector<st
   }
   for (const auto& t : out) {
     if (!validTagName(t)) {
-      return "tag names must be 1-255 bytes and must not contain commas";
+      return TAG_NAME_RULE;
     }
   }
   return {};
@@ -137,19 +133,19 @@ crow::response removeTag(imager::Imager& imager, const std::string& id, const st
   }
 }
 
-constexpr uint32_t DEFAULT_LIMIT = 50;
-constexpr uint32_t MAX_LIMIT = 500;
-
 crow::response listAllTags(imager::Imager& imager, const crow::request& req) {
-  uint32_t offset = 0, limit = DEFAULT_LIMIT;
-  if (!parseUintParam(req, "offset", 0, UINT32_MAX >> 1, offset)) {
-    return badRequest("offset must be an integer in [0, 2147483647]");
-  }
-  if (!parseUintParam(req, "limit", 1, MAX_LIMIT, limit)) {
-    return badRequest("limit must be an integer in [1, 500]");
+  uint32_t offset = 0, limit = DEFAULT_PAGE_LIMIT;
+  crow::response err;
+  if (!parsePage(req, offset, limit, err)) {
+    return err;
   }
   try {
-    return tagsResponse(imager.listTags(offset, limit));
+    auto tags = imager.listTagsChecked(offset, limit);
+    if (!tags) {
+      CROW_LOG_ERROR << "tags: listTags failed";
+      return errorResponse(tags.error(), "internal error");
+    }
+    return tagsResponse(*tags);
   } catch (const std::exception& e) {
     CROW_LOG_ERROR << "tags: list threw: " << e.what();
     return errorResponse(imager::ErrorCode::DatabaseError, "internal error");
@@ -164,7 +160,7 @@ crow::response createGlobalTag(imager::Imager& imager, const crow::request& req)
   }
   const std::string name = body["name"].s();
   if (!validTagName(name)) {
-    return badRequest("tag names must be 1-255 bytes and must not contain commas");
+    return badRequest(TAG_NAME_RULE);
   }
   try {
     std::lock_guard lock(g_tagMutex);
@@ -252,7 +248,7 @@ void registerTagRoutes(crow::App<AuthMiddleware>& app, imager::Imager& imager) {
           return badRequest("invalid percent-encoding in tag name");
         }
         if (!validTagName(decoded)) {
-          return badRequest("invalid tag name");
+          return badRequest(TAG_NAME_RULE);
         }
         std::lock_guard lock(g_tagMutex);
         return removeTag(imager, id, decoded);
@@ -283,7 +279,7 @@ void registerTagRoutes(crow::App<AuthMiddleware>& app, imager::Imager& imager) {
         return badRequest("invalid percent-encoding in tag name");
       }
       if (!validTagName(decoded)) {
-        return badRequest("invalid tag name");
+        return badRequest(TAG_NAME_RULE);
       }
       return deleteGlobalTag(imager, decoded);
     });

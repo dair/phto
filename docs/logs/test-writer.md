@@ -115,3 +115,9 @@
 - **Outcome**: Wrote `server/test/test_users.sh.in`, registered `server_users_test` (ports 19550–19554), added `docs/testing/users-admin.md` and dashboard row. Contract knobs (guard status etc.) are defaults from the plan; not yet run (build not handed over).
 - **Next Step**: Wait for i1-dev contract and "build is yours"; build, run, align, record assertion count.
 - **Update 2026-10-31 (final)**: After handover: server_users_test 118 passed / 0 failed; full ctest 30/30.
+
+## [2026-10-31 16:00] - J1 hardening e2e test
+- **Agent**: test-spec-writer
+- **Task**: Write end-to-end tests for J1 (security headers, /stats, tag-name validation, body cap, error-code vocabulary, secret file, per-IP throttle).
+- **Outcome**: Wrote `server/test/test_hardening.sh.in`, registered `server_hardening_test` (ports 19560–19564), added `docs/testing/hardening.md` and dashboard row. After handover: 249 passed / 0 failed; full ctest 31/31.
+- **Next Step**: Root verifies and commits.

@@ -2,6 +2,7 @@
 #include <auth/UserStore.h>
 #include <config/Config.h>
 #include <imager/Imager.h>
+#include <sys/stat.h>
 
 #include <csignal>
 #include <cstdlib>
@@ -27,6 +28,17 @@ void handleSignal(int /*sig*/) {
 /// Returns the secret string, or empty on error (after printing to stderr).
 std::string loadJwtSecret(const config::AuthConfig& auth) {
   if (!auth.jwtSecretFile.empty()) {
+    // Refuse a secret file that is not a regular file or is readable by "other" (should be 0600/0640).
+    struct stat st{};
+    if (::stat(auth.jwtSecretFile.c_str(), &st) != 0) {
+      std::cerr << "imagerd: cannot stat jwt_secret_file: " << auth.jwtSecretFile << "\n";
+      return {};
+    }
+    if (!S_ISREG(st.st_mode) || (st.st_mode & S_IROTH) != 0) {
+      std::cerr << "imagerd: jwt_secret_file must be a regular file not readable by others (chmod 600): "
+                << auth.jwtSecretFile << "\n";
+      return {};
+    }
     std::ifstream f(auth.jwtSecretFile);
     if (!f) {
       std::cerr << "imagerd: cannot open jwt_secret_file: " << auth.jwtSecretFile << "\n";

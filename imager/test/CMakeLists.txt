@@ -23,6 +23,8 @@ if(NOT CPPUNIT_FOUND)
     return()
 endif()
 
+find_package(SQLite3 REQUIRED)
+
 add_executable(imager_tests ImagerTest.cpp MultiTargetTest.cpp LargeFileTest.cpp)
 
 target_include_directories(imager_tests
@@ -37,6 +39,7 @@ target_compile_definitions(imager_tests PRIVATE
 target_link_libraries(imager_tests
     PRIVATE
         libimager
+        SQLite::SQLite3
         ${CPPUNIT_LIBRARIES}
 )
 

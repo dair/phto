@@ -9,9 +9,8 @@ bool LoginThrottle::isLockedOut(const std::string& key) {
     return false;
   }
   const Entry& e = it->second;
-  if (e.failures >= MAX_FAILURES) {
-    const auto now = std::chrono::steady_clock::now();
-    if (now < e.lockedUntil) {
+  if (e.failures >= m_maxFailures) {
+    if (Clock::now() < e.lockedUntil) {
       return true;
     }
     // Lockout window has expired — clear the entry.
@@ -22,16 +21,39 @@ bool LoginThrottle::isLockedOut(const std::string& key) {
 
 void LoginThrottle::recordFailure(const std::string& key) {
   std::lock_guard<std::mutex> lock{m_mutex};
+  const auto now = Clock::now();
+  if (m_entries.size() >= PRUNE_THRESHOLD) {
+    pruneLocked(now);
+  }
   Entry& e = m_entries[key];
+  if (e.failures > 0 && e.failures < m_maxFailures && now - e.windowStart > std::chrono::seconds{LOCKOUT_SECONDS}) {
+    e.failures = 0; // stale partial count: start a new window
+  }
+  if (e.failures == 0) {
+    e.windowStart = now;
+  }
   e.failures++;
-  if (e.failures >= MAX_FAILURES) {
-    e.lockedUntil = std::chrono::steady_clock::now() + std::chrono::seconds{LOCKOUT_SECONDS};
+  if (e.failures >= m_maxFailures) {
+    e.lockedUntil = now + std::chrono::seconds{LOCKOUT_SECONDS};
   }
 }
 
 void LoginThrottle::recordSuccess(const std::string& key) {
   std::lock_guard<std::mutex> lock{m_mutex};
   m_entries.erase(key);
+}
+
+void LoginThrottle::pruneLocked(Clock::time_point now) {
+  const auto window = std::chrono::seconds{LOCKOUT_SECONDS};
+  for (auto it = m_entries.begin(); it != m_entries.end();) {
+    const Entry& e = it->second;
+    const bool locked = e.failures >= m_maxFailures;
+    if (locked ? now >= e.lockedUntil : now - e.windowStart > window) {
+      it = m_entries.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 } // namespace server

@@ -2,6 +2,7 @@
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
 #include <cppunit/ui/text/TestRunner.h>
+#include <sqlite3.h>
 
 #include <atomic>
 #include <chrono>
@@ -1556,6 +1557,117 @@ public:
 };
 
 CPPUNIT_TEST_SUITE_REGISTRATION(GetImagePathTest);
+
+// ---------------------------------------------------------------------------
+// Test: checked listing/count variants (J1) — DB failures must not look like empty results
+// ---------------------------------------------------------------------------
+
+class CheckedListingTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(CheckedListingTest);
+  CPPUNIT_TEST(testHealthyDbMatchesUnchecked);
+  CPPUNIT_TEST(testEmptyTagsIsEmptyNotError);
+  CPPUNIT_TEST(testCountsHealthy);
+  CPPUNIT_TEST(testBrokenDbReportsDatabaseError);
+  CPPUNIT_TEST(testUncheckedStaysLenient);
+  CPPUNIT_TEST_SUITE_END();
+
+  config::AppConfig m_cfg;
+  fs::path m_base;
+
+  /// Drops every table through a second connection so subsequent queries fail.
+  void breakDb() const {
+    sqlite3* db = nullptr;
+    CPPUNIT_ASSERT_EQUAL(SQLITE_OK, sqlite3_open((m_base / "imager.db").c_str(), &db));
+    sqlite3_busy_timeout(db, 5000);
+    char* err = nullptr;
+    int rc = sqlite3_exec(
+      db,
+      "PRAGMA foreign_keys=OFF; DROP TABLE IF EXISTS file_tag; DROP TABLE IF EXISTS original_name;"
+      "DROP TABLE IF EXISTS file_companion; DROP TABLE IF EXISTS tag; DROP TABLE IF EXISTS file;",
+      nullptr,
+      nullptr,
+      &err
+    );
+    sqlite3_free(err);
+    sqlite3_close(db);
+    CPPUNIT_ASSERT_EQUAL(SQLITE_OK, rc);
+  }
+
+public:
+  void setUp() override {
+    m_base = fs::temp_directory_path() / ("imager_test_chk_" + uniqueSuffix());
+    fs::create_directories(m_base / "storage");
+    m_cfg.targets.push_back({m_base / "storage", m_base / "imager.db"});
+  }
+
+  void tearDown() override {
+    fs::remove_all(m_base);
+  }
+
+  void testHealthyDbMatchesUnchecked() {
+    Imager img(m_cfg);
+    auto r = img.addImage(Blob::fromVector(makeMinimalJpeg()), "a.jpg");
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, r.code);
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, img.createTag("x"));
+
+    auto all = img.listImagesChecked();
+    CPPUNIT_ASSERT(all.has_value());
+    CPPUNIT_ASSERT_EQUAL(size_t(1), all->size());
+    auto un = img.getUntaggedImagesChecked();
+    CPPUNIT_ASSERT(un.has_value());
+    CPPUNIT_ASSERT_EQUAL(size_t(1), un->size());
+    auto tags = img.listTagsChecked();
+    CPPUNIT_ASSERT(tags.has_value());
+    CPPUNIT_ASSERT_EQUAL(size_t(1), tags->size());
+    CPPUNIT_ASSERT_EQUAL(img.listImages().size(), all->size());
+  }
+
+  void testEmptyTagsIsEmptyNotError() {
+    Imager img(m_cfg);
+    auto r = img.getImagesByTagsChecked({});
+    CPPUNIT_ASSERT(r.has_value());
+    CPPUNIT_ASSERT(r->empty());
+  }
+
+  void testCountsHealthy() {
+    Imager img(m_cfg);
+    CPPUNIT_ASSERT_EQUAL(uint64_t(0), img.imageCountChecked().value());
+    CPPUNIT_ASSERT_EQUAL(uint64_t(0), img.tagCountChecked().value());
+    img.addImage(Blob::fromVector(makeMinimalJpeg()), "a.jpg");
+    img.createTag("t1");
+    img.createTag("t2");
+    CPPUNIT_ASSERT_EQUAL(uint64_t(1), img.imageCountChecked().value());
+    CPPUNIT_ASSERT_EQUAL(uint64_t(2), img.tagCountChecked().value());
+  }
+
+  void testBrokenDbReportsDatabaseError() {
+    Imager img(m_cfg);
+    breakDb();
+    auto expectErr = [](const char* what, const auto& r) {
+      CPPUNIT_ASSERT_MESSAGE(what, !r.has_value());
+      CPPUNIT_ASSERT_EQUAL(ErrorCode::DatabaseError, r.error());
+    };
+    expectErr("listImagesChecked", img.listImagesChecked());
+    expectErr("getImagesByTagsChecked", img.getImagesByTagsChecked({"a"}));
+    expectErr("getUntaggedImagesChecked", img.getUntaggedImagesChecked());
+    expectErr("listTagsChecked", img.listTagsChecked());
+    expectErr("imageCountChecked", img.imageCountChecked());
+    expectErr("tagCountChecked", img.tagCountChecked());
+  }
+
+  // Backward compatibility: the original methods still return empty/0 on DB failure.
+  void testUncheckedStaysLenient() {
+    Imager img(m_cfg);
+    breakDb();
+    CPPUNIT_ASSERT(img.listImages().empty());
+    CPPUNIT_ASSERT(img.getImagesByTags({"a"}).empty());
+    CPPUNIT_ASSERT(img.getUntaggedImages().empty());
+    CPPUNIT_ASSERT(img.listTags().empty());
+    CPPUNIT_ASSERT_EQUAL(uint64_t(0), img.imageCount());
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(CheckedListingTest);
 
 // ---------------------------------------------------------------------------
 // main

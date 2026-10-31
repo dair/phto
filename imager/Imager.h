@@ -4,6 +4,7 @@
 #include <imager/Types.h>
 #include <metrics/Metrics.h>
 
+#include <expected>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -125,6 +126,18 @@ public:
 
   /// Get total image count.
   uint64_t imageCount();
+
+  // ---- Checked variants: report DB failures as DatabaseError instead of hiding them ----
+  // The unchecked methods above keep their lenient behaviour (empty / 0 on DB failure).
+
+  using ImageList = std::expected<std::vector<ImageInfo>, ErrorCode>;
+
+  ImageList listImagesChecked(uint32_t offset = 0, uint32_t limit = 50);
+  ImageList getImagesByTagsChecked(const std::vector<std::string>& tags, uint32_t offset = 0, uint32_t limit = 50);
+  ImageList getUntaggedImagesChecked(uint32_t offset = 0, uint32_t limit = 50);
+  std::expected<std::vector<std::string>, ErrorCode> listTagsChecked(uint32_t offset = 0, uint32_t limit = 50);
+  std::expected<uint64_t, ErrorCode> imageCountChecked();
+  std::expected<uint64_t, ErrorCode> tagCountChecked();
 
   /// Access the metrics instance owned by this Imager.
   const metrics::Metrics& metrics() const noexcept;

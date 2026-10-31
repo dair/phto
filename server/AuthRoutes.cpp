@@ -40,11 +40,21 @@ std::optional<auth::TokenService::Claims> requireAdmin(
 
 namespace {
 
-/// Shared throttle instance — one per process, lives for the duration of the daemon.
+/// Shared throttle instances — one per process, live for the duration of the daemon.
 LoginThrottle& throttle() {
-  static LoginThrottle instance;
+  static LoginThrottle instance{LoginThrottle::MAX_FAILURES};
   return instance;
 }
+
+/// Per-client-IP throttle (higher threshold): rotating logins cannot dodge it.
+/// Behind a reverse proxy every client shares the proxy's address; X-Forwarded-For is deliberately not trusted.
+LoginThrottle& ipThrottle() {
+  static LoginThrottle instance{LoginThrottle::MAX_IP_FAILURES};
+  return instance;
+}
+
+constexpr size_t MAX_LOGIN_BYTES = 64;
+constexpr size_t MAX_PASSWORD_BYTES = 1024;
 
 } // namespace
 
@@ -59,15 +69,19 @@ void registerAuthRoutes(
   CROW_ROUTE(app, "/auth/login")
     .methods(crow::HTTPMethod::Post)([&userStore, &tokenService, tokenTtlSeconds](const crow::request& req) {
       auto body = crow::json::load(req.body);
-      if (!body || !body.has("login") || !body.has("password")) {
-        return badRequest("body must contain login and password");
+      if (!body || body.t() != crow::json::type::Object || !body.has("login") || !body.has("password") ||
+          body["login"].t() != crow::json::type::String || body["password"].t() != crow::json::type::String) {
+        return badRequest("body must contain string login and password");
       }
 
       const std::string login = body["login"].s();
       const std::string password = body["password"].s();
+      if (login.size() > MAX_LOGIN_BYTES || password.size() > MAX_PASSWORD_BYTES) {
+        return badRequest("login or password too long");
+      }
 
       // Throttle check — precedes any credential verification.
-      if (throttle().isLockedOut(login)) {
+      if (ipThrottle().isLockedOut(req.remote_ip_address) || throttle().isLockedOut(login)) {
         auto res = jsonError(429, "TooManyRequests", "too many failed login attempts — try again later");
         res.add_header("Retry-After", std::to_string(LoginThrottle::LOCKOUT_SECONDS));
         return res;
@@ -79,6 +93,7 @@ void registerAuthRoutes(
       // Generic failure for missing user or wrong password — no user enumeration.
       if (!userOpt || !pwOpt || !auth::verifyPassword(password, *pwOpt)) {
         throttle().recordFailure(login);
+        ipThrottle().recordFailure(req.remote_ip_address);
         return unauthorized("invalid credentials");
       }
 
@@ -135,15 +150,16 @@ void registerAuthRoutes(
       }
 
       auto body = crow::json::load(req.body);
-      if (!body || !body.has("oldPassword") || !body.has("newPassword")) {
-        return badRequest("body must contain oldPassword and newPassword");
+      if (!body || body.t() != crow::json::type::Object || !body.has("oldPassword") || !body.has("newPassword") ||
+          body["oldPassword"].t() != crow::json::type::String || body["newPassword"].t() != crow::json::type::String) {
+        return badRequest("body must contain string oldPassword and newPassword");
       }
 
       const std::string oldPassword = body["oldPassword"].s();
       const std::string newPassword = body["newPassword"].s();
 
-      if (newPassword.size() < 8) {
-        return badRequest("newPassword must be at least 8 characters");
+      if (newPassword.size() < 8 || newPassword.size() > MAX_PASSWORD_BYTES) {
+        return badRequest("newPassword must be 8..1024 bytes");
       }
 
       auto pwOpt = userStore.getPassword(claims->login);

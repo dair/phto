@@ -8,6 +8,7 @@
 
 #include "AuthRoutes.h"
 #include "ItemRoutes.h"
+#include "Json.h"
 #include "TagRoutes.h"
 #include "UserRoutes.h"
 
@@ -40,6 +41,28 @@ void App::registerRoutes() {
     crow::response res{200, R"({"status":"ok"})"};
     res.add_header("Content-Type", "application/json");
     return res;
+  });
+
+  // GET /stats — library size counters (authenticated).
+  CROW_ROUTE(m_crow, "/stats").methods(crow::HTTPMethod::Get)([this](const crow::request& req) {
+    if (!requireAuth(m_crow, req)) {
+      return unauthorized("authentication required");
+    }
+    try {
+      const auto images = m_imager.imageCountChecked();
+      const auto tags = m_imager.tagCountChecked();
+      if (!images || !tags) {
+        CROW_LOG_ERROR << "GET /stats: count failed (database error)";
+        return internalError();
+      }
+      crow::json::wvalue body;
+      body["imageCount"] = *images;
+      body["tagCount"] = *tags;
+      return jsonOk(200, body);
+    } catch (const std::exception& e) {
+      CROW_LOG_ERROR << "GET /stats threw: " << e.what();
+      return internalError();
+    }
   });
 
   registerAuthRoutes(m_crow, m_userStore, m_tokenService, m_tokenTtlSeconds, m_pbkdf2Iterations);

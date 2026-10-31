@@ -17,8 +17,6 @@ namespace server {
 
 namespace {
 
-constexpr uint32_t MAX_LIMIT = 500;
-constexpr uint32_t DEFAULT_LIMIT = 50;
 constexpr size_t MAX_LOGIN_LEN = 64;
 constexpr size_t MAX_FULLNAME_LEN = 255;
 constexpr size_t MIN_PASSWORD_LEN = 8; // same as POST /auth/password
@@ -57,34 +55,27 @@ bool isBool(const crow::json::rvalue& v) {
   return v.t() == crow::json::type::True || v.t() == crow::json::type::False;
 }
 
-crow::response notFound(const std::string& login) {
-  return jsonError(404, "NotFound", "user not found: " + login);
-}
-
 /// Maps a store exception to a response.
 crow::response storeError(const auth::AuthException& e) {
   switch (e.code()) {
     case auth::AuthErrorCode::NotFound:
-      return jsonError(404, "NotFound", e.what());
+      return notFound(e.what());
     case auth::AuthErrorCode::Duplicate:
-      return jsonError(409, "Conflict", e.what());
+      return conflict(e.what());
     case auth::AuthErrorCode::LastAdmin:
       return jsonError(409, "LastAdmin", e.what());
     default:
-      return jsonError(500, "InternalError", "user store failure");
+      return internalError();
   }
 }
 
 crow::response listUsers(auth::UserStore& store, const crow::request& req) {
   uint32_t offset = 0;
-  uint32_t limit = DEFAULT_LIMIT;
-  if (!parseUintParam(req, "offset", 0, UINT32_MAX, offset)) {
-    return badRequest("offset must be a non-negative integer");
+  uint32_t limit = DEFAULT_PAGE_LIMIT;
+  crow::response err;
+  if (!parsePage(req, offset, limit, err)) {
+    return err;
   }
-  if (!parseUintParam(req, "limit", 1, UINT32_MAX, limit)) {
-    return badRequest("limit must be a positive integer");
-  }
-  limit = std::min(limit, MAX_LIMIT);
 
   std::vector<crow::json::wvalue> arr;
   for (const auto& u : store.list(db::Pagination{offset, limit})) {
@@ -124,7 +115,7 @@ crow::response createUser(auth::UserStore& store, uint32_t iterations, const cro
   try {
     store.create(login, fullName, auth::hashPassword(password, iterations), isAdmin);
     const auto user = store.get(login);
-    return user ? jsonOk(201, userToJson(*user)) : jsonError(500, "InternalError", "user store failure");
+    return user ? jsonOk(201, userToJson(*user)) : internalError();
   } catch (const auth::AuthException& e) {
     return storeError(e);
   }
@@ -167,7 +158,7 @@ crow::response patchUser(
   try {
     // Existence is checked first so an unknown login is a cheap 404 (no PBKDF2 work).
     if (!store.get(login)) {
-      return notFound(login);
+      return notFound("user not found");
     }
     if (!password.empty()) {
       upd.password = auth::hashPassword(password, iterations);
@@ -213,7 +204,7 @@ void registerUserRoutes(crow::App<AuthMiddleware>& app, auth::UserStore& userSto
         try {
           if (req.method == crow::HTTPMethod::Get) {
             const auto user = userStore.get(login);
-            return user ? jsonOk(200, userToJson(*user)) : notFound(login);
+            return user ? jsonOk(200, userToJson(*user)) : notFound("user not found");
           }
           if (req.method == crow::HTTPMethod::Delete) {
             userStore.removeGuarded(login);

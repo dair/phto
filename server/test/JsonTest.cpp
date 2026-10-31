@@ -4,6 +4,7 @@
 #include <cppunit/ui/text/TestRunner.h>
 #include <crow.h>
 #include <server/Json.h>
+#include <server/LoginThrottle.h>
 
 #include <string>
 
@@ -95,7 +96,7 @@ public:
   }
 
   void testDuplicateFile() {
-    CPPUNIT_ASSERT_EQUAL(std::string("DuplicateFile"), server::errorCodeName(imager::ErrorCode::DuplicateFile));
+    CPPUNIT_ASSERT_EQUAL(std::string("Conflict"), server::errorCodeName(imager::ErrorCode::DuplicateFile));
   }
 
   void testUnsupportedFormat() {
@@ -103,23 +104,23 @@ public:
   }
 
   void testFileNotFound() {
-    CPPUNIT_ASSERT_EQUAL(std::string("FileNotFound"), server::errorCodeName(imager::ErrorCode::FileNotFound));
+    CPPUNIT_ASSERT_EQUAL(std::string("NotFound"), server::errorCodeName(imager::ErrorCode::FileNotFound));
   }
 
   void testStorageError() {
-    CPPUNIT_ASSERT_EQUAL(std::string("StorageError"), server::errorCodeName(imager::ErrorCode::StorageError));
+    CPPUNIT_ASSERT_EQUAL(std::string("Internal"), server::errorCodeName(imager::ErrorCode::StorageError));
   }
 
   void testAmbiguousSidecar() {
-    CPPUNIT_ASSERT_EQUAL(std::string("AmbiguousSidecar"), server::errorCodeName(imager::ErrorCode::AmbiguousSidecar));
+    CPPUNIT_ASSERT_EQUAL(std::string("Conflict"), server::errorCodeName(imager::ErrorCode::AmbiguousSidecar));
   }
 
   void testDatabaseError() {
-    CPPUNIT_ASSERT_EQUAL(std::string("DatabaseError"), server::errorCodeName(imager::ErrorCode::DatabaseError));
+    CPPUNIT_ASSERT_EQUAL(std::string("Internal"), server::errorCodeName(imager::ErrorCode::DatabaseError));
   }
 
   void testConfigError() {
-    CPPUNIT_ASSERT_EQUAL(std::string("ConfigError"), server::errorCodeName(imager::ErrorCode::ConfigError));
+    CPPUNIT_ASSERT_EQUAL(std::string("Internal"), server::errorCodeName(imager::ErrorCode::ConfigError));
   }
 
   void testTooLarge() {
@@ -214,7 +215,7 @@ public:
     crow::response res = server::errorResponse(imager::ErrorCode::FileNotFound, "no such id");
     crow::json::rvalue parsed = crow::json::load(res.body);
     CPPUNIT_ASSERT(parsed);
-    CPPUNIT_ASSERT_EQUAL(std::string("FileNotFound"), std::string(parsed["error"]["code"].s()));
+    CPPUNIT_ASSERT_EQUAL(std::string("NotFound"), std::string(parsed["error"]["code"].s()));
   }
 
   void testDatabaseErrorStatus() {
@@ -226,7 +227,7 @@ public:
     crow::response res = server::errorResponse(imager::ErrorCode::DatabaseError, "db fail");
     crow::json::rvalue parsed = crow::json::load(res.body);
     CPPUNIT_ASSERT(parsed);
-    CPPUNIT_ASSERT_EQUAL(std::string("DatabaseError"), std::string(parsed["error"]["code"].s()));
+    CPPUNIT_ASSERT_EQUAL(std::string("Internal"), std::string(parsed["error"]["code"].s()));
   }
 
   void testMessagePassthrough() {
@@ -298,6 +299,117 @@ public:
 };
 
 CPPUNIT_TEST_SUITE_REGISTRATION(TransportHelpersTest);
+
+// ============================================================================
+// validTagName / isValidUtf8 — J1 input validation
+// ============================================================================
+class TagNameTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(TagNameTest);
+  CPPUNIT_TEST(testAccepts);
+  CPPUNIT_TEST(testRejectsEmptyAndTooLong);
+  CPPUNIT_TEST(testRejectsCommaAndControl);
+  CPPUNIT_TEST(testRejectsNulAndDel);
+  CPPUNIT_TEST(testUtf8);
+  CPPUNIT_TEST(testHelpers);
+  CPPUNIT_TEST_SUITE_END();
+
+public:
+  void testAccepts() {
+    CPPUNIT_ASSERT(server::validTagName("holiday 2024"));
+    CPPUNIT_ASSERT(server::validTagName("\xD0\xBE\xD1\x82\xD0\xBF\xD1\x83\xD1\x81\xD0\xBA")); // Cyrillic
+    CPPUNIT_ASSERT(server::validTagName(std::string(255, 'a')));
+  }
+
+  void testRejectsEmptyAndTooLong() {
+    CPPUNIT_ASSERT(!server::validTagName(""));
+    CPPUNIT_ASSERT(!server::validTagName(std::string(256, 'a')));
+  }
+
+  void testRejectsCommaAndControl() {
+    CPPUNIT_ASSERT(!server::validTagName("a,b"));
+    CPPUNIT_ASSERT(!server::validTagName("a\tb"));
+    CPPUNIT_ASSERT(!server::validTagName("a\nb"));
+    CPPUNIT_ASSERT(!server::validTagName("\x1F"));
+  }
+
+  void testRejectsNulAndDel() {
+    CPPUNIT_ASSERT(!server::validTagName(std::string("a\0b", 3)));
+    CPPUNIT_ASSERT(!server::validTagName("a\x7F"));
+  }
+
+  void testUtf8() {
+    CPPUNIT_ASSERT(!server::validTagName("\xFF"));
+    CPPUNIT_ASSERT(!server::validTagName("\xC0\xAF"));         // overlong '/'
+    CPPUNIT_ASSERT(!server::validTagName("\xED\xA0\x80"));     // surrogate
+    CPPUNIT_ASSERT(!server::validTagName("\xF4\x90\x80\x80")); // > U+10FFFF
+    CPPUNIT_ASSERT(!server::validTagName("\xE2\x82"));         // truncated
+    CPPUNIT_ASSERT(server::validTagName("\xF0\x9F\x98\x80"));  // U+1F600
+  }
+
+  void testHelpers() {
+    crow::response r = server::notFound("x");
+    CPPUNIT_ASSERT_EQUAL(404, r.code);
+    CPPUNIT_ASSERT_EQUAL(std::string("NotFound"), std::string(crow::json::load(r.body)["error"]["code"].s()));
+    r = server::conflict("x");
+    CPPUNIT_ASSERT_EQUAL(409, r.code);
+    CPPUNIT_ASSERT_EQUAL(std::string("Conflict"), std::string(crow::json::load(r.body)["error"]["code"].s()));
+    r = server::tooLarge("x");
+    CPPUNIT_ASSERT_EQUAL(413, r.code);
+    r = server::internalError();
+    CPPUNIT_ASSERT_EQUAL(500, r.code);
+    CPPUNIT_ASSERT_EQUAL(std::string("Internal"), std::string(crow::json::load(r.body)["error"]["code"].s()));
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(TagNameTest);
+
+// ============================================================================
+// LoginThrottle — per-key threshold, independence of keys, success reset
+// ============================================================================
+class LoginThrottleTest: public CppUnit::TestFixture {
+  CPPUNIT_TEST_SUITE(LoginThrottleTest);
+  CPPUNIT_TEST(testLocksAtThreshold);
+  CPPUNIT_TEST(testHigherThresholdForIp);
+  CPPUNIT_TEST(testSuccessResets);
+  CPPUNIT_TEST_SUITE_END();
+
+public:
+  void testLocksAtThreshold() {
+    server::LoginThrottle t{3};
+    for (int i = 0; i < 2; ++i) {
+      t.recordFailure("a");
+    }
+    CPPUNIT_ASSERT(!t.isLockedOut("a"));
+    t.recordFailure("a");
+    CPPUNIT_ASSERT(t.isLockedOut("a"));
+    CPPUNIT_ASSERT(!t.isLockedOut("b"));
+  }
+
+  // Rotating logins from one IP: no single login locks, the IP counter does.
+  void testHigherThresholdForIp() {
+    server::LoginThrottle perLogin{server::LoginThrottle::MAX_FAILURES};
+    server::LoginThrottle perIp{server::LoginThrottle::MAX_IP_FAILURES};
+    for (int i = 0; i < server::LoginThrottle::MAX_IP_FAILURES; ++i) {
+      CPPUNIT_ASSERT(!perIp.isLockedOut("10.0.0.1"));
+      perLogin.recordFailure("user" + std::to_string(i));
+      perIp.recordFailure("10.0.0.1");
+    }
+    CPPUNIT_ASSERT(!perLogin.isLockedOut("user0"));
+    CPPUNIT_ASSERT(perIp.isLockedOut("10.0.0.1"));
+    CPPUNIT_ASSERT(!perIp.isLockedOut("10.0.0.2"));
+  }
+
+  void testSuccessResets() {
+    server::LoginThrottle t{3};
+    t.recordFailure("a");
+    t.recordFailure("a");
+    t.recordSuccess("a");
+    t.recordFailure("a");
+    CPPUNIT_ASSERT(!t.isLockedOut("a"));
+  }
+};
+
+CPPUNIT_TEST_SUITE_REGISTRATION(LoginThrottleTest);
 
 // ============================================================================
 // main

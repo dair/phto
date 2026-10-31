@@ -267,3 +267,25 @@ add_test(
 )
 
 set_tests_properties(server_users_test PROPERTIES TIMEOUT 120)
+
+# ---- server_hardening_test — J1 headers, /stats, validation, body cap, throttle ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_hardening.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_hardening.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_hardening.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_hardening_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_hardening.sh"
+)
+
+set_tests_properties(server_hardening_test PROPERTIES TIMEOUT 180)

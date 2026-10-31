@@ -239,3 +239,9 @@
 - **Task**: POST/GET/PATCH/DELETE /users[/{login}], last-admin guard, token re-check.
 - **Outcome**: New `server/UserRoutes.{h,cpp}` (GET /users moved there; `requireAdmin` now public in AuthRoutes.h; `percentDecode` moved to Json.{h,cpp}). `UserStore` gains `removeGuarded`, `update(UserUpdate)`, `countEnabledAdmins`, `AuthErrorCode::LastAdmin`; guard runs in one `BEGIN IMMEDIATE` transaction under the store mutex (also safe against imageradmin in another process); 9 new CPPUnit tests incl. concurrent demotion. Guard rejection = 409 code `LastAdmin`; duplicate = 409 `Conflict`; unknown = 404 `NotFound`. Validation: login 1..64 [A-Za-z0-9._@-], fullName 1..255, password 8..1024, POST requires all four fields; PATCH rejects empty/unknown/ill-typed. `AuthMiddleware` now re-reads the user per request: deleted/disabled -> 401, isAdmin/fullName taken from DB (immediate demotion). Self-delete/demote allowed unless last admin. Build + ctest 30/30 green.
 - **Next Step**: i1-test owns the build; root commits.
+
+## [2026-10-31 12:00] - J1 hardening: validation, headers, /stats, error vocabulary, IP throttle
+- **Agent**: cpp-spec-coder
+- **Task**: Checkpoint J1 (0022 §6.6, §7, §13)
+- **Outcome**: Generic error-code vocabulary in Json.cpp (NotFound/Conflict/Internal…); shared validTagName (UTF-8, no control/NUL/comma) on all tag paths + `?tags=` (incl. raw `%00` check); parsePage (limit ≤ 500) on all listings; 64 KiB JSON body cap (413) and nosniff/no-store headers centrally in AuthMiddleware; GET /stats; Imager `*Checked` listing/count variants (std::expected) so DB failures → 500; Database read paths now throw on step errors (previously silently empty); per-IP LoginThrottle (20) with window decay + pruning; imagerd refuses non-regular / other-readable secret file. Tests: ImagerTest CheckedListingTest, JsonTest (names, tag names, throttle), shell expectations renamed (test_item_tags, test_tags).
+- **Next Step**: J2 TLS

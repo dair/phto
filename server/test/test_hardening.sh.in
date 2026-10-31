@@ -1,0 +1,585 @@
+#!/usr/bin/env bash
+# server/test/test_hardening.sh.in — J1 hardening end-to-end test
+#
+# Covers (docs/plan/0022.SERVER.md §6.6, §7, §13, §16 J1):
+#   security headers, GET /stats, tag-name validation (control chars / NUL /
+#   invalid UTF-8) on every tag entry point, JSON body cap (413), error-code
+#   vocabulary spot checks, secret-file startup checks, per-IP login throttle.
+# The per-IP throttle section runs LAST on its own daemon instance so the
+# lockout cannot disturb other sections.
+# Registered as "server_hardening_test". Configured by CMake configure_file(@ONLY).
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+MOV_FIXTURE="@MOV_FIXTURE@"
+
+# ---- contract knobs (aligned with j1-dev) ----------------------------------
+BODY_CAP=65536          # JSON body cap in bytes
+IP_THRESHOLD=20         # failures from one IP (distinct logins) before 429
+PER_LOGIN_MAX=5         # existing per-login threshold (MAX_FAILURES)
+CODE_NOT_FOUND="NotFound"
+CODE_BAD_REQUEST="BadRequest"
+CODE_UNAUTHORIZED="Unauthorized"
+CODE_CONFLICT="Conflict"
+CODE_TOO_LARGE="TooLarge"
+
+SECRET_CHECKS=1        # imagerd refuses world-readable / <32-byte secret files (confirmed by j1-dev)
+
+PASS=0
+FAIL=0
+
+check() {
+  local name="$1"; shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "PASS: $name"; PASS=$((PASS + 1))
+  else echo "FAIL: $name"; FAIL=$((FAIL + 1)); fi
+}
+
+for tool in curl python3; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_hardening_test skipped"
+    exit 0
+  fi
+done
+for f in "$JPEG_FIXTURE" "$MOV_FIXTURE"; do
+  if [ ! -f "$f" ]; then echo "FATAL: fixture $f missing"; exit 1; fi
+done
+
+pick_port() {
+  for port in "$@"; do
+    if ! ss -tlnp 2>/dev/null | grep -q ":${port} "; then echo "$port"; return 0; fi
+  done
+  echo "$1"
+}
+PORT=$(pick_port 19560 19561 19562 19563 19564)
+PORT2=$(pick_port 19564 19563 19562 19561 19560)
+if [ "$PORT2" = "$PORT" ]; then PORT2=19564; [ "$PORT" = 19564 ] && PORT2=19563; fi
+
+TMPDIR_TEST=$(mktemp -d)
+T="$TMPDIR_TEST"
+ROOT1="$T/storage1"; ROOT2="$T/storage2"
+DB1="$T/imager1.db"; DB2="$T/imager2.db"
+AUTH_DB="$T/auth.db"
+CFG="$T/test.toml"
+SECRET_FILE="$T/jwt.secret"
+mkdir -p "$ROOT1" "$ROOT2"
+
+# make_cfg <file> <port> [secret-line-override]
+make_cfg() {
+  cat > "$1" <<CFGEOF
+[[targets]]
+root = "$ROOT1"
+database = "$DB1"
+
+[[targets]]
+root = "$ROOT2"
+database = "$DB2"
+
+[server]
+bind = "127.0.0.1"
+port = $2
+threads = 2
+max_upload_mb = 8
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+CFGEOF
+}
+make_cfg "$CFG" "$PORT"
+
+printf '%s' "alicepass1" | "$IMAGERADMIN_BIN" "$CFG" user add alice "Alice User" --password-stdin || {
+  echo "FATAL: seeding alice failed"; rm -rf "$TMPDIR_TEST"; exit 1; }
+printf '%s' "adminpass1" | "$IMAGERADMIN_BIN" "$CFG" user add root "Root Admin" --admin --password-stdin || {
+  echo "FATAL: seeding admin failed"; rm -rf "$TMPDIR_TEST"; exit 1; }
+
+DAEMON_PID=0
+DAEMON2_PID=0
+"$IMAGERD_BIN" "$CFG" >"$T/daemon.stdout" 2>"$T/daemon.stderr" &
+DAEMON_PID=$!
+cleanup() {
+  for p in "$DAEMON_PID" "$DAEMON2_PID"; do
+    if [ "${p:-0}" -gt 0 ] && kill -0 "$p" 2>/dev/null; then
+      kill -KILL "$p" 2>/dev/null || true
+      wait "$p" 2>/dev/null || true
+    fi
+  done
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
+
+wait_ready() {
+  local r
+  r=$(curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 \
+    --retry-delay 1 --retry-connrefused --max-time 12 "http://127.0.0.1:$1/health" 2>/dev/null) || r="000"
+  echo "$r"
+}
+BASE_URL="http://127.0.0.1:${PORT}"
+if [ "$(wait_ready "$PORT")" != "200" ]; then
+  echo "FATAL: daemon not ready"; cat "$T/daemon.stderr" || true; exit 1
+fi
+
+json_get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+
+# http <prefix> curl-args...: body → prefix.body, status → prefix.status, headers → prefix.hdr
+http() {
+  local prefix="$1"; shift
+  curl --silent --dump-header "$prefix.hdr" --output "$prefix.body" --write-out "%{http_code}" "$@" \
+    > "$prefix.status" 2>/dev/null || echo 000 > "$prefix.status"
+}
+# hdr <prefix> <name>: value of a response header (lowercased name match), CR stripped
+hdr() { grep -i "^$2:" "$1.hdr" | tail -1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'; }
+# hashdr <prefix> <name> <value-regex>
+hashdr() { hdr "$1" "$2" | grep -qiE "$3"; }
+
+login() { # login <login> <password> → token on stdout
+  local r
+  r=$(curl --silent --request POST --header "Content-Type: application/json" \
+    --data "{\"login\":\"$1\",\"password\":\"$2\"}" "$BASE_URL/auth/login")
+  python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$r" 2>/dev/null || true
+}
+TOKEN=$(login alice alicepass1)
+ADMIN_TOKEN=$(login root adminpass1)
+check "setup: alice token" test -n "$TOKEN"
+check "setup: admin token" test -n "$ADMIN_TOKEN"
+AUTH="Authorization: Bearer $TOKEN"
+AAUTH="Authorization: Bearer $ADMIN_TOKEN"
+
+req() { # req <prefix> <METHOD> <path> [body]
+  if [ $# -ge 4 ]; then
+    http "$1" -X "$2" -H "$AUTH" -H "Content-Type: application/json" --data "$4" "$BASE_URL$3"
+  else
+    http "$1" -X "$2" -H "$AUTH" "$BASE_URL$3"
+  fi
+}
+areq() { # admin request
+  if [ $# -ge 4 ]; then
+    http "$1" -X "$2" -H "$AAUTH" -H "Content-Type: application/json" --data "$4" "$BASE_URL$3"
+  else
+    http "$1" -X "$2" -H "$AAUTH" "$BASE_URL$3"
+  fi
+}
+
+# ---- fixtures: 2 JPEGs + 1 MOV ---------------------------------------------
+python3 - "$JPEG_FIXTURE" "$T" <<'PYEOF'
+import sys
+data = open(sys.argv[1], "rb").read()
+for n in range(1, 3):
+    com = b"hardening-%d" % n
+    seg = b"\xff\xfe" + (len(com) + 2).to_bytes(2, "big") + com
+    open("%s/p%d.jpg" % (sys.argv[2], n), "wb").write(data[:2] + seg + data[2:])
+PYEOF
+http "$T/up1" -X PUT -H "$AUTH" -H "X-Filename: p1.jpg" --data-binary "@$T/p1.jpg" "$BASE_URL/items"
+check "setup: upload JPEG → 201" test "$(cat $T/up1.status)" = 201
+A=$(json_get $T/up1.body "d['id']")
+UNKNOWN_ID=$(printf 'f%.0s' $(seq 1 64))
+
+cat > "$T/dbq.py" <<'PYEOF'
+import sqlite3, sys
+# usage: dbq.py <db> → "tagrows,filetagrows,filerows"
+c = sqlite3.connect(sys.argv[1], timeout=10)
+print("%d,%d,%d" % (
+    c.execute("SELECT COUNT(*) FROM tag").fetchone()[0],
+    c.execute("SELECT COUNT(*) FROM file_tag").fetchone()[0],
+    c.execute("SELECT COUNT(*) FROM file").fetchone()[0]))
+PYEOF
+dbstate() { python3 -I "$T/dbq.py" "$1"; }
+
+# =========================================================================
+# 1. Security headers
+# =========================================================================
+# hdrcheck <label> <prefix> <json:yes|no>
+hdrcheck() {
+  check "$1: X-Content-Type-Options: nosniff" hashdr "$2" "X-Content-Type-Options" '^nosniff$'
+  if [ "$3" = yes ]; then
+    check "$1: Cache-Control: no-store" hashdr "$2" "Cache-Control" 'no-store'
+  fi
+}
+
+http "$T/h_health" -X GET "$BASE_URL/health"
+check "GET /health → 200" test "$(cat $T/h_health.status)" = 200
+hdrcheck "health" "$T/h_health" yes
+
+http "$T/h_login" -X POST -H "Content-Type: application/json" \
+  --data '{"login":"alice","password":"alicepass1"}' "$BASE_URL/auth/login"
+check "POST /auth/login → 200" test "$(cat $T/h_login.status)" = 200
+hdrcheck "auth login" "$T/h_login" yes
+
+req "$T/h_items" GET "/items"
+check "GET /items → 200" test "$(cat $T/h_items.status)" = 200
+hdrcheck "items list" "$T/h_items" yes
+
+req "$T/h_item" GET "/items/$A"
+check "GET /items/{id} → 200" test "$(cat $T/h_item.status)" = 200
+hdrcheck "item meta" "$T/h_item" yes
+
+http "$T/h_up" -X PUT -H "$AUTH" -H "X-Filename: p2.jpg" --data-binary "@$T/p2.jpg" "$BASE_URL/items"
+hdrcheck "item upload" "$T/h_up" yes
+B=$(json_get $T/h_up.body "d['id']")
+
+req "$T/h_content" GET "/items/$A/content"
+check "GET /items/{id}/content → 200" test "$(cat $T/h_content.status)" = 200
+check "content: nosniff" hashdr "$T/h_content" "X-Content-Type-Options" '^nosniff$'
+check "content: Cache-Control private, immutable" hashdr "$T/h_content" "Cache-Control" 'private.*immutable|immutable.*private'
+check "content: Cache-Control is NOT no-store" bash -c "! grep -qi '^cache-control:.*no-store' '$T/h_content.hdr'"
+
+req "$T/h_tags" GET "/tags"
+hdrcheck "tags list" "$T/h_tags" yes
+req "$T/h_itags" PUT "/items/$A/tags" '{"tags":["hdr1"]}'
+check "PUT /items/{id}/tags → 200" test "$(cat $T/h_itags.status)" = 200
+hdrcheck "item tags put" "$T/h_itags" yes
+req "$T/h_tpost" POST "/tags" '{"name":"hdr2"}'
+hdrcheck "tags create" "$T/h_tpost" yes
+req "$T/h_tdel" DELETE "/tags/hdr2"
+check "DELETE /tags/hdr2 → 204" test "$(cat $T/h_tdel.status)" = 204
+hdrcheck "tags delete (204)" "$T/h_tdel" no
+
+areq "$T/h_users" GET "/users"
+check "GET /users (admin) → 200" test "$(cat $T/h_users.status)" = 200
+hdrcheck "users list" "$T/h_users" yes
+areq "$T/h_user" GET "/users/alice"
+hdrcheck "users get" "$T/h_user" yes
+
+req "$T/h_stats" GET "/stats"
+check "GET /stats → 200" test "$(cat $T/h_stats.status)" = 200
+hdrcheck "stats" "$T/h_stats" yes
+
+# errors
+http "$T/e400" -X POST -H "$AUTH" -H "Content-Type: application/json" --data '{bad' "$BASE_URL/tags"
+check "error 400 status" test "$(cat $T/e400.status)" = 400
+hdrcheck "400" "$T/e400" yes
+http "$T/e401" -X GET "$BASE_URL/items"
+check "error 401 status" test "$(cat $T/e401.status)" = 401
+hdrcheck "401" "$T/e401" yes
+http "$T/e401b" -X GET "$BASE_URL/stats"
+check "GET /stats without token → 401" test "$(cat $T/e401b.status)" = 401
+hdrcheck "401 on /stats" "$T/e401b" yes
+http "$T/e401c" -X POST -H "Content-Type: application/json" --data '{"login":"alice","password":"nope-wrong"}' "$BASE_URL/auth/login"
+check "bad password → 401" test "$(cat $T/e401c.status)" = 401
+hdrcheck "401 on login" "$T/e401c" yes
+req "$T/e403" GET "/users"
+check "error 403 status (non-admin /users)" test "$(cat $T/e403.status)" = 403
+hdrcheck "403" "$T/e403" yes
+req "$T/e404" GET "/items/$UNKNOWN_ID"
+check "error 404 status" test "$(cat $T/e404.status)" = 404
+hdrcheck "404 item" "$T/e404" yes
+req "$T/e404b" DELETE "/tags/never-seen"
+check "error 404 status (tag)" test "$(cat $T/e404b.status)" = 404
+hdrcheck "404 tag" "$T/e404b" yes
+http "$T/e404c" -X GET "$BASE_URL/no/such/route"
+check "unknown route → 404" test "$(cat $T/e404c.status)" = 404
+check "unknown route: nosniff" hashdr "$T/e404c" "X-Content-Type-Options" '^nosniff$'
+req "$T/e409" POST "/tags" '{"name":"hdr1"}'
+check "error 409 status" test "$(cat $T/e409.status)" = 409
+hdrcheck "409" "$T/e409" yes
+req "$T/e404d" GET "/items/$UNKNOWN_ID/content"
+check "content 404 status" test "$(cat $T/e404d.status)" = 404
+check "content 404: nosniff" hashdr "$T/e404d" "X-Content-Type-Options" '^nosniff$'
+
+# =========================================================================
+# 2. GET /stats
+# =========================================================================
+# Fresh counts: 2 uploads (A, B), tags: hdr1 only (hdr2 created+deleted)
+req "$T/s1" GET "/stats"
+check "stats: body has exactly imageCount and tagCount" test "$(json_get $T/s1.body "sorted(d.keys())")" = "['imageCount', 'tagCount']"
+check "stats: imageCount=2" test "$(json_get $T/s1.body "d['imageCount']")" = 2
+check "stats: tagCount=1 (hdr1; hdr2 was deleted)" test "$(json_get $T/s1.body "d['tagCount']")" = 1
+check "stats: counts are integers" test "$(json_get $T/s1.body "type(d['imageCount']).__name__+type(d['tagCount']).__name__")" = intint
+req "$T/s2" POST "/tags" '{"name":"st-a"}'
+req "$T/s3" POST "/tags" '{"name":"st-b"}'
+req "$T/s4" GET "/stats"
+check "stats: tagCount=3 after two creates" test "$(json_get $T/s4.body "d['tagCount']")" = 3
+req "$T/s5" DELETE "/tags/st-a"
+req "$T/s6" GET "/stats"
+check "stats: tagCount=2 after a delete" test "$(json_get $T/s6.body "d['tagCount']")" = 2
+check "stats: imageCount unchanged by tag ops" test "$(json_get $T/s6.body "d['imageCount']")" = 2
+http "$T/s7" -X PUT -H "$AUTH" -H "X-Filename: p2.jpg" --data-binary "@$T/p2.jpg" "$BASE_URL/items"
+req "$T/s8" GET "/stats"
+check "stats: duplicate upload does not change imageCount" test "$(json_get $T/s8.body "d['imageCount']")" = 2
+http "$T/s9" -X PUT -H "$AUTH" -H "X-Filename: v.mov" --data-binary "@$MOV_FIXTURE" "$BASE_URL/items"
+check "stats setup: MOV upload → 201" test "$(cat $T/s9.status)" = 201
+MOVID=$(json_get $T/s9.body "d['id']")
+req "$T/s10" GET "/stats"
+check "stats: imageCount=3 after MOV upload" test "$(json_get $T/s10.body "d['imageCount']")" = 3
+req "$T/s11" DELETE "/items/$MOVID"
+req "$T/s12" GET "/stats"
+check "stats: imageCount=2 after item delete" test "$(json_get $T/s12.body "d['imageCount']")" = 2
+http "$T/s13" -X GET "$BASE_URL/stats"
+check "stats without token → 401" test "$(cat $T/s13.status)" = 401
+http "$T/s14" -X GET -H "Authorization: Bearer not.a.token" "$BASE_URL/stats"
+check "stats with invalid token → 401" test "$(cat $T/s14.status)" = 401
+check "stats 401 error code is $CODE_UNAUTHORIZED" test "$(json_get $T/s13.body "d['error']['code']")" = "$CODE_UNAUTHORIZED"
+areq "$T/s15" GET "/stats"
+check "stats is available to admins too → 200" test "$(cat $T/s15.status)" = 200
+
+# =========================================================================
+# 3. Tag-name validation on every entry point
+# =========================================================================
+BEFORE1=$(dbstate "$DB1"); BEFORE2=$(dbstate "$DB2")
+
+# Raw JSON bodies (python builds exact bytes into files)
+python3 - "$T" <<'PYEOF'
+import sys
+t = sys.argv[1]
+def w(name, data): open("%s/%s" % (t, name), "wb").write(data)
+# raw control characters inside JSON strings (illegal JSON) + escaped forms
+w("b_nul_raw.json",   b'{"name":"a\x00b"}')
+w("b_us_raw.json",    b'{"name":"a\x1fb"}')
+w("b_del_raw.json",   b'{"name":"a\x7fb"}')
+w("b_nl_raw.json",    b'{"name":"a\nb"}')
+w("b_nul_esc.json",   b'{"name":"a\\u0000b"}')
+w("b_us_esc.json",    b'{"name":"a\\u001fb"}')
+w("b_del_esc.json",   b'{"name":"a\\u007fb"}')
+w("b_tab_esc.json",   b'{"name":"a\\tb"}')
+w("b_badutf8.json",   b'{"name":"a\xff\xfeb"}')
+w("b_trunc_utf8.json",b'{"name":"a\xc3"}')
+w("b_overlong.json",  b'{"name":"a\xc0\xafb"}')
+w("b_surrogate.json", b'{"name":"a\xed\xa0\x80b"}')
+w("t_nul_raw.json",   b'{"tags":["ok","a\x00b"]}')
+w("t_us_raw.json",    b'{"tags":["ok","a\x1fb"]}')
+w("t_del_raw.json",   b'{"tags":["ok","a\x7fb"]}')
+w("t_nul_esc.json",   b'{"tags":["ok","a\\u0000b"]}')
+w("t_us_esc.json",    b'{"tags":["ok","a\\u001fb"]}')
+w("t_del_esc.json",   b'{"tags":["ok","a\\u007fb"]}')
+w("t_badutf8.json",   b'{"tags":["ok","a\xff\xfeb"]}')
+w("t_trunc_utf8.json",b'{"tags":["ok","a\xc3"]}')
+w("t_overlong.json",  b'{"tags":["ok","a\xc0\xafb"]}')
+PYEOF
+
+post_file() { # post_file <prefix> <METHOD> <path> <file>
+  http "$1" -X "$2" -H "$AUTH" -H "Content-Type: application/json" --data-binary "@$4" "$BASE_URL$3"
+}
+
+for f in b_nul_raw b_us_raw b_del_raw b_nl_raw b_nul_esc b_us_esc b_del_esc b_tab_esc b_badutf8 b_trunc_utf8 b_overlong b_surrogate; do
+  post_file "$T/v" POST "/tags" "$T/$f.json"
+  check "POST /tags body $f → 400" test "$(cat $T/v.status)" = 400
+done
+check "POST /tags validation error code is $CODE_BAD_REQUEST" test "$(json_get $T/v.body "d['error']['code']")" = "$CODE_BAD_REQUEST"
+hdrcheck "validation 400 (POST /tags)" "$T/v" yes
+
+for f in t_nul_raw t_us_raw t_del_raw t_nul_esc t_us_esc t_del_esc t_badutf8 t_trunc_utf8 t_overlong; do
+  post_file "$T/v" PUT "/items/$A/tags" "$T/$f.json"
+  check "PUT /items/{id}/tags body $f → 400" test "$(cat $T/v.status)" = 400
+  post_file "$T/v" POST "/items/$A/tags" "$T/$f.json"
+  check "POST /items/{id}/tags body $f → 400" test "$(cat $T/v.status)" = 400
+done
+
+# percent-encoded names in paths and queries
+for enc in "%00" "a%00b" "%01" "%08" "%09" "%0A" "%0D" "%1F" "a%1Fb" "%7F" "a%7Fb" "%C3" "%FF" "a%FFb" "%C0%AF" "%ED%A0%80"; do
+  req "$T/v" DELETE "/tags/$enc"
+  check "DELETE /tags/$enc → 400" test "$(cat $T/v.status)" = 400
+  req "$T/v" DELETE "/items/$A/tags/$enc"
+  check "DELETE /items/{id}/tags/$enc → 400" test "$(cat $T/v.status)" = 400
+  req "$T/v" GET "/items?tags=$enc"
+  check "GET /items?tags=$enc → 400" test "$(cat $T/v.status)" = 400
+  req "$T/v" GET "/items?tags=ok,$enc"
+  check "GET /items?tags=ok,$enc → 400" test "$(cat $T/v.status)" = 400
+done
+check "DELETE tag 400 code is $CODE_BAD_REQUEST" test "$(json_get $T/v.body "d['error']['code']")" = "$CODE_BAD_REQUEST"
+
+check "nothing created: DB1 unchanged by rejected tag names" test "$(dbstate "$DB1")" = "$BEFORE1"
+check "nothing created: DB2 unchanged by rejected tag names" test "$(dbstate "$DB2")" = "$BEFORE2"
+req "$T/v" GET "/items/$A/tags"
+check "item A still has only hdr1 after rejected tag writes" test "$(json_get $T/v.body "d['tags']")" = "['hdr1']"
+
+# valid non-ASCII UTF-8 is still accepted
+req "$T/ok1" POST "/tags" '{"name":"café-日本"}'
+check "valid UTF-8 tag name still accepted → 201" test "$(cat $T/ok1.status)" = 201
+req "$T/ok2" DELETE "/tags/caf%C3%A9-%E6%97%A5%E6%9C%AC"
+check "valid percent-encoded UTF-8 delete → 204" test "$(cat $T/ok2.status)" = 204
+
+# pagination bounded everywhere
+for path in /items /tags /users; do
+  for q in "limit=501" "limit=0" "limit=-1" "offset=-1" "limit=99999999999999999999"; do
+    if [ "$path" = /users ]; then areq "$T/pg" GET "$path?$q"; else req "$T/pg" GET "$path?$q"; fi
+    check "GET $path?$q → 400" test "$(cat $T/pg.status)" = 400
+  done
+  if [ "$path" = /users ]; then areq "$T/pg" GET "$path?limit=500"; else req "$T/pg" GET "$path?limit=500"; fi
+  check "GET $path?limit=500 (cap) → 200" test "$(cat $T/pg.status)" = 200
+done
+
+# =========================================================================
+# 4. JSON body cap
+# =========================================================================
+python3 - "$T" "$BODY_CAP" <<'PYEOF'
+import sys, json
+t, cap = sys.argv[1], int(sys.argv[2])
+def body(total):
+    # {"tags":["<pad>"]} padded so the total is exactly `total` bytes; pad is a valid tag
+    base = len('{"tags":[""]}')
+    return ('{"tags":["' + "x" * (total - base) + '"]}').encode()
+def post(total):
+    base = len('{"name":""}')
+    return ('{"name":"' + "y" * (total - base) + '"}').encode()
+# over the cap by a wide margin / just over / just under (valid JSON; names exceed 255 so
+# under-cap bodies are rejected with 400 for the NAME, not 413 — that is the point)
+open(t + "/cap_over.json", "wb").write(post(cap + 1024))
+open(t + "/cap_over1.json", "wb").write(post(cap + 1))
+open(t + "/cap_huge.json", "wb").write(post(cap * 8))
+open(t + "/cap_under.json", "wb").write(post(cap - 1))
+# a body just under the cap that is entirely valid: many short tags
+n = (cap - 64) // 8
+tags = ["t%05d" % i for i in range(n)]
+s = json.dumps({"tags": tags}, separators=(",", ":")).encode()
+while len(s) >= cap:
+    tags.pop(); s = json.dumps({"tags": tags}, separators=(",", ":")).encode()
+open(t + "/cap_valid_under.json", "wb").write(s)
+open(t + "/cap_valid_under.len", "w").write(str(len(s)))
+PYEOF
+req_over() { post_file "$1" "$2" "$3" "$4"; }
+post_file "$T/c1" POST "/tags" "$T/cap_over.json"
+check "POST /tags body cap+1024 → 413" test "$(cat $T/c1.status)" = 413
+check "413 error code is $CODE_TOO_LARGE" test "$(json_get $T/c1.body "d['error']['code']")" = "$CODE_TOO_LARGE"
+hdrcheck "413" "$T/c1" yes
+post_file "$T/c2" POST "/tags" "$T/cap_over1.json"
+check "POST /tags body cap+1 → 413" test "$(cat $T/c2.status)" = 413
+post_file "$T/c3" POST "/tags" "$T/cap_huge.json"
+check "POST /tags body 8×cap → 413" test "$(cat $T/c3.status)" = 413
+post_file "$T/c4" PUT "/items/$A/tags" "$T/cap_over.json"
+check "PUT /items/{id}/tags oversize → 413" test "$(cat $T/c4.status)" = 413
+post_file "$T/c5" POST "/items/$A/tags" "$T/cap_over.json"
+check "POST /items/{id}/tags oversize → 413" test "$(cat $T/c5.status)" = 413
+post_file "$T/c6" POST "/auth/login" "$T/cap_over.json"
+check "POST /auth/login oversize → 413 (unauthenticated)" test "$(cat $T/c6.status)" = 413
+areq "$T/c7" POST "/users" "$(cat $T/cap_over.json)"
+check "POST /users oversize → 413" test "$(cat $T/c7.status)" = 413
+post_file "$T/c8" POST "/tags" "$T/cap_under.json"
+check "POST /tags just under cap is parsed (name too long → 400, not 413)" test "$(cat $T/c8.status)" = 400
+post_file "$T/c9" PUT "/items/$A/tags" "$T/cap_valid_under.json"
+check "PUT tags with a valid just-under-cap body is processed → 200" test "$(cat $T/c9.status)" = 200
+check "just-under-cap body bound many tags (>1000)" test "$(json_get $T/c9.body "len(d['tags'])")" -gt 1000
+check "oversize rejection created no tag in DB1" test "$(python3 -I -c "
+import sqlite3; c=sqlite3.connect('$DB1'); print(c.execute(\"SELECT COUNT(*) FROM tag WHERE length(name)>255\").fetchone()[0])")" = 0
+http "$T/c10" -X GET "$BASE_URL/health"
+check "server healthy after oversize bodies (/health 200)" test "$(cat $T/c10.status)" = 200
+req "$T/c11" GET "/stats"
+check "server still serves authenticated requests after oversize bodies" test "$(cat $T/c11.status)" = 200
+# cleanup the bulk tags to keep later sections simple
+req "$T/c12" PUT "/items/$A/tags" '{"tags":["hdr1"]}'
+check "reset item tags after cap test → 200" test "$(cat $T/c12.status)" = 200
+
+# =========================================================================
+# 5. Error-code vocabulary spot checks
+# =========================================================================
+req "$T/k1" GET "/items/$UNKNOWN_ID"
+check "missing item → code $CODE_NOT_FOUND" test "$(json_get $T/k1.body "d['error']['code']")" = "$CODE_NOT_FOUND"
+req "$T/k2" DELETE "/tags/never-seen"
+check "missing tag → code $CODE_NOT_FOUND" test "$(json_get $T/k2.body "d['error']['code']")" = "$CODE_NOT_FOUND"
+areq "$T/k3" GET "/users/nobody-here"
+check "missing user → code $CODE_NOT_FOUND" test "$(json_get $T/k3.body "d['error']['code']")" = "$CODE_NOT_FOUND"
+req "$T/k4" POST "/tags" '{"name":"hdr1"}'
+check "duplicate tag → code $CODE_CONFLICT" test "$(json_get $T/k4.body "d['error']['code']")" = "$CODE_CONFLICT"
+areq "$T/k5" POST "/users" '{"login":"alice","fullName":"Dup","password":"duppass123","isAdmin":false}'
+check "duplicate user → 409" test "$(cat $T/k5.status)" = 409
+check "duplicate user → code $CODE_CONFLICT" test "$(json_get $T/k5.body "d['error']['code']")" = "$CODE_CONFLICT"
+http "$T/k6" -X GET "$BASE_URL/items"
+check "no token → code $CODE_UNAUTHORIZED" test "$(json_get $T/k6.body "d['error']['code']")" = "$CODE_UNAUTHORIZED"
+req "$T/k7" GET "/items?limit=0"
+check "bad pagination → code $CODE_BAD_REQUEST" test "$(json_get $T/k7.body "d['error']['code']")" = "$CODE_BAD_REQUEST"
+req "$T/k8" GET "/items/not-a-hash"
+check "malformed id → 400" test "$(cat $T/k8.status)" = 400
+check "malformed id → code $CODE_BAD_REQUEST" test "$(json_get $T/k8.body "d['error']['code']")" = "$CODE_BAD_REQUEST"
+http "$T/k9" -X PUT -H "$AUTH" -H "X-Filename: x.xyz" --data-binary "abc" "$BASE_URL/items"
+check "unsupported format → 415" test "$(cat $T/k9.status)" = 415
+check "error envelope has string code and message" \
+  test "$(json_get $T/k9.body "type(d['error']['code']).__name__+type(d['error']['message']).__name__")" = strstr
+req "$T/k10" GET "/users"
+check "non-admin → 403 with code Forbidden" test "$(json_get $T/k10.body "d['error']['code']")" = Forbidden
+
+# =========================================================================
+# 6. Secret-file startup checks (imagerd must refuse to start)
+# =========================================================================
+# secret_cfg <cfgfile> <secret-file-path>: config using a secret file
+secret_cfg() {
+  make_cfg "$1" "$PORT2"
+  sed -i "s|^jwt_secret = .*|jwt_secret_file = \"$2\"|" "$1"
+}
+run_daemon_expect_fail() { # run_daemon_expect_fail <cfg> → exit status 0 if imagerd exited non-zero promptly
+  local rc=0
+  timeout 10 "$IMAGERD_BIN" "$1" >"$T/sec.out" 2>"$T/sec.err" || rc=$?
+  [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]
+}
+printf '%s' "this-is-a-32-byte-test-secret-ok" > "$SECRET_FILE"
+chmod 0644 "$SECRET_FILE"
+secret_cfg "$T/sec_world.toml" "$SECRET_FILE"
+if [ "$SECRET_CHECKS" = 1 ]; then
+check "imagerd refuses a world-readable (0644) secret file" run_daemon_expect_fail "$T/sec_world.toml"
+fi
+printf '%s' "short" > "$T/short.secret"; chmod 0600 "$T/short.secret"
+secret_cfg "$T/sec_short.toml" "$T/short.secret"
+if [ "$SECRET_CHECKS" = 1 ]; then
+check "imagerd refuses a too-short secret" run_daemon_expect_fail "$T/sec_short.toml"
+fi
+secret_cfg "$T/sec_missing.toml" "$T/does-not-exist.secret"
+check "imagerd refuses a missing secret file" run_daemon_expect_fail "$T/sec_missing.toml"
+chmod 0600 "$SECRET_FILE"
+secret_cfg "$T/sec_ok.toml" "$SECRET_FILE"
+"$IMAGERD_BIN" "$T/sec_ok.toml" >"$T/sec_ok.out" 2>"$T/sec_ok.err" &
+DAEMON2_PID=$!
+check "imagerd starts with a 0600 secret file of adequate length" test "$(wait_ready "$PORT2")" = 200
+kill -TERM "$DAEMON2_PID" 2>/dev/null || true
+wait "$DAEMON2_PID" 2>/dev/null || true
+DAEMON2_PID=0
+
+# =========================================================================
+# 7. Per-IP login throttle (LAST: fresh daemon, so lockout affects nothing else)
+# =========================================================================
+make_cfg "$T/ip.toml" "$PORT2"
+"$IMAGERD_BIN" "$T/ip.toml" >"$T/ip.out" 2>"$T/ip.err" &
+DAEMON2_PID=$!
+if [ "$(wait_ready "$PORT2")" != "200" ]; then echo "FATAL: ip-throttle daemon not ready"; exit 1; fi
+IPBASE="http://127.0.0.1:${PORT2}"
+login_status() { # login_status <login> <password>
+  curl --silent --output "$T/ipl.body" --dump-header "$T/ipl.hdr" --write-out "%{http_code}" \
+    --request POST --header "Content-Type: application/json" \
+    --data "{\"login\":\"$1\",\"password\":\"$2\"}" "$IPBASE/auth/login" 2>/dev/null || echo 000
+}
+# Distinct logins → each has exactly one failure (< per-login threshold of $PER_LOGIN_MAX)
+LAST=""
+for i in $(seq 1 $((IP_THRESHOLD - 1))); do
+  LAST=$(login_status "ghost$i" "wrongpass")
+  [ "$LAST" = 401 ] || break
+done
+check "first $((IP_THRESHOLD - 1)) distinct-login failures from one IP are plain 401" test "$LAST" = 401
+check "each login stayed under the per-login threshold (1 < $PER_LOGIN_MAX)" test 1 -lt "$PER_LOGIN_MAX"
+S=$(login_status "ghost$IP_THRESHOLD" "wrongpass")
+check "failure number $IP_THRESHOLD from the IP is still answered (401 or 429)" bash -c "[ '$S' = 401 ] || [ '$S' = 429 ]"
+S=$(login_status "ghost-next" "wrongpass")
+check "next distinct-login attempt → 429" test "$S" = 429
+check "429 includes Retry-After" bash -c "grep -qi '^retry-after: *[0-9]' '$T/ipl.hdr'"
+check "429 Retry-After is a positive integer" bash -c "[ \"\$(grep -i '^retry-after:' '$T/ipl.hdr' | tr -dc 0-9)\" -gt 0 ]"
+check "429 error code is TooManyRequests" test "$(json_get $T/ipl.body "d['error']['code']")" = TooManyRequests
+check "429: nosniff header" bash -c "grep -qi '^x-content-type-options: *nosniff' '$T/ipl.hdr'"
+S=$(login_status "alice" "alicepass1")
+check "correct password from the locked-out IP → 429" test "$S" = 429
+S=$(login_status "root" "adminpass1")
+check "correct admin password from the locked-out IP → 429" test "$S" = 429
+S=$(curl --silent --output /dev/null --write-out "%{http_code}" "$IPBASE/health")
+check "locked-out IP can still reach /health" test "$S" = 200
+S=$(login_status "never-failed-login" "x")
+check "any further login attempt from the IP stays 429" test "$S" = 429
+
+# ---- graceful shutdown ---------------------------------------------------------
+SIGTERM_OK=0
+for P in "$DAEMON_PID" "$DAEMON2_PID"; do
+  if kill -TERM "$P" 2>/dev/null; then
+    for _i in $(seq 1 50); do kill -0 "$P" 2>/dev/null || break; sleep 0.1; done
+    if ! kill -0 "$P" 2>/dev/null; then
+      EXIT=0; wait "$P" 2>/dev/null || EXIT=$?
+      [ "$EXIT" -eq 0 ] && SIGTERM_OK=$((SIGTERM_OK + 1))
+    else kill -KILL "$P" 2>/dev/null || true; fi
+  fi
+done
+if [ "$SIGTERM_OK" -eq 2 ]; then echo "PASS: SIGTERM causes clean exit on both daemons"; PASS=$((PASS+1))
+else echo "FAIL: SIGTERM causes clean exit on both daemons"; FAIL=$((FAIL+1)); fi
+DAEMON_PID=0; DAEMON2_PID=0
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

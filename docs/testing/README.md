@@ -27,3 +27,4 @@ Cross-cutting test structure, build/run commands, and conventions live in
 | Per-item tags — `/items/{id}/tags` GET/PUT/POST/DELETE (0022.SERVER §6.3/§7/§14, H1) | [item-tags.md](item-tags.md) | complete | 8/8 (100%) |
 | Global tags — `GET/POST /tags`, `DELETE /tags/{name}` (0022.SERVER §6.4/§7/§14, H2) | [tags-global.md](tags-global.md) | complete | 9/9 (100%) |
 | Admin user management — `/users` CRUD + last-admin guard (0022.SERVER §6.5/§7/§13, I1) | [users-admin.md](users-admin.md) | complete | 8/8 (100%) |
+| Hardening — headers, /stats, validation, body cap, secret file, per-IP throttle (0022.SERVER §6.6/§7/§13, J1) | [hardening.md](hardening.md) | complete | 8/8 (100%) |

@@ -91,17 +91,18 @@ crow::json::wvalue imageToJson(const imager::ImageInfo& info) {
   return body;
 }
 
-constexpr uint32_t DEFAULT_LIMIT = 50;
-constexpr uint32_t MAX_LIMIT = 500;
-
 /// GET /items: ?tags=a,b (AND; `tags` may repeat) | ?untagged=true | none; ?offset&limit.
 crow::response listItems(imager::Imager& imager, const crow::request& req) {
-  uint32_t offset = 0, limit = DEFAULT_LIMIT;
-  if (!parseUintParam(req, "offset", 0, UINT32_MAX >> 1, offset)) {
-    return badRequest("offset must be an integer in [0, 2147483647]");
+  uint32_t offset = 0, limit = DEFAULT_PAGE_LIMIT;
+  crow::response err;
+  if (!parsePage(req, offset, limit, err)) {
+    return err;
   }
-  if (!parseUintParam(req, "limit", 1, MAX_LIMIT, limit)) {
-    return badRequest("limit must be an integer in [1, 500]");
+
+  // Crow decodes query values in place into C strings, so an encoded NUL silently truncates a value.
+  // Reject it from the raw query instead.
+  if (const auto q = req.raw_url.find('?'); q != std::string::npos && req.raw_url.find("%00", q) != std::string::npos) {
+    return badRequest("query must not contain NUL bytes");
   }
 
   bool untagged = false;
@@ -123,6 +124,9 @@ crow::response listItems(imager::Imager& imager, const crow::request& req) {
       if (t.empty()) {
         return badRequest("tags must be a comma-separated list of non-empty names");
       }
+      if (!validTagName(t)) {
+        return badRequest("tag names must be 1-255 bytes of valid UTF-8 without control characters");
+      }
       if (std::ranges::find(tags, t) == tags.end()) {
         tags.emplace_back(t);
       }
@@ -139,19 +143,23 @@ crow::response listItems(imager::Imager& imager, const crow::request& req) {
     return badRequest("untagged=true cannot be combined with tags");
   }
 
-  std::vector<imager::ImageInfo> items;
+  imager::Imager::ImageList items;
   try {
-    items = untagged       ? imager.getUntaggedImages(offset, limit)
-            : tags.empty() ? imager.listImages(offset, limit)
-                           : imager.getImagesByTags(tags, offset, limit);
+    items = untagged       ? imager.getUntaggedImagesChecked(offset, limit)
+            : tags.empty() ? imager.listImagesChecked(offset, limit)
+                           : imager.getImagesByTagsChecked(tags, offset, limit);
   } catch (const std::exception& e) {
     CROW_LOG_ERROR << "GET /items: listing threw: " << e.what();
     return errorResponse(imager::ErrorCode::DatabaseError, "internal error");
   }
+  if (!items) {
+    CROW_LOG_ERROR << "GET /items: listing failed (database error)";
+    return errorResponse(items.error(), "internal error");
+  }
 
   std::vector<crow::json::wvalue> arr;
-  arr.reserve(items.size());
-  for (const auto& it : items) {
+  arr.reserve(items->size());
+  for (const auto& it : *items) {
     arr.push_back(imageToJson(it));
   }
   crow::json::wvalue body;
@@ -171,6 +179,10 @@ crow::response putItem(imager::Imager& imager, uint64_t maxUploadBytes, const cr
   filename = baseName(std::move(filename));
   if (filename.empty() || filename == "." || filename == "..") {
     return badRequest("missing filename (X-Filename header or ?filename=)");
+  }
+  if (filename.size() > 255 ||
+      std::ranges::any_of(filename, [](char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7F; })) {
+    return badRequest("filename must be at most 255 bytes without control characters");
   }
   if (req.body.empty()) {
     return badRequest("empty request body");
