@@ -94,22 +94,6 @@ crow::json::wvalue imageToJson(const imager::ImageInfo& info) {
 constexpr uint32_t DEFAULT_LIMIT = 50;
 constexpr uint32_t MAX_LIMIT = 500;
 
-/// Parses an optional unsigned query parameter in [lo, hi]; false on non-numeric/out-of-range.
-bool parseUintParam(const crow::request& req, const char* name, uint32_t lo, uint32_t hi, uint32_t& out) {
-  const char* v = req.url_params.get(name);
-  if (!v) {
-    return true;
-  }
-  std::string_view sv{v};
-  uint64_t n = 0;
-  auto [p, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), n);
-  if (sv.empty() || ec != std::errc{} || p != sv.data() + sv.size() || n < lo || n > hi) {
-    return false;
-  }
-  out = static_cast<uint32_t>(n);
-  return true;
-}
-
 /// GET /items: ?tags=a,b (AND; `tags` may repeat) | ?untagged=true | none; ?offset&limit.
 crow::response listItems(imager::Imager& imager, const crow::request& req) {
   uint32_t offset = 0, limit = DEFAULT_LIMIT;

@@ -1496,8 +1496,8 @@ ErrorCode Imager::createTag(const std::string& name) {
   try {
     m_impl->dbs.addTag(name);
     return ErrorCode::Ok;
-  } catch (const db::DatabaseException&) {
-    return ErrorCode::DatabaseError;
+  } catch (const db::DatabaseException& e) {
+    return e.code() == db::DatabaseErrorCode::ConstraintViolation ? ErrorCode::DuplicateFile : ErrorCode::DatabaseError;
   }
 }
 

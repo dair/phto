@@ -426,6 +426,7 @@ class TagTest: public CppUnit::TestFixture {
   CPPUNIT_TEST(testTagAndUntag);
   CPPUNIT_TEST(testGetImagesByTags);
   CPPUNIT_TEST(testDeleteTag);
+  CPPUNIT_TEST(testCreateTagDuplicateAndDeleteUnknown);
   CPPUNIT_TEST_SUITE_END();
 
   config::AppConfig m_cfg;
@@ -506,6 +507,14 @@ public:
     img.createTag("temp");
     CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, img.deleteTag("temp"));
     CPPUNIT_ASSERT(img.listTags().empty());
+  }
+
+  void testCreateTagDuplicateAndDeleteUnknown() {
+    Imager img(m_cfg);
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::Ok, img.createTag("dup"));
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::DuplicateFile, img.createTag("dup"));
+    CPPUNIT_ASSERT_EQUAL(size_t(1), img.listTags().size());
+    CPPUNIT_ASSERT_EQUAL(ErrorCode::FileNotFound, img.deleteTag("ghost"));
   }
 };
 

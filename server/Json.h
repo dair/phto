@@ -3,12 +3,14 @@
 #include <crow/json.h>
 #include <imager/types/ErrorCode.h>
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
 // Forward-declare crow types to keep this header light.
 namespace crow {
 
+struct request;
 struct response;
 
 } // namespace crow
@@ -44,5 +46,9 @@ bool isLowerHex64(std::string_view s);
 
 /// JSON response with the given status and Content-Type: application/json.
 crow::response jsonOk(int status, const crow::json::wvalue& body);
+
+/// Parses an optional unsigned query parameter in [lo, hi]; `out` is untouched if absent.
+/// False on non-numeric/out-of-range.
+bool parseUintParam(const crow::request& req, const char* name, uint32_t lo, uint32_t hi, uint32_t& out);
 
 } // namespace server

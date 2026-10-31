@@ -170,6 +170,67 @@ crow::response removeTag(imager::Imager& imager, const std::string& id, const st
   }
 }
 
+constexpr uint32_t DEFAULT_LIMIT = 50;
+constexpr uint32_t MAX_LIMIT = 500;
+
+crow::response listAllTags(imager::Imager& imager, const crow::request& req) {
+  uint32_t offset = 0, limit = DEFAULT_LIMIT;
+  if (!parseUintParam(req, "offset", 0, UINT32_MAX >> 1, offset)) {
+    return badRequest("offset must be an integer in [0, 2147483647]");
+  }
+  if (!parseUintParam(req, "limit", 1, MAX_LIMIT, limit)) {
+    return badRequest("limit must be an integer in [1, 500]");
+  }
+  try {
+    return tagsResponse(imager.listTags(offset, limit));
+  } catch (const std::exception& e) {
+    CROW_LOG_ERROR << "tags: list threw: " << e.what();
+    return errorResponse(imager::ErrorCode::DatabaseError, "internal error");
+  }
+}
+
+crow::response createGlobalTag(imager::Imager& imager, const crow::request& req) {
+  auto body = crow::json::load(req.body);
+  if (!body || body.t() != crow::json::type::Object || !body.has("name") ||
+      body["name"].t() != crow::json::type::String) {
+    return badRequest("body must be a JSON object with a string name");
+  }
+  const std::string name = body["name"].s();
+  if (!validTagName(name)) {
+    return badRequest("tag names must be 1-255 bytes and must not contain commas");
+  }
+  try {
+    std::lock_guard lock(g_tagMutex);
+    const auto rc = imager.createTag(name);
+    if (rc == imager::ErrorCode::DuplicateFile) {
+      return errorResponse(rc, "tag already exists");
+    }
+    if (rc != imager::ErrorCode::Ok) {
+      return failure(rc);
+    }
+  } catch (const std::exception& e) {
+    CROW_LOG_ERROR << "tags: create threw: " << e.what();
+    return errorResponse(imager::ErrorCode::DatabaseError, "internal error");
+  }
+  crow::json::wvalue out;
+  out["name"] = name;
+  return jsonOk(201, out);
+}
+
+crow::response deleteGlobalTag(imager::Imager& imager, const std::string& name) {
+  try {
+    std::lock_guard lock(g_tagMutex);
+    const auto rc = imager.deleteTag(name);
+    if (rc == imager::ErrorCode::Ok) {
+      return crow::response{204};
+    }
+    return rc == imager::ErrorCode::FileNotFound ? errorResponse(rc, "tag not found") : failure(rc);
+  } catch (const std::exception& e) {
+    CROW_LOG_ERROR << "tags: delete threw: " << e.what();
+    return errorResponse(imager::ErrorCode::DatabaseError, "internal error");
+  }
+}
+
 } // namespace
 
 void registerTagRoutes(crow::App<AuthMiddleware>& app, imager::Imager& imager) {
@@ -230,6 +291,35 @@ void registerTagRoutes(crow::App<AuthMiddleware>& app, imager::Imager& imager) {
         return removeTag(imager, id, decoded);
       }
     );
+
+  CROW_ROUTE(app, "/tags").methods(crow::HTTPMethod::Get)([&app, &imager](const crow::request& req) {
+    if (!requireAuth(app, req)) {
+      return unauthorized("authentication required");
+    }
+    return listAllTags(imager, req);
+  });
+
+  CROW_ROUTE(app, "/tags").methods(crow::HTTPMethod::Post)([&app, &imager](const crow::request& req) {
+    if (!requireAuth(app, req)) {
+      return unauthorized("authentication required");
+    }
+    return createGlobalTag(imager, req);
+  });
+
+  CROW_ROUTE(app, "/tags/<string>")
+    .methods(crow::HTTPMethod::Delete)([&app, &imager](const crow::request& req, const std::string& name) {
+      if (!requireAuth(app, req)) {
+        return unauthorized("authentication required");
+      }
+      std::string decoded;
+      if (!percentDecode(name, decoded)) {
+        return badRequest("invalid percent-encoding in tag name");
+      }
+      if (!validTagName(decoded)) {
+        return badRequest("invalid tag name");
+      }
+      return deleteGlobalTag(imager, decoded);
+    });
 }
 
 } // namespace server

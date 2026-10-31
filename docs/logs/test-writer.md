@@ -101,3 +101,10 @@
 - **Next Step**: On "build is yours": regenerate, build, run `server_item_tags_test` and the full suite; align assertions to the confirmed contract.
 - **Update 2026-10-31**: After handover: server_item_tags_test 111 passed / 5 failed (116 assertions). All failures stem from DELETE not percent-decoding the {tag} segment; reported to h1-dev. Full ctest 27/28.
 - **Update 2026-10-31 (final)**: Added invalid-escape and literal-`+` DELETE checks. After h1-dev wired percent-decoding: server_item_tags_test 122 passed / 0 failed; full ctest 28/28.
+
+## [2026-10-31 14:00] - H2 global tag routes e2e test
+- **Agent**: test-spec-writer
+- **Task**: Write end-to-end tests for H2 (`GET/POST /tags`, `DELETE /tags/{name}`)
+- **Outcome**: Wrote `server/test/test_tags.sh.in`, registered `server_tags_test` (ports 19540–19544), added `docs/testing/tags-global.md` and dashboard row. Written against team-lead defaults; not yet run (build not handed over).
+- **Next Step**: Wait for "build is yours", build, run, fix mismatches, record assertion count.
+- **Update 2026-10-31 (final)**: Fixed duplicated upload fixture; server_tags_test 104 passed / 0 failed; full ctest 29/29.

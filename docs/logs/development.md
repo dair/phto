@@ -227,3 +227,9 @@
 - **Task**: `GET/PUT/POST /items/{id}/tags`, `DELETE /items/{id}/tags/{tag}` in new `server/TagRoutes.{h,cpp}`.
 - **Outcome**: No new facade calls (setImageTags/tagImage/untagImage/getImageTags suffice; MultiDatabase set/bind/unbind use parallelWriteAll with compensation). POST = read current + union + `setImageTags` (tagImage fails on already-bound and needs existing tag), serialized by a process mutex with PUT/DELETE. Success 200 `{tags}`; DELETE 204; unbound tag -> 404; names validated 1-255 bytes, no commas (400). `isLowerHex64`/`jsonOk` moved to Json.{h,cpp}. Validation precedes item lookup.
 - **Next Step**: h1-test runs test_item_tags; H2 global /tags.
+
+## [2026-10-31 12:00] - H2 global tag routes
+- **Agent**: cpp-spec-coder (h2-dev)
+- **Task**: GET/POST /tags, DELETE /tags/{name}
+- **Outcome**: Routes added to TagRoutes.cpp under g_tagMutex. Not admin-only (plan §6.4/§13 restrict only /users). `Imager::createTag` now returns DuplicateFile on a duplicate (409); test added in ImagerTests. `parseUintParam` moved to Json.{h,cpp}. Delete is all-or-nothing via MultiDatabase::deleteTag; unbinding via FK cascade. Build + ctest 28/28 green.
+- **Next Step**: h2-test writes test_tags.sh.in

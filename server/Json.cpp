@@ -3,6 +3,7 @@
 #include <crow.h>
 
 #include <algorithm>
+#include <charconv>
 
 namespace server {
 
@@ -85,6 +86,22 @@ crow::response jsonOk(int status, const crow::json::wvalue& body) {
   crow::response res{status, body.dump()};
   res.add_header("Content-Type", "application/json");
   return res;
+}
+
+/// Parses an optional unsigned query parameter in [lo, hi]; false on non-numeric/out-of-range.
+bool parseUintParam(const crow::request& req, const char* name, uint32_t lo, uint32_t hi, uint32_t& out) {
+  const char* v = req.url_params.get(name);
+  if (!v) {
+    return true;
+  }
+  std::string_view sv{v};
+  uint64_t n = 0;
+  auto [p, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), n);
+  if (sv.empty() || ec != std::errc{} || p != sv.data() + sv.size() || n < lo || n > hi) {
+    return false;
+  }
+  out = static_cast<uint32_t>(n);
+  return true;
 }
 
 } // namespace server
