@@ -38,8 +38,9 @@ namespace imager {
 // Constants
 // ---------------------------------------------------------------------------
 
-// Files above this size use streaming paths instead of full Blob allocation.
-static constexpr uint64_t STREAMING_THRESHOLD = 256ULL * 1024ULL * 1024ULL; // 256 MB
+// Files above this size use streaming paths instead of full Blob allocation, so memory per file is
+// O(STREAMING_THRESHOLD + chunk). Sidecars (.aae) need the Blob path and are rejected above it.
+static constexpr uint64_t STREAMING_THRESHOLD = 8ULL * 1024ULL * 1024ULL; // 8 MB
 
 // ---------------------------------------------------------------------------
 // Pool sizing
@@ -114,6 +115,11 @@ struct Imager::Impl {
     std::string bare = (ext.size() > 1 && ext[0] == '.') ? ext.substr(1) : ext;
     auto it = fileSizeLimits.find(bare);
     return (it != fileSizeLimits.end()) ? it->second : 0;
+  }
+
+  static std::string sidecarTooLargeMessage(uint64_t fileSize) {
+    return "Sidecar file too large: " + std::to_string(fileSize) + " bytes, max allowed is " +
+           std::to_string(STREAMING_THRESHOLD) + " bytes";
   }
 
   /// Core image-add pipeline for large files (> STREAMING_THRESHOLD).
@@ -601,6 +607,10 @@ AddResult Imager::addFile(const std::filesystem::path& path, const std::string& 
 
   // Step 2: Route to streaming path for large files.
   if (fileSize > STREAMING_THRESHOLD) {
+    if (Impl::isSidecarExtension(ext)) {
+      m_impl->metrics.images_failed.add(1);
+      return {ErrorCode::TooLarge, "", Impl::sidecarTooLargeMessage(fileSize)};
+    }
     return m_impl->addFileLarge(path, displayName, fileSize, std::move(onStage));
   }
 
@@ -692,52 +702,9 @@ AddResult Imager::Impl::addFileLarge(
 
   const auto* streamValidator = findStreamValidator(ext);
   if (!streamValidator) {
-    // No stream validator available — fall back to Blob path.
-    // If allocation fails, the error propagates as StorageError.
-    metrics.inflight_reading.increment();
-    const auto blobSz = static_cast<int64_t>(fileSize);
-    metrics.inflight_reading_bytes.add(blobSz);
-    metrics::Timer t(metrics.file_read);
-
-    Blob blob;
-    try {
-      blob = Blob(fileSize, &metrics);
-    } catch (const std::bad_alloc&) {
-      metrics.inflight_reading.decrement();
-      metrics.inflight_reading_bytes.add(-blobSz);
-      metrics.images_failed.add(1);
-      return {
-        ErrorCode::StorageError,
-        "",
-        "File too large to validate in memory and no streaming validator available for " + ext
-      };
-    }
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-      metrics.inflight_reading.decrement();
-      metrics.inflight_reading_bytes.add(-blobSz);
-      metrics.images_failed.add(1);
-      return {ErrorCode::FileNotFound, "", "Cannot open: " + path.string()};
-    }
-    if (fileSize > 0) {
-      in.read(reinterpret_cast<char*>(blob.writableData()), static_cast<std::streamsize>(fileSize));
-      if (in.fail() && !in.eof()) {
-        metrics.inflight_reading.decrement();
-        metrics.inflight_reading_bytes.add(-blobSz);
-        metrics.images_failed.add(1);
-        return {ErrorCode::StorageError, "", "Read error: " + path.string()};
-      }
-    }
-    blob.freeze();
-    metrics.inflight_reading.decrement();
-    metrics.inflight_reading_bytes.add(-blobSz);
-    metrics.stage_read.add(1);
-    metrics.stage_read_bytes.add(blob.size());
-    AddResult result = addImageImpl(blob, displayName, std::move(onStage));
-    if (result.code == ErrorCode::Ok && haveTimestamps) {
-      storage.applyTimestamps(result.id, ext, srcTimes);
-    }
-    return result;
+    // Never fall back to an in-memory read: that would reintroduce unbounded memory per file.
+    metrics.images_failed.add(1);
+    return {ErrorCode::UnsupportedFormat, "", "Unsupported format: " + ext};
   }
 
   // ----- Pass 1: Hash + Validate in parallel (streamed) -----
@@ -925,7 +892,9 @@ AddResult Imager::Impl::addFileLarge(
 // validateOnlyFile
 // ---------------------------------------------------------------------------
 
-AddResult Imager::validateOnlyFile(const std::filesystem::path& path, const std::string& filename) {
+AddResult Imager::validateOnlyFile(
+  const std::filesystem::path& path, const std::string& filename, StageCallback onStage
+) {
   std::string displayName = filename.empty() ? path.filename().string() : filename;
 
   std::error_code ec;
@@ -949,6 +918,9 @@ AddResult Imager::validateOnlyFile(const std::filesystem::path& path, const std:
 
   // Small file: load as Blob and use existing validateOnly
   if (fileSize <= STREAMING_THRESHOLD) {
+    if (onStage) {
+      onStage(ProcessingStage::Reading);
+    }
     Blob blob;
     try {
       blob = Blob(fileSize, &m_impl->metrics);
@@ -966,13 +938,25 @@ AddResult Imager::validateOnlyFile(const std::filesystem::path& path, const std:
       }
     }
     blob.freeze();
+    if (onStage) {
+      onStage(ProcessingStage::Validating);
+    }
     return validateOnly(blob, displayName);
   }
 
   // Large file: streaming hash + streaming validate
+  if (Impl::isSidecarExtension(ext)) {
+    return {ErrorCode::TooLarge, "", Impl::sidecarTooLargeMessage(fileSize)};
+  }
+  if (ext.empty()) {
+    return {ErrorCode::UnsupportedFormat, "", "Filename has no extension"};
+  }
   const auto* streamValidator = m_impl->findStreamValidator(ext);
   if (!streamValidator) {
-    return {ErrorCode::UnsupportedFormat, "", "No streaming validator for large " + ext + " files"};
+    return {ErrorCode::UnsupportedFormat, "", "Unsupported format: " + ext};
+  }
+  if (onStage) {
+    onStage(ProcessingStage::Hashing);
   }
 
   std::string id;

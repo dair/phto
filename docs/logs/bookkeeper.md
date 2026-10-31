@@ -21,3 +21,27 @@
 - **Agent**: bookkeeper (td-docs)
 - **Task**: Update current docs after `kStreamingThreshold` -> `STREAMING_THRESHOLD` and the project-wide L4 rename.
 - **Outcome**: docs/DEVELOPMENT_NOTES.md and docs/plan/README.md (`imager/Imager.cpp:42`, verified in code) updated; 0012 table rows M1, L1, L4 and remainder note revised. getting-started.md ctest sample refreshed to an excerpt ending "out of 37". Historical plans 0009/0017/0019 and logs untouched.
+
+## [2026-10-31 24:00] - Streaming step documentation (8 MB threshold, validateOnlyFile dry-run)
+- **Agent**: bookkeeper (st-docs)
+- **Task**: Document the streaming step from st-dev's summary: `STREAMING_THRESHOLD` 256 MB -> 8 MB, `.aae` TooLarge above 8 MB, no memory fallback for formats without a stream validator, `imagestore --dry-run` via `validateOnlyFile`.
+- **Outcome**: Added a dated update with measurements to plan 0017 and updated its status line; 0006 status line; plan/README.md "Next work" item 5 removed; DEVELOPMENT_NOTES.md, DEPLOYMENT.md (sizing rule about 12 MB per concurrent upload), architecture.md, imagestore-cli.md, README.md API table, CLAUDE.md, ANALYSIS.md (phase 2 summary plus four dry-run gap notes), testing/loose-ends.md. Values verified against Imager.cpp:43 and Imager.h:55. Historical plan bodies and logs untouched.
+- **Next Step**: No CHANGELOG file exists under docs/, so no entry was added. The 0017 body, 0019:106, 0020:193 and 0022:398 still say 256 MB (historical).
+
+## [2026-10-31 24:30] - Next work findings from the streaming step
+- **Agent**: bookkeeper (st-docs)
+- **Task**: Add two pre-existing findings to the plan README "Next work" list.
+- **Outcome**: docs/plan/README.md items 5 (HEIC accepts a half-truncated file) and 6 (`addFile` empty id on DuplicateFile; workaround at server/ItemRoutes.cpp:173-177).
+- **Next Step**: None.
+
+## [2026-10-31 25:00] - Decoder-memory caveat in sizing docs
+- **Agent**: bookkeeper (st-docs)
+- **Task**: Rewrite the per-upload memory sizing to include decoder working memory (st-dev estimates, not measured).
+- **Outcome**: DEPLOYMENT.md sizing rule and per-format estimate table; caveats in architecture.md, DEVELOPMENT_NOTES.md, CLAUDE.md, ANALYSIS.md, plan 0017 dated note; plan/README.md Next work item 7 (measure decoder memory, consider caps).
+- **Next Step**: None.
+
+## [2026-10-31 25:30] - Per-root write buffer in sizing docs
+- **Agent**: bookkeeper (st-docs)
+- **Task**: Word file I/O memory as up to 8 MB (in-memory) or 4 MB per target root while writing (streamed), per team-lead (FileStorage.cpp:179, STREAM_CHUNK_SIZE verified).
+- **Outcome**: DEPLOYMENT.md, architecture.md, DEVELOPMENT_NOTES.md, ANALYSIS.md.
+- **Next Step**: None.

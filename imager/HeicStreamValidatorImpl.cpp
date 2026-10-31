@@ -42,25 +42,28 @@ struct FileCloser {
 
 using FilePtr = std::unique_ptr<FILE, FileCloser>;
 
-// heif_reader callbacks backed by a FILE*.
+// heif_reader callbacks backed by a FILE* plus the (fixed) file size.
+struct HeifFileState {
+  FILE* f;
+  int64_t size;
+};
+
 static int64_t heifGetPosition(void* userdata) {
-  auto* f = static_cast<FILE*>(userdata);
-  return static_cast<int64_t>(ftello(f));
+  return static_cast<int64_t>(ftello(static_cast<HeifFileState*>(userdata)->f));
 }
 
 static int heifRead(void* data, size_t size, void* userdata) {
-  auto* f = static_cast<FILE*>(userdata);
-  return (fread(data, 1, size, f) == size) ? 0 : -1;
+  return (fread(data, 1, size, static_cast<HeifFileState*>(userdata)->f) == size) ? 0 : -1;
 }
 
 static int heifSeek(int64_t position, void* userdata) {
-  auto* f = static_cast<FILE*>(userdata);
-  return (fseeko(f, static_cast<off_t>(position), SEEK_SET) == 0) ? 0 : -1;
+  return (fseeko(static_cast<HeifFileState*>(userdata)->f, static_cast<off_t>(position), SEEK_SET) == 0) ? 0 : -1;
 }
 
-static heif_reader_grow_status heifWaitForFileSize(int64_t /*target_size*/, void* /*userdata*/) {
-  // File is fully available on disk; always report size available.
-  return heif_reader_grow_status_size_reached;
+static heif_reader_grow_status heifWaitForFileSize(int64_t targetSize, void* userdata) {
+  // File is fully available on disk; libheif probes past EOF and needs to be told so.
+  return targetSize > static_cast<HeifFileState*>(userdata)->size ? heif_reader_grow_status_size_beyond_eof
+                                                                  : heif_reader_grow_status_size_reached;
 }
 
 class HeicStreamValidator final: public validation::IStreamValidator {
@@ -80,6 +83,10 @@ public:
     if (fread(magic, 1, 12, f.get()) != 12 || std::memcmp(magic + 4, "ftyp", 4) != 0) {
       return {false, "Data is not a HEIC/HEIF file"};
     }
+    if (fseeko(f.get(), 0, SEEK_END) != 0) {
+      return {false, "Cannot determine file size: " + path.string()};
+    }
+    HeifFileState state{f.get(), static_cast<int64_t>(ftello(f.get()))};
     rewind(f.get());
 
     ContextPtr ctx{heif_context_alloc()};
@@ -95,7 +102,7 @@ public:
     reader.seek = heifSeek;
     reader.wait_for_file_size = heifWaitForFileSize;
 
-    heif_error err = heif_context_read_from_reader(ctx.get(), &reader, f.get(), nullptr);
+    heif_error err = heif_context_read_from_reader(ctx.get(), &reader, &state, nullptr);
     if (err.code != heif_error_Ok) {
       return (err.code == heif_error_Unsupported_filetype)
                ? validation::ValidationResult{false, "Data is not a HEIC/HEIF file"}

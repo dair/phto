@@ -89,6 +89,7 @@ Config is read once at startup (no hot reload).
 - **Multi-root redundancy**: files written synchronously to ALL roots; failure triggers rollback
 - **Per-target databases**: one SQLite DB per target, kept identical via all-or-nothing parallel writes with compensation on failure
 - **Coroutine parallelism**: single shared `ThreadPool` used by `MultiDatabase`, `FileStorage`, and `Imager` for concurrent I/O
+- **Bounded ingest memory**: `Imager::addFile` / `validateOnlyFile` read files ≤ 8 MB (`STREAMING_THRESHOLD`, `imager/Imager.cpp`) into a `Blob`; larger files stream in ≤ 4 MB chunks (plan 0017). `.aae` above 8 MB is `TooLarge`; formats without a stream validator are `UnsupportedFormat` above 8 MB. `imagestore --dry-run` uses `validateOnlyFile`. Decoder memory (estimated up to ~300 MB for a large HEIC) comes on top of this file I/O; see `docs/user/DEPLOYMENT.md`.
 - **Blob ownership**: `blob::Blob` provides shared-ownership binary buffers safe to pass into coroutines
 - **File identity**: SHA256 hex string (64 chars), stored sharded by first 2 hex chars (`<root>/a1/a1b2c3...f4.jpg`)
 - **Validation**: JPEG/PNG validated via system libjpeg/libpng; HEIC via system libheif; MOV/MP4 via system libavformat+libavcodec (container parse + trial decode); NEF via system LibRaw; AAE via lightweight XML/plist structure scan (no external library)

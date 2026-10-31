@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# imagestore/test/test_dryrun_streaming.sh.in — "streaming" step S2
+#
+#   D1  --dry-run output/summary/exit codes unchanged for valid, duplicate and broken files
+#   D2  --dry-run writes nothing (storage empty, DB not mutated)
+#   D3  --dry-run of a 200 MB valid MOV (below the old 256 MB threshold) stays memory-bounded
+#       (peak RSS of the imagestore process via getrusage(RUSAGE_CHILDREN).ru_maxrss)
+#   D4  non-dry import of the same file is memory-bounded too and stores identical bytes
+# Registered as "imagestore_dryrun_streaming_tests".
+
+set -uo pipefail
+
+BIN="@IMAGESTORE_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+MOV_FIXTURE="@MOV_FIXTURE@"
+HEIC_FIXTURE="@HEIC_FIXTURE@"
+AAE_FIXTURE="@AAE_FIXTURE@"
+
+MID_MB=200
+RSS_GROWTH_MB=40          # peak RSS may exceed the small-file baseline by at most this
+SMALL_MB=64               # fully in memory under the old 256 MB threshold
+
+PASS=0
+FAIL=0
+check() {
+  local name="$1"; shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "PASS: $name"; PASS=$((PASS + 1))
+  else echo "FAIL: $name"; FAIL=$((FAIL + 1)); fi
+}
+
+if ! command -v python3 >/dev/null 2>&1; then echo "SKIP: python3 not found"; exit 0; fi
+for f in "$JPEG_FIXTURE" "$MOV_FIXTURE" "$HEIC_FIXTURE" "$AAE_FIXTURE"; do
+  if [ ! -f "$f" ]; then echo "FATAL: fixture $f missing"; exit 1; fi
+done
+
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT   # removes the big temp file on every exit path
+
+ROOT="$T/storage"; mkdir -p "$ROOT"
+CFG="$T/cfg.toml"
+cat > "$CFG" <<CFGEOF
+[[targets]]
+root = "$ROOT"
+database = "$T/imager.db"
+CFGEOF
+
+mkdir -p "$T/in"
+cp "$JPEG_FIXTURE" "$T/in/a.jpg"
+cp "$HEIC_FIXTURE" "$T/in/b.heic"
+cp "$MOV_FIXTURE" "$T/in/c.mov"
+cp "$AAE_FIXTURE" "$T/in/d.aae"
+head -c 1000 "$JPEG_FIXTURE" > "$T/in/broken.jpg"
+cp "$JPEG_FIXTURE" "$T/in/dupe_of_a.jpg"
+
+# run_store <rss-out> <stdin-list> <args...> : stdout→$T/out, stderr→$T/err, exit→$T/rc, RSS(kB)→<rss-out>
+python3 -I - "$T" <<'PYEOF'
+import sys
+open(sys.argv[1] + "/run.py", "w").write('''
+import resource, subprocess, sys
+rssfile, listing, bin_ = sys.argv[1], sys.argv[2], sys.argv[3]
+args = sys.argv[4:]
+p = subprocess.run([bin_] + args, input=listing.encode(), capture_output=True)
+open(rssfile + ".out", "wb").write(p.stdout)
+open(rssfile + ".err", "wb").write(p.stderr)
+open(rssfile + ".rc", "w").write(str(p.returncode))
+open(rssfile, "w").write(str(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss))
+''')
+PYEOF
+run_store() { # run_store <prefix> <newline-separated paths> <args...>
+  local prefix="$1" list="$2"; shift 2
+  python3 -I "$T/run.py" "$prefix" "$list" "$BIN" "$@"
+}
+
+# ---- D1/D2: dry-run on valid + broken + duplicate files -----------------------------------
+LIST_ALL="$T/in/a.jpg
+$T/in/b.heic
+$T/in/c.mov
+$T/in/d.aae
+$T/in/broken.jpg
+$T/in/dupe_of_a.jpg
+"
+run_store "$T/dry" "$LIST_ALL" --dry-run --config "$CFG"
+check "d1: dry-run exits 2 when a file is broken" test "$(cat $T/dry.rc)" = 2
+check "d1: summary line format" \
+  grep -Eq '^6 processed, [0-9]+ valid, [0-9]+ would-be-duplicates, [0-9]+ errors — [0-9.]+s \(dry run, no writes\)$' "$T/dry.err"
+echo "info: dry summary: $(grep 'dry run' $T/dry.err)"
+# The same-content jpg is valid within the batch (dry-run does not store, so no dup inside the batch);
+# only broken.jpg is an error.
+check "d1: exactly 1 error (broken.jpg)" grep -Eq ' 1 errors ' "$T/dry.err"
+check "d1: broken.jpg reported as ERR" grep -Eq 'ERR +.*broken\.jpg' "$T/dry.err" "$T/dry.out"
+check "d1: valid fixtures reported OK (jpg/heic/mov/aae)" bash -c '
+  for n in a.jpg b.heic c.mov d.aae; do cat "$1.out" "$1.err" | grep -Eq "OK +.*$n" || exit 1; done' _ "$T/dry"
+check "d2: dry-run stored nothing" bash -c '[ -z "$(find "$1" -type f | head -1)" ]' _ "$ROOT"
+
+# real import, then dry-run again sees duplicates
+run_store "$T/real" "$LIST_ALL" --config "$CFG"
+check "d1: real import exits 2 (broken)" test "$(cat $T/real.rc)" = 2
+check "d1: real import stored files" bash -c '[ -n "$(find "$1" -type f | head -1)" ]' _ "$ROOT"
+BEFORE=$(find "$ROOT" -type f | wc -l)
+run_store "$T/dry2" "$LIST_ALL" --dry-run --config "$CFG"
+echo "info: dry summary after import: $(grep 'dry run' $T/dry2.err)"
+check "d1: dry-run after import reports would-be-duplicates" \
+  grep -Eq '^6 processed, 0 valid, 5 would-be-duplicates, 1 errors — ' "$T/dry2.err"
+check "d1: DUP lines present" bash -c 'cat "$1.out" "$1.err" | grep -Eq "DUP +.*a\.jpg"' _ "$T/dry2"
+check "d2: dry-run did not change file count" test "$(find "$ROOT" -type f | wc -l)" = "$BEFORE"
+
+# nonexistent path in dry-run: ERR, exit 2
+run_store "$T/dry3" "$T/in/nonexistent.jpg
+" --dry-run --config "$CFG"
+check "d1: dry-run on missing file exits 2" test "$(cat $T/dry3.rc)" = 2
+check "d1: dry-run on missing file reports ERR" bash -c 'cat "$1.out" "$1.err" | grep -Eq "ERR +.*nonexistent"' _ "$T/dry3"
+
+# ---- D3/D4: 200 MB MOV --------------------------------------------------------------------
+python3 -I - "$MOV_FIXTURE" "$T/mid.mov" "$MID_MB" <<'PYEOF'
+import sys
+mov = open(sys.argv[1], "rb").read()
+with open(sys.argv[2], "wb") as f:
+    f.write(mov); left = int(sys.argv[3]) * 1024 * 1024 - len(mov); z = bytes(1 << 20)
+    while left > 0:
+        f.write(z[:min(left, len(z))]); left -= len(z)
+PYEOF
+
+python3 -I - "$MOV_FIXTURE" "$T/mid64.mov" "$SMALL_MB" <<'PYEOF'
+import sys
+mov = open(sys.argv[1], "rb").read()
+with open(sys.argv[2], "wb") as f:
+    f.write(mov + b"\x00\x00\x00\x01"); left = int(sys.argv[3]) * 1024 * 1024 - len(mov) - 4; z = bytes(1 << 20)
+    while left > 0:
+        f.write(z[:min(left, len(z))]); left -= len(z)
+PYEOF
+
+ROOT2="$T/storage2"; mkdir -p "$ROOT2"
+CFG2="$T/cfg2.toml"
+cat > "$CFG2" <<CFGEOF
+[[targets]]
+root = "$ROOT2"
+database = "$T/imager2.db"
+CFGEOF
+
+# Baseline: peak RSS of a dry-run over a tiny valid file.
+run_store "$T/base" "$T/in/a.jpg
+" --dry-run --config "$CFG2"
+BASE_KB=$(cat "$T/base")
+LIMIT_KB=$((BASE_KB + RSS_GROWTH_MB * 1024))
+echo "info: imagestore baseline peak RSS ${BASE_KB} kB, limit ${LIMIT_KB} kB"
+
+run_store "$T/small" "$T/mid64.mov
+" --dry-run --config "$CFG2"
+RSS=$(cat "$T/small")
+echo "info: dry-run of ${SMALL_MB} MB MOV: peak RSS ${RSS} kB"
+check "d3: dry-run of ${SMALL_MB} MB MOV exits 0" test "$(cat $T/small.rc)" = 0
+check "d3: ${SMALL_MB} MB dry-run peak RSS within baseline + ${RSS_GROWTH_MB} MB" test "${RSS:-999999999}" -lt "$LIMIT_KB"
+ROOT3="$T/storage3"; mkdir -p "$ROOT3"
+printf '[[targets]]\nroot = "%s"\ndatabase = "%s"\n' "$ROOT3" "$T/imager3.db" > "$T/cfg3.toml"
+run_store "$T/smallreal" "$T/mid64.mov
+" --config "$T/cfg3.toml"
+RSS=$(cat "$T/smallreal")
+echo "info: import of ${SMALL_MB} MB MOV: peak RSS ${RSS} kB"
+check "d4: ${SMALL_MB} MB import exits 0" test "$(cat $T/smallreal.rc)" = 0
+check "d4: ${SMALL_MB} MB import peak RSS within baseline + ${RSS_GROWTH_MB} MB" test "${RSS:-999999999}" -lt "$LIMIT_KB"
+
+run_store "$T/middry" "$T/mid.mov
+" --dry-run --config "$CFG2"
+RSS=$(cat "$T/middry")
+echo "info: dry-run of ${MID_MB} MB MOV: peak RSS ${RSS} kB"
+check "d3: dry-run of ${MID_MB} MB MOV exits 0" test "$(cat $T/middry.rc)" = 0
+check "d3: summary says 1 valid, dry run" grep -Eq '^1 processed, 1 valid, 0 would-be-duplicates, 0 errors — .*\(dry run, no writes\)$' "$T/middry.err"
+check "d3: peak RSS within baseline + ${RSS_GROWTH_MB} MB" test "${RSS:-999999999}" -lt "$LIMIT_KB"
+check "d3: nothing stored" bash -c '[ -z "$(find "$1" -type f | head -1)" ]' _ "$ROOT2"
+
+run_store "$T/midreal" "$T/mid.mov
+" --config "$CFG2"
+RSS=$(cat "$T/midreal")
+echo "info: import of ${MID_MB} MB MOV: peak RSS ${RSS} kB"
+check "d4: import of ${MID_MB} MB MOV exits 0" test "$(cat $T/midreal.rc)" = 0
+check "d4: peak RSS within baseline + ${RSS_GROWTH_MB} MB" test "${RSS:-999999999}" -lt "$LIMIT_KB"
+check "d4: stored bytes identical" bash -c '
+  f=$(find "$1" -type f -name "*.mov" | head -1); [ -n "$f" ] && cmp -s "$f" "$2"' _ "$ROOT2" "$T/mid.mov"
+
+run_store "$T/middry2" "$T/mid.mov
+" --dry-run --config "$CFG2"
+RSS=$(cat "$T/middry2")
+echo "info: dry-run (duplicate) of ${MID_MB} MB MOV: peak RSS ${RSS} kB"
+check "d3: dry-run of stored 200 MB MOV → 1 would-be-duplicate" \
+  grep -Eq '^1 processed, 0 valid, 1 would-be-duplicates, 0 errors — ' "$T/middry2.err"
+check "d3: duplicate dry-run peak RSS within baseline + ${RSS_GROWTH_MB} MB" test "${RSS:-999999999}" -lt "$LIMIT_KB"
+
+echo "PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" -eq 0 ]

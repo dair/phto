@@ -240,6 +240,6 @@ The `--quiet` flag suppresses all non-error output, making the script output cle
 
 ## Relationship to `libimager`
 
-`imagestore` is a thin shell over `libimager`. It reads file paths from stdin and calls `lib.addFile(path)` (or `lib.validateOnly(blob, filename)` in dry-run mode) for each path. All validation, hashing, deduplication, and storage logic lives in the library.
+`imagestore` is a thin shell over `libimager`. It reads file paths from stdin and calls `lib.addFile(path)` (or `lib.validateOnlyFile(path, filename, onStage)` in dry-run mode) for each path. All validation, hashing, deduplication, and storage logic lives in the library.
 
 This means the metrics exposed via `lib.metrics()` accurately reflect what `imagestore` is doing. The `--graph` display is driven entirely by reading the library's metrics.

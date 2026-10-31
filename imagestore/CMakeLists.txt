@@ -106,3 +106,32 @@ if(CPPUNIT_LIB AND CPPUNIT_INCLUDE)
 else()
     message(STATUS "CppUnit not found — skipping imagestore_output_tests")
 endif()
+
+# ---------------------------------------------------------------------------
+# Streaming-step test: --dry-run output unchanged and memory-bounded for a
+# 200 MB file (peak RSS via getrusage), plus the same for a real import.
+# ---------------------------------------------------------------------------
+set(JPEG_FIXTURE "${CMAKE_SOURCE_DIR}/validations/jpeg/test/testimg.jpg")
+set(MOV_FIXTURE "${CMAKE_SOURCE_DIR}/validations/mov/test/fixtures/valid.mov")
+set(HEIC_FIXTURE "${CMAKE_SOURCE_DIR}/validations/heic/test/fixtures/valid.heic")
+set(AAE_FIXTURE "${CMAKE_SOURCE_DIR}/validations/aae/test/fixtures/valid.aae")
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/test_dryrun_streaming.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_dryrun_streaming.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_dryrun_streaming.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME imagestore_dryrun_streaming_tests
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_dryrun_streaming.sh"
+)
+
+set_tests_properties(imagestore_dryrun_streaming_tests PROPERTIES TIMEOUT 300)

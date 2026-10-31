@@ -25,7 +25,9 @@ endif()
 
 find_package(SQLite3 REQUIRED)
 
-add_executable(imager_tests ImagerTest.cpp MultiTargetTest.cpp LargeFileTest.cpp)
+find_package(PNG REQUIRED)
+
+add_executable(imager_tests ImagerTest.cpp MultiTargetTest.cpp LargeFileTest.cpp StreamingEquivalenceTest.cpp StreamValidatorEquivalenceTest.cpp)
 
 target_include_directories(imager_tests
     PRIVATE ${CPPUNIT_INCLUDE_DIRS}
@@ -34,6 +36,9 @@ target_include_directories(imager_tests
 target_compile_definitions(imager_tests PRIVATE
     NEF_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../validations/nef/test/fixtures"
     MOV_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../validations/mov/test/fixtures"
+    HEIC_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../validations/heic/test/fixtures"
+    AAE_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../validations/aae/test/fixtures"
+    JPEG_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/../../validations/jpeg/test/testimg.jpg"
 )
 
 target_link_libraries(imager_tests
@@ -45,6 +50,7 @@ target_link_libraries(imager_tests
 
 include(CTest)
 add_test(NAME ImagerTests COMMAND imager_tests)
+set_tests_properties(ImagerTests PROPERTIES TIMEOUT 600)
 
 add_executable(timestamp_tests TimestampTest.cpp)
 
@@ -59,3 +65,26 @@ target_link_libraries(timestamp_tests
 )
 
 add_test(NAME TimestampTests COMMAND timestamp_tests)
+
+# Streaming equivalence uses libpng to synthesise a valid PNG fixture.
+target_link_libraries(imager_tests PRIVATE PNG::PNG)
+
+# Memory-bound ingest test: own process so VmHWM is not polluted by other suites.
+add_executable(imager_memory_tests StreamingMemoryTest.cpp)
+
+target_include_directories(imager_memory_tests
+    PRIVATE ${CPPUNIT_INCLUDE_DIRS}
+)
+
+target_compile_definitions(imager_memory_tests PRIVATE
+    MOV_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../validations/mov/test/fixtures"
+)
+
+target_link_libraries(imager_memory_tests
+    PRIVATE
+        libimager
+        ${CPPUNIT_LIBRARIES}
+)
+
+add_test(NAME ImagerMemoryTests COMMAND imager_memory_tests)
+set_tests_properties(ImagerMemoryTests PROPERTIES TIMEOUT 300)

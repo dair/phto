@@ -50,8 +50,11 @@ public:
   AddResult validateOnly(const Blob& blob, const std::string& filename);
 
   /// Like validateOnly but for files that may be too large to load into a Blob.
-  /// Uses streaming validation for files above the streaming threshold.
-  AddResult validateOnlyFile(const std::filesystem::path& path, const std::string& filename = "");
+  /// Uses streaming validation for files above the streaming threshold (8 MB).
+  /// The optional stage callback receives Reading -> Validating (small) or Hashing (streamed).
+  AddResult validateOnlyFile(
+    const std::filesystem::path& path, const std::string& filename = "", StageCallback onStage = nullptr
+  );
 
   /// Get image metadata + tags by ID. Returns nullopt if not found.
   std::optional<ImageInfo> getImage(const std::string& id);
@@ -86,7 +89,7 @@ public:
   std::string hashOnlyBlob(const Blob& blob);
 
   /// Read `path` and compute its SHA256 without mutating any state.
-  /// Respects the streaming threshold (256 MB). Useful for dry-run checks.
+  /// Respects the streaming threshold (8 MB). Useful for dry-run checks.
   /// Returns the hex SHA256 string, or empty string on error.
   std::string hashOnlyFile(const std::filesystem::path& path, StageCallback onStage = nullptr);
 

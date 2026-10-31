@@ -8,13 +8,19 @@ For build/run basics see the top-level [`README.md`](../README.md) and
 
 ## `Imager::addFile` has two write paths (small vs large)
 
-`Imager::addFile` routes on the streaming threshold (`STREAMING_THRESHOLD` in `imager/Imager.cpp`, 256 MB):
+`Imager::addFile` routes on the streaming threshold (`STREAMING_THRESHOLD` in `imager/Imager.cpp`, 8 MB):
 
-- **< 256 MB:** the whole file is read into a `Blob`, then `addImageImpl(blob, …)`
+- **≤ 8 MB:** the whole file is read into a `Blob`, then `addImageImpl(blob, …)`
   → `writeFileAsync` → `writeToRoot`. **The source path is not passed into
   `FileStorage` on this path.**
-- **> 256 MB:** `addFileLarge` → `writeFileFromDiskAsync` → `writeToRootFromDisk`,
-  which *does* receive the source path.
+- **> 8 MB:** `addFileLarge` → `writeFileFromDiskAsync` → `writeToRootFromDisk`,
+  which *does* receive the source path. Chunks are at most 4 MB, so memory per
+  file I/O is bounded for any file size: up to 8 MB (in-memory files), or 4 MB
+  per target root while writing (streamed files; `FileStorage.cpp:179`). Decoder working memory is extra
+  and depends on the image (estimates in `user/DEPLOYMENT.md`). A format without a stream validator
+  gets `UnsupportedFormat` here (no in-memory fallback), and `.aae` sidecars
+  (which need the `Blob` path) get `TooLarge` above 8 MB.
+- `Imager::validateOnlyFile` follows the same split; `imagestore --dry-run` uses it.
 
 Implication: any post-ingest step that needs the original source file (timestamp
 preservation, extra checksums, …) must be hooked at the `Imager::addFile` /

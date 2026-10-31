@@ -380,3 +380,25 @@ add_test(
 )
 
 set_tests_properties(server_loose_ends_test PROPERTIES TIMEOUT 300)
+
+# ---- server_streaming_mem_test — bounded ingest memory in imagerd for a 200 MB upload (ports 19620–19639) ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_streaming_mem.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_streaming_mem.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_streaming_mem.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_streaming_mem_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_streaming_mem.sh"
+)
+
+set_tests_properties(server_streaming_mem_test PROPERTIES TIMEOUT 300)

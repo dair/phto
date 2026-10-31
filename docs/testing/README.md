@@ -31,3 +31,4 @@ Cross-cutting test structure, build/run commands, and conventions live in
 | Native TLS — cert/key validation, HTTPS, min protocol (0022.SERVER §10/§11/§13, J2) | [tls.md](tls.md) | complete | 7/7 (100%) |
 | Full API end-to-end journey — all route families, two targets (0022.SERVER §14.3, J3) | [api-e2e.md](api-e2e.md) | complete | 9/9 (100%) |
 | Post-0022 fix-ups — startup errors, SIGTERM drain, `/auth/password` throttle (`server_fixups_test`; imageradmin guards in `imageradmin_cli_tests`) | [fixups.md](fixups.md) | complete | 7/7 (100%) |
+| Streaming ingest — bounded memory, 8 MB threshold (`ImagerTests` equivalence, `ImagerMemoryTests`, `server_streaming_mem_test`, `imagestore_dryrun_streaming_tests`) | [streaming.md](streaming.md) | complete | 4/4 (100%) |

@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# server/test/test_streaming_mem.sh.in — "streaming" step: bounded ingest memory in imagerd
+#
+#   M1  a 200 MB valid MOV (below the old 256 MB threshold) is uploaded and stored; the daemon's
+#       peak RSS (VmHWM) stays bounded, content round-trips byte-identical, id == sha256
+#   M2  a valid small JPEG still ingests with the golden id; a broken file is still rejected
+#   M3  a second 200 MB upload of the same bytes → 200 duplicate, still bounded
+# Registered as "server_streaming_mem_test". Ports 19620–19639 (this test uses 19620).
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+MOV_FIXTURE="@MOV_FIXTURE@"
+
+MID_MB=200
+SMALL_MB=64                # fully in memory under the old 256 MB threshold
+HWM_GROWTH_MB=40          # daemon VmHWM may grow by at most this over its baseline
+JPEG_GOLDEN=b7ea0b521397c20176b809eb19fd4b51ea83368a3d8becb89ff430dcf8ea4e57
+
+PASS=0
+FAIL=0
+check() {
+  local name="$1"; shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "PASS: $name"; PASS=$((PASS + 1))
+  else echo "FAIL: $name"; FAIL=$((FAIL + 1)); fi
+}
+
+for tool in curl python3 timeout sha256sum cmp; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_streaming_mem_test skipped"
+    exit 0
+  fi
+done
+for f in "$JPEG_FIXTURE" "$MOV_FIXTURE"; do
+  if [ ! -f "$f" ]; then echo "FATAL: fixture $f missing"; exit 1; fi
+done
+
+PORT=19620
+T=$(mktemp -d)
+SPOOL="$T/spool"; mkdir -p "$SPOOL"
+ROOT="$T/storage"; mkdir -p "$ROOT"
+AUTH_DB="$T/auth.db"
+SECRET="this-is-a-32-byte-test-secret-ok"
+DPID=""
+cleanup() { # removes the big temp files on every exit path
+  if [ -n "${DPID:-}" ] && kill -0 "$DPID" 2>/dev/null; then
+    kill -KILL "$DPID" 2>/dev/null || true
+    wait "$DPID" 2>/dev/null || true
+  fi
+  rm -rf "$T"
+}
+trap cleanup EXIT
+
+cat > "$T/cfg.toml" <<CFGEOF
+[[targets]]
+root = "$ROOT"
+database = "$T/imager.db"
+
+[server]
+bind = "127.0.0.1"
+port = $PORT
+threads = 4
+max_upload_mb = 1024
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "$SECRET"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+CFGEOF
+
+http() { # http <prefix> curl-args...
+  local prefix="$1"; shift
+  curl --silent --dump-header "$prefix.hdr" --output "$prefix.body" --write-out "%{http_code}" "$@" \
+    > "$prefix.status" 2>/dev/null || echo 000 > "$prefix.status"
+}
+st() { cat "$1.status"; }
+json_get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+hwm_kb() { grep '^VmHWM:' "/proc/$DPID/status" | tr -s ' ' | cut -d' ' -f2; }
+
+printf '%s' "alicepass1" | "$IMAGERADMIN_BIN" "$T/cfg.toml" user add alice "Alice" --password-stdin \
+  || { echo "FATAL: seed alice"; exit 1; }
+
+# ---- 200 MB valid MOV: real MOV header + zero padding -----------------------------------
+python3 -I - "$MOV_FIXTURE" "$T/mid.mov" "$MID_MB" <<'PYEOF'
+import sys
+mov = open(sys.argv[1], "rb").read()
+with open(sys.argv[2], "wb") as f:
+    f.write(mov); left = int(sys.argv[3]) * 1024 * 1024 - len(mov); z = bytes(1 << 20)
+    while left > 0:
+        f.write(z[:min(left, len(z))]); left -= len(z)
+PYEOF
+python3 -I - "$MOV_FIXTURE" "$T/mid64.mov" "$SMALL_MB" <<'PYEOF'
+import sys
+mov = open(sys.argv[1], "rb").read()
+with open(sys.argv[2], "wb") as f:
+    f.write(mov + b"\x00\x00\x00\x01"); left = int(sys.argv[3]) * 1024 * 1024 - len(mov) - 4; z = bytes(1 << 20)
+    while left > 0:
+        f.write(z[:min(left, len(z))]); left -= len(z)
+PYEOF
+MID_SHA=$(sha256sum "$T/mid.mov" | cut -d' ' -f1)
+SMALL_SHA=$(sha256sum "$T/mid64.mov" | cut -d' ' -f1)
+head -c 1000 "$JPEG_FIXTURE" > "$T/broken.jpg"
+
+TMPDIR="$SPOOL" "$IMAGERD_BIN" "$T/cfg.toml" >"$T/d.stdout" 2>"$T/d.stderr" &
+DPID=$!
+READY=$(curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 --retry-delay 1 \
+  --retry-connrefused --max-time 12 "http://127.0.0.1:$PORT/health" 2>/dev/null || echo 000)
+check "daemon starts" test "$READY" = 200
+[ "$READY" = 200 ] || { cat "$T/d.stderr"; echo "PASS=$PASS FAIL=$FAIL"; exit 1; }
+
+R=$(curl --silent --request POST --header "Content-Type: application/json" \
+  --data '{"login":"alice","password":"alicepass1"}' "http://127.0.0.1:$PORT/auth/login")
+TOK=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$R" 2>/dev/null || true)
+check "login" test -n "$TOK"
+AUTHH="Authorization: Bearer $TOK"
+B="http://127.0.0.1:$PORT"
+
+curl --silent --output /dev/null "$B/health"
+BASE_KB=$(hwm_kb)
+LIMIT_KB=$((BASE_KB + HWM_GROWTH_MB * 1024))
+echo "info: daemon baseline VmHWM: ${BASE_KB} kB, limit ${LIMIT_KB} kB"
+
+# ---- M0: 64 MB (would have been fully in memory under the old threshold) ----
+http "$T/up64" -X PUT -H "$AUTHH" -H "X-Filename: mid64.mov" --data-binary "@$T/mid64.mov" "$B/items"
+check "m0: ${SMALL_MB} MB MOV upload → 201" test "$(st $T/up64)" = 201
+check "m0: id == sha256" test "$(json_get $T/up64.body "d['id']")" = "$SMALL_SHA"
+HWM0=$(hwm_kb)
+echo "info: daemon VmHWM after ${SMALL_MB} MB upload: ${HWM0} kB"
+check "m0: VmHWM within baseline + ${HWM_GROWTH_MB} MB" test "${HWM0:-999999999}" -lt "$LIMIT_KB"
+http "$T/dl64" -H "$AUTHH" "$B/items/$SMALL_SHA/content"
+check "m0: downloaded bytes identical" cmp "$T/mid64.mov" "$T/dl64.body"
+rm -f "$T/dl64.body"
+
+# ---- M1 ------------------------------------------------------------------------------------
+http "$T/up" -X PUT -H "$AUTHH" -H "X-Filename: mid.mov" --data-binary "@$T/mid.mov" "$B/items"
+echo "info: upload status=$(st $T/up) body=$(head -c 300 $T/up.body)"
+check "m1: ${MID_MB} MB MOV upload → 201" test "$(st $T/up)" = 201
+check "m1: id == sha256 of the file" test "$(json_get $T/up.body "d['id']")" = "$MID_SHA"
+HWM1=$(hwm_kb)
+echo "info: daemon VmHWM after ${MID_MB} MB upload: ${HWM1} kB (baseline ${BASE_KB} kB)"
+check "m1: VmHWM within baseline + ${HWM_GROWTH_MB} MB after ${MID_MB} MB upload" test "${HWM1:-999999999}" -lt "$LIMIT_KB"
+http "$T/dl" -H "$AUTHH" "$B/items/$MID_SHA/content"
+check "m1: content download 200" test "$(st $T/dl)" = 200
+check "m1: downloaded bytes identical" cmp "$T/mid.mov" "$T/dl.body"
+rm -f "$T/dl.body"
+HWM2=$(hwm_kb)
+echo "info: daemon VmHWM after download: ${HWM2} kB"
+check "m1: VmHWM within baseline + ${HWM_GROWTH_MB} MB after download" test "${HWM2:-999999999}" -lt "$LIMIT_KB"
+
+# ---- M3 duplicate --------------------------------------------------------------------------
+http "$T/dup" -X PUT -H "$AUTHH" -H "X-Filename: mid2.mov" --data-binary "@$T/mid.mov" "$B/items"
+check "m3: duplicate ${MID_MB} MB upload → 200 with existing id" test "$(st $T/dup)" = 200
+check "m3: duplicate returns the existing id" test "$(json_get $T/dup.body "d['id']")" = "$MID_SHA"
+HWM3=$(hwm_kb)
+echo "info: daemon VmHWM after duplicate: ${HWM3} kB"
+check "m3: VmHWM within baseline + ${HWM_GROWTH_MB} MB after duplicate" test "${HWM3:-999999999}" -lt "$LIMIT_KB"
+
+# ---- M2 small files unchanged --------------------------------------------------------------
+http "$T/j" -X PUT -H "$AUTHH" -H "X-Filename: ok.jpg" --data-binary "@$JPEG_FIXTURE" "$B/items"
+check "m2: JPEG upload → 201" test "$(st $T/j)" = 201
+check "m2: JPEG id == golden sha256" test "$(json_get $T/j.body "d['id']")" = "$JPEG_GOLDEN"
+http "$T/b" -X PUT -H "$AUTHH" -H "X-Filename: broken.jpg" --data-binary "@$T/broken.jpg" "$B/items"
+check "m2: broken JPEG → 4xx (not 2xx/5xx)" bash -c '[ "$1" -ge 400 ] && [ "$1" -lt 500 ]' _ "$(st $T/b)"
+http "$T/j2" -X PUT -H "$AUTHH" -H "X-Filename: ok2.jpg" --data-binary "@$JPEG_FIXTURE" "$B/items"
+check "m2: JPEG re-upload → 200 (duplicate)" test "$(st $T/j2)" = 200
+
+check "daemon still alive" kill -0 "$DPID"
+check "spool has no leftovers" bash -c '! compgen -G "$1/phto-upload-*" >/dev/null' _ "$SPOOL"
+
+echo "PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" -eq 0 ]

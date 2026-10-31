@@ -138,7 +138,7 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// Test suite: streaming path (files > 256 MB)
+// Test suite: streaming path (files just above the 8 MB threshold)
 // ---------------------------------------------------------------------------
 
 class StreamingPathTest: public CppUnit::TestFixture {
@@ -167,11 +167,11 @@ public:
     fs::remove_all(m_base);
   }
 
-  /// Generate a valid MOV larger than STREAMING_THRESHOLD (256 MB) by
+  /// Generate a valid MOV larger than LARGE_FILE_SIZE (8 MB) by
   /// wrapping a real MOV fixture in extra padding. This exercises the
   /// streaming write path without needing a real camera MOV.
   ///
-  /// Strategy: we cannot easily synthesize a >256 MB valid MOV from scratch,
+  /// Strategy: we cannot easily synthesize a >8 MB valid MOV from scratch,
   /// so instead we test the streaming HASH path by using a file that is
   /// structured as valid MOV but with a large trailing padding region.
   /// libavformat accepts such files (ignores trailing data after moov/mdat).
@@ -183,9 +183,10 @@ public:
       return; // skip — fixture absent
     }
 
-    // Build a >256 MB file: real MOV header + padding zeros.
-    static constexpr uint64_t STREAMING_THRESHOLD = 256ULL * 1024ULL * 1024ULL;
-    static constexpr uint64_t TARGET_SIZE = STREAMING_THRESHOLD + 1024ULL * 1024ULL; // 257 MB
+    // Build a >8 MB file: real MOV header + padding zeros.
+    // Library streaming threshold is 8 MB; test files sit just above it.
+    static constexpr uint64_t LARGE_FILE_SIZE = 8ULL * 1024ULL * 1024ULL; // STREAMING_THRESHOLD (8 MB)
+    static constexpr uint64_t TARGET_SIZE = LARGE_FILE_SIZE + 1024ULL * 1024ULL; // threshold + 1 MB
 
     // Read real MOV fixture.
     std::vector<uint8_t> movData;
@@ -217,7 +218,7 @@ public:
       CPPUNIT_ASSERT(out.good());
     }
 
-    CPPUNIT_ASSERT(fs::file_size(largeMov) >= STREAMING_THRESHOLD);
+    CPPUNIT_ASSERT(fs::file_size(largeMov) >= LARGE_FILE_SIZE);
 
     Imager img(m_cfg);
     auto res = img.addFile(largeMov, "large.mov");
@@ -237,7 +238,7 @@ public:
       for (auto& entry : fs::recursive_directory_iterator(storageRoot)) {
         if (entry.path().extension() == ".mov") {
           found = true;
-          CPPUNIT_ASSERT(fs::file_size(entry.path()) >= STREAMING_THRESHOLD);
+          CPPUNIT_ASSERT(fs::file_size(entry.path()) >= LARGE_FILE_SIZE);
           break;
         }
       }
@@ -252,8 +253,9 @@ public:
       return; // skip
     }
 
-    static constexpr uint64_t STREAMING_THRESHOLD = 256ULL * 1024ULL * 1024ULL;
-    static constexpr uint64_t TARGET_SIZE = STREAMING_THRESHOLD + 512ULL * 1024ULL;
+    // Library streaming threshold is 8 MB; test files sit just above it.
+    static constexpr uint64_t LARGE_FILE_SIZE = 8ULL * 1024ULL * 1024ULL; // STREAMING_THRESHOLD (8 MB)
+    static constexpr uint64_t TARGET_SIZE = LARGE_FILE_SIZE + 512ULL * 1024ULL;
 
     std::vector<uint8_t> movData;
     {

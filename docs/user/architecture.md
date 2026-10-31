@@ -131,9 +131,13 @@ Steps 2 and 3 (validate + hash) run **concurrently** — two coroutines are laun
 
 Identical to `addFile` but step 1 (disk read) is skipped — the caller provides the `Blob` directly.
 
-### `validateOnly(blob, filename)` Pipeline
+### Streaming path (files above 8 MB)
 
-Steps 2–5 only. Steps 6 and 7 (write and insert) are skipped. Used by `imagestore --dry-run`.
+`addFile` reads files of 8 MB or less into a `Blob` as shown above. Larger files are not loaded: they are hashed and validated in chunks of at most 4 MB by stream validators and `StreamHasher`, then copied to each root from disk, so file I/O memory stays bounded: one 4 MB chunk while hashing, then a 4 MB buffer per target root while writing (the roots are written in parallel). The validator's decoder memory (estimated from under 1 MB for PNG up to about 300 MB for a large HEIC) comes on top; see [DEPLOYMENT.md](DEPLOYMENT.md#large-uploads-and-memory). Formats without a stream validator get `UnsupportedFormat` above 8 MB, and `.aae` sidecars get `TooLarge`. See plan [0017](../plan/0017.LARGE_FILES.md).
+
+### `validateOnly(blob, filename)` and `validateOnlyFile(path, filename)` Pipelines
+
+Steps 2–5 only. Steps 6 and 7 (write and insert) are skipped. `validateOnly` takes bytes already in memory; `validateOnlyFile` reads from disk with the same 8 MB split as `addFile` and is what `imagestore --dry-run` uses.
 
 ---
 

@@ -128,7 +128,8 @@ lib.deleteImage(r.id);
 |--------|-------------|
 | `addFile(path)` | Read a file from disk and ingest it |
 | `addImage(blob, filename)` | Ingest raw bytes already in memory |
-| `validateOnly(blob, filename)` | Validate and hash without writing |
+| `validateOnly(blob, filename)` | Validate and hash bytes already in memory, without writing |
+| `validateOnlyFile(path, filename, onStage)` | Validate and hash a file on disk (streams above 8 MB), without writing; used by `imagestore --dry-run` |
 | `getImage(id)` | Fetch metadata and tags by SHA256 id |
 | `getImagesByTags(tags, offset, limit)` | Paginated tag-based search |
 | `listImages(offset, limit)` | Paginated full listing |

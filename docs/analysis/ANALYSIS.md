@@ -9,7 +9,7 @@ Phase 2 ([plan 0022](../plan/0022.SERVER.md)) is implemented in three steps:
 1. **0022 checkpoints A1–J4:** `auth/` (SQLite user store, PBKDF2 hashing, HS256 JWT `TokenService`, input validation), `server/` (`imagerd`, built on Crow: health/stats, auth, users, items, content with Range/ETag, tags, hardening, native TLS) and the `imageradmin` CLI.
 2. **Post-0022 fix-up (commit 57d7784):** `imageradmin` last-admin guard, shared validation, startup error handling, bounded shutdown drain, `/auth/password` throttle.
 3. **Loose-ends step:**
-   - Upload bodies are bounded: a patched Crow (`third_party/crow/crow-body-sink.patch`) lets `server/Upload.cpp` reject on `Content-Length` with `413` before reading the body, cap chunked bodies, and stream `PUT /items` bodies to a temp-file spool. Remaining limit: `Imager::addFile` loads files of 256 MB or less into memory, so peak RSS per concurrent upload is about the file size, up to 256 MB.
+   - Upload bodies are bounded: a patched Crow (`third_party/crow/crow-body-sink.patch`) lets `server/Upload.cpp` reject on `Content-Length` with `413` before reading the body, cap chunked bodies, and stream `PUT /items` bodies to a temp-file spool. `Imager::addFile` loads only files of 8 MB or less into memory and streams larger ones in chunks of at most 4 MB, so file I/O per concurrent upload is bounded (up to 8 MB, or 4 MB per target root when streaming), plus per-format decoder memory that is estimated, not measured (see DEPLOYMENT.md) (streaming step, 2026-10-31; threshold was 256 MB, see plan 0017).
    - `[server].trusted_proxies` and a single client-IP helper (`server/ClientIp.*`) for the per-IP throttle and the access log.
    - Access log on stderr (`[server].access_log`, `server/AccessLog.*`).
    - Configurable `[server].drain_timeout_s`, `[auth].lockout_seconds`, `[auth].max_login_failures`, `[auth].max_ip_failures`.
@@ -248,7 +248,7 @@ Alignment improvements since the previous analysis:
 
 Remaining gap:
 
-- dry-run mode still manually reads files because there is no `validateOnlyFile()` API. That is reasonable, but it means dry-run does not exercise the same library-owned read-stage metrics path as normal ingestion.
+- dry-run mode still manually reads files because there is no `validateOnlyFile()` API. That is reasonable, but it means dry-run does not exercise the same library-owned read-stage metrics path as normal ingestion. **Resolved 2026-10-31:** dry-run now calls `Imager::validateOnlyFile`.
 
 ### `0007.HEIC.md`
 
@@ -314,7 +314,7 @@ Implemented:
 
 Only partial remaining mismatch:
 
-- dry-run still owns its own read path, so read-stage metrics are not unified across both normal and dry-run execution modes.
+- dry-run still owns its own read path, so read-stage metrics are not unified across both normal and dry-run execution modes. **Resolved 2026-10-31:** dry-run now calls `Imager::validateOnlyFile`.
 
 ## Module-by-module assessment
 
@@ -432,7 +432,7 @@ Implemented:
 
 Remaining nuance:
 
-- dry-run still performs its own file read rather than going through a library file-reading entry point.
+- dry-run still performs its own file read rather than going through a library file-reading entry point. **Resolved 2026-10-31:** dry-run now calls `Imager::validateOnlyFile`.
 
 ## Test coverage status
 
@@ -493,7 +493,7 @@ Remaining nuance:
 3. Monitoring is now broadly wired, but the full plan's export/disable features are still absent.
 4. Sidecar relocation and companion updates after parent arrival remain best-effort rather than globally atomic across storage plus all databases.
 5. `whenAll()` still depends on a documented coroutine scheduling invariant rather than enforcing safety mechanically.
-6. `imagestore` normal mode uses `addFile()`, but dry-run still duplicates the file-read path because there is no `validateOnlyFile()` API.
+6. `imagestore` normal mode uses `addFile()`, but dry-run still duplicates the file-read path because there is no `validateOnlyFile()` API. **Resolved 2026-10-31:** dry-run now calls `Imager::validateOnlyFile`.
 
 ## Conclusion
 

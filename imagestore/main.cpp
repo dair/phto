@@ -397,68 +397,20 @@ int main(int argc, char* argv[]) {
           // ---- Import mode ----
           imager::AddResult result;
 
-          if (dryRun) {
-            // Dry-run: manually read the file and call validateOnly
-            slots.setStage(slot, imagestore::PipelineStage::Reading);
-
-            std::error_code fec;
-            auto fileSize = fs::file_size(capturedPath, fec);
-            if (fec) {
-              resultLog.append("ERR  " + capturedStr + ": " + fec.message());
-              stats.errors.fetch_add(1, std::memory_order_relaxed);
-              stats.processed.fetch_add(1, std::memory_order_relaxed);
-              if (errorFile) {
-                errorFile->recordError(capturedStr);
-              }
-              return;
+          // Stat for totalBytes, then delegate all file I/O to the library (bounded memory for any size).
+          std::error_code fec;
+          auto fileSize = fs::file_size(capturedPath, fec);
+          if (fec) {
+            resultLog.append("ERR  " + capturedStr + ": " + fec.message());
+            stats.errors.fetch_add(1, std::memory_order_relaxed);
+            stats.processed.fetch_add(1, std::memory_order_relaxed);
+            if (errorFile) {
+              errorFile->recordError(capturedStr);
             }
-
-            imager::Blob blob(fileSize);
-            {
-              std::ifstream in(capturedPath, std::ios::binary);
-              if (!in) {
-                resultLog.append("ERR  " + capturedStr + ": cannot open file");
-                stats.errors.fetch_add(1, std::memory_order_relaxed);
-                stats.processed.fetch_add(1, std::memory_order_relaxed);
-                if (errorFile) {
-                  errorFile->recordError(capturedStr);
-                }
-                return;
-              }
-              if (fileSize > 0) {
-                in.read(reinterpret_cast<char*>(blob.writableData()), static_cast<std::streamsize>(fileSize));
-                if (in.fail() && !in.eof()) {
-                  resultLog.append("ERR  " + capturedStr + ": read error");
-                  stats.errors.fetch_add(1, std::memory_order_relaxed);
-                  stats.processed.fetch_add(1, std::memory_order_relaxed);
-                  if (errorFile) {
-                    errorFile->recordError(capturedStr);
-                  }
-                  return;
-                }
-              }
-            }
-            blob.freeze();
-            stats.totalBytes.fetch_add(fileSize, std::memory_order_relaxed);
-
-            slots.setStage(slot, imagestore::PipelineStage::Validating);
-            result = img.validateOnly(blob, capturedPath.filename().string());
-          } else {
-            // Non-dry-run: stat for totalBytes, then delegate I/O to addFile with callback
-            std::error_code fec;
-            auto fileSize = fs::file_size(capturedPath, fec);
-            if (fec) {
-              resultLog.append("ERR  " + capturedStr + ": " + fec.message());
-              stats.errors.fetch_add(1, std::memory_order_relaxed);
-              stats.processed.fetch_add(1, std::memory_order_relaxed);
-              if (errorFile) {
-                errorFile->recordError(capturedStr);
-              }
-              return;
-            }
-            stats.totalBytes.fetch_add(fileSize, std::memory_order_relaxed);
-            result = img.addFile(capturedPath, "", onStage);
+            return;
           }
+          stats.totalBytes.fetch_add(fileSize, std::memory_order_relaxed);
+          result = dryRun ? img.validateOnlyFile(capturedPath, "", onStage) : img.addFile(capturedPath, "", onStage);
 
           stats.processed.fetch_add(1, std::memory_order_relaxed);
 
