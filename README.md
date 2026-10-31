@@ -29,7 +29,7 @@ A C++23 library and toolset for local-network media management. Imager ingests, 
 ## Status
 
 - **Phase 1** (offline core, validators, `imagestore`): implemented.
-- **Phase 2** (HTTP+JWT server, [plan 0022](docs/plan/0022.SERVER.md)): implemented. Endpoints for health/stats, auth, users, items, and tags; native TLS (>= 1.2) or reverse proxy; per-login and per-IP login throttle (limits configurable); oversized uploads rejected with `413` before the body is read; optional `trusted_proxies` for `X-Forwarded-For`; per-request access log on stderr. Documented in [API.md](docs/user/API.md) and [DEPLOYMENT.md](docs/user/DEPLOYMENT.md).
+- **Phase 2** (HTTP+JWT server, [plan 0022](docs/plan/0022.SERVER.md)): implemented. Endpoints for health/stats, auth, users, items, and tags; native TLS (>= 1.2) or reverse proxy; per-login and per-IP login throttle (limits configurable); oversized uploads rejected with `413` before the body is read; optional `trusted_proxies` for `X-Forwarded-For`; per-request access log on stderr; admin-only request/pipeline metrics via `GET /stats` and a Prometheus `GET /metrics`. Documented in [API.md](docs/user/API.md) and [DEPLOYMENT.md](docs/user/DEPLOYMENT.md).
 
 ## Supported Formats
 

@@ -108,12 +108,12 @@ cmake --build build
 ctest --preset default
 ```
 
-All tests use temporary directories and clean up after themselves. A passing run ends with the summary below (per-test lines omitted; `ctest --preset default -N` lists all 37 tests):
+All tests use temporary directories and clean up after themselves. A passing run ends with the summary below (per-test lines omitted; `ctest --preset default -N` lists all 41 tests):
 
 ```
 Test project <repo>/build
     ...
-100% tests passed, 0 tests failed out of 37
+100% tests passed, 0 tests failed out of 41
 ```
 
 To see verbose test output on failure:

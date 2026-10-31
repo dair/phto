@@ -12,7 +12,7 @@ All request and response bodies are JSON (`Content-Type: application/json`) exce
 - [Pagination](#pagination)
 - [Validation rules](#validation-rules)
 - [Common response headers](#common-response-headers)
-- Endpoints: [health](#get-health), [stats](#get-stats), [auth](#post-authlogin), [users](#get-users), [items](#put-items), [item tags](#get-itemsidtags), [global tags](#get-tags)
+- Endpoints: [health](#get-health), [stats](#get-stats), [metrics](#get-metrics), [auth](#post-authlogin), [users](#get-users), [items](#put-items), [item tags](#get-itemsidtags), [global tags](#get-tags)
 - [curl walkthrough](#curl-walkthrough)
 - [Differences from plan 0022](#differences-from-plan-0022)
 
@@ -115,15 +115,99 @@ Auth: none. Liveness probe.
 
 ### GET /stats
 
-Auth: Bearer.
+Auth: Bearer. The response grows for admins.
 
-`200`:
+`200` for a non-admin user:
 
 ```json
 {"imageCount":1234,"tagCount":17}
 ```
 
+For an admin, the same two fields plus a `server` and a `library` section (all values below are illustrative; field names and structure come from `server/ServerMetrics.cpp`):
+
+```json
+{
+  "imageCount": 1234,
+  "tagCount": 17,
+  "server": {
+    "uptime_seconds": 86400,
+    "in_flight_requests": 1,
+    "upload_bytes_total": 52428800,
+    "rejected_total": {"too_large": 0, "unauthorized": 3, "throttled": 0},
+    "logins_total": {"success": 12, "failure": 3},
+    "process": {"resident_memory_bytes": 98304000, "peak_resident_memory_bytes": 167772160},
+    "requests": [
+      {"method": "GET", "route": "/items", "status_class": "2xx", "count": 40},
+      {"method": "POST", "route": "/auth/login", "status_class": "4xx", "count": 3}
+    ],
+    "request_duration": [
+      {"route": "/items", "count": 40, "sum_seconds": 0.12,
+       "buckets": [{"le": 0.0001, "count": 0}, "...", {"le": "+Inf", "count": 40}]}
+    ]
+  },
+  "library": {
+    "counters": {"images_added": 20, "images_failed": 1},
+    "gauges": {"pool_queue_depth": 0},
+    "histograms": {
+      "validate": {"count": 21, "sum_seconds": 0.8,
+                   "buckets": [{"le": 0.0001, "count": 0}, "...", {"le": "+Inf", "count": 21}]}
+    }
+  }
+}
+```
+
+- `server.requests` lists only non-zero (method, route, status class) combinations. `server.request_duration` lists only routes with at least one sample.
+- `route` is a fixed template (`/items/{id}`, `/tags/{name}`, ...), never the concrete path; anything not matching a registered route is `other`. `method` is one of `GET PUT POST DELETE PATCH HEAD OPTIONS other`; `status_class` is `2xx`, `3xx`, `4xx` or `5xx`.
+- `rejected_total` counts every `401`, `413` and `429` response. `logins_total` counts `POST /auth/login` answered `200` (success) or `401`/`403` (failure). `upload_bytes_total` counts bytes accepted into the upload spool, including uploads later rejected by validation.
+- Histogram `buckets` are cumulative, `le` is in seconds, and the last bucket is `"+Inf"`. Early `413` rejections are counted in `requests` but not in `request_duration` or `in_flight_requests`.
+- `library` mirrors `Imager::metrics()` with its snake_case names (`images_added`, `validate`, `hash`, ...); see [Metrics and Monitoring](metrics.md) for the list. Library histograms use the same bucket layout (100 ns to 30 s, then `+Inf`).
+- Nothing user-identifying is recorded (no logins, item ids, IPs or concrete paths).
+
 Errors: `401 Unauthorized`, `500 Internal`.
+
+### GET /metrics
+
+Auth: admin. The same data as the admin `/stats` sections, in Prometheus text exposition format 0.0.4, for scraping. A missing or invalid token gets `401`; a valid non-admin token gets `403 Forbidden`.
+
+`200`, `Content-Type: text/plain; version=0.0.4; charset=utf-8`. Excerpt (names and layout from `server/ServerMetrics.cpp`; values illustrative):
+
+```text
+# HELP phto_http_requests_total HTTP responses by method, route template and status class.
+# TYPE phto_http_requests_total counter
+phto_http_requests_total{method="GET",route="/items",status_class="2xx"} 40
+phto_http_requests_total{method="POST",route="/auth/login",status_class="4xx"} 3
+# HELP phto_http_request_duration_seconds Request handling time by route template.
+# TYPE phto_http_request_duration_seconds histogram
+phto_http_request_duration_seconds_bucket{route="/items",le="+Inf"} 40
+phto_http_request_duration_seconds_sum{route="/items"} 0.12
+phto_http_request_duration_seconds_count{route="/items"} 40
+# TYPE phto_http_requests_in_flight gauge
+phto_http_requests_in_flight 1
+phto_http_rejected_total{reason="unauthorized"} 3
+phto_logins_total{result="failure"} 3
+phto_uptime_seconds 86400
+```
+
+Metric families:
+
+| Family | Type | Labels |
+|--------|------|--------|
+| `phto_http_requests_total` | counter | `method`, `route`, `status_class` |
+| `phto_http_request_duration_seconds` | histogram | `route`, `le` |
+| `phto_http_requests_in_flight` | gauge | |
+| `phto_http_rejected_total` | counter | `reason` = `too_large`, `unauthorized`, `throttled` |
+| `phto_upload_bytes_total` | counter | |
+| `phto_logins_total` | counter | `result` = `success`, `failure` |
+| `phto_uptime_seconds` | gauge | |
+| `phto_process_resident_memory_bytes` | gauge | (VmRSS from `/proc/self/status`; 0 where unavailable) |
+| `phto_process_resident_memory_peak_bytes` | gauge | (VmHWM) |
+| `phto_library_<name>_total` | counter | one per library counter |
+| `phto_library_<name>` | gauge | one per library gauge |
+| `phto_library_<name>_seconds` | histogram | one per library histogram |
+
+Label semantics match the [`/stats` notes](#get-stats). For a scrape configuration see [Deployment: Monitoring](DEPLOYMENT.md#monitoring).
+
+Errors: `401 Unauthorized`, `403 Forbidden`, `500 Internal`.
 
 ### POST /auth/login
 
@@ -343,7 +427,7 @@ Where [plan 0022](../plan/0022.SERVER.md) and the code differ, this document fol
 
 - Validation failure is `400 BrokenFile`, not 422 (Crow has no 422 status).
 - Error `code` vocabulary is generic (`NotFound`, `Conflict`, `Internal`, ...) rather than facade-specific names; `LastAdmin` and `TooManyRequests` are additions.
-- `GET /stats` returns only `imageCount` and `tagCount`, not the metrics snapshot.
+- `GET /stats` returns `imageCount` and `tagCount` to every user; admins also get `server` request metrics and a `library` metrics snapshot. `GET /metrics` (admin, Prometheus text format) is the "future `/metrics` endpoint" the plan left optional.
 - Range responses are capped at 8 MiB each.
 - Token validity is re-checked against the user database per request (live revocation, live admin flag).
 - A per-IP login throttle (20 failures by default) exists in addition to the per-login one (5); the limits and lockout time are configurable.

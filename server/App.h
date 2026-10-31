@@ -9,6 +9,7 @@
 #include "AccessLog.h"
 #include "AuthMiddleware.h"
 #include "ClientIp.h"
+#include "ServerMetrics.h"
 
 namespace auth {
 
@@ -68,6 +69,7 @@ private:
 
   TrustedProxies m_proxies; // before m_log / routes: both hold references to it
   AccessLog m_log;
+  ServerMetrics m_metrics;
   crow::App<AuthMiddleware> m_crow;
 };
 

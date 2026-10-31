@@ -13,6 +13,7 @@
 
 #include "AccessLog.h"
 #include "Json.h"
+#include "ServerMetrics.h"
 
 namespace server {
 
@@ -31,6 +32,7 @@ struct AuthMiddleware {
   auth::TokenService* service{nullptr};
   auth::UserStore* users{nullptr};
   AccessLog* accessLog{nullptr};
+  ServerMetrics* metrics{nullptr};
 
   struct context {
     std::optional<auth::TokenService::Claims> claims;
@@ -61,6 +63,9 @@ struct AuthMiddleware {
 
   void before_handle(crow::request& req, crow::response& /*res*/, context& ctx) {
     ctx.start = std::chrono::steady_clock::now();
+    if (metrics != nullptr) {
+      metrics->beginRequest();
+    }
     ctx.claims = authenticate(req);
   }
 
@@ -69,11 +74,21 @@ struct AuthMiddleware {
     if (res.get_header_value("Cache-Control").empty()) {
       res.set_header("Cache-Control", "no-store");
     }
+    const bool started = ctx.start != std::chrono::steady_clock::time_point{};
+    const auto elapsed = started ? std::chrono::steady_clock::now() - ctx.start : std::chrono::steady_clock::duration{};
+    if (metrics != nullptr) {
+      if (started) {
+        metrics->endRequest();
+      }
+      metrics->record(
+        req.method,
+        req.url,
+        res.code,
+        started ? std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count() : ServerMetrics::NO_LATENCY
+      );
+    }
     if (accessLog != nullptr && accessLog->enabled()) {
-      const auto ms =
-        ctx.start == std::chrono::steady_clock::time_point{}
-          ? 0
-          : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ctx.start).count();
+      const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
       uint64_t bytes = res.body.size();
       if (bytes == 0 && res.is_static_type()) { // streamed file: the body is empty, Crow sets Content-Length
         const std::string& cl = res.get_header_value("Content-Length");

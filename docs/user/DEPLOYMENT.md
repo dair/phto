@@ -14,6 +14,7 @@ How to build, configure, run, and operate the `imagerd` HTTP(S) daemon. The endp
 - [Large uploads and memory](#large-uploads-and-memory)
 - [Backups and multiple targets](#backups-and-multiple-targets)
 - [Logging](#logging)
+- [Monitoring](#monitoring)
 - [Access log](#access-log)
 - [Troubleshooting](#troubleshooting)
 
@@ -300,7 +301,49 @@ Each `[[targets]]` entry is a full replica: files are written to every root and 
 - Handler error lines such as `GET /stats: count failed (database error)` or `PUT /items: cannot spool upload to temp file`. Handlers log the cause of every 500 here, because the response body is only `internal error`.
 - Tokens, passwords and Authorization headers are not logged.
 
-`GET /stats` returns library counts only, not pipeline metrics.
+Request and pipeline metrics are not in the log; see [Monitoring](#monitoring).
+
+## Monitoring
+
+`imagerd` keeps request and pipeline metrics in memory (no persistence; counters reset on restart) and exposes them to admins in two forms:
+
+- `GET /metrics`: Prometheus text format, for scraping. Metric names start with `phto_`; labels are `method`, `route` (a template such as `/items/{id}`, never the concrete path) and `status_class`.
+- `GET /stats`: the same data as JSON, in the `server` and `library` sections that only admins receive.
+
+Both are admin-only: the bearer token must belong to a user with `isAdmin` true, or the endpoint answers `403`. Everything else is covered in [`GET /metrics`](API.md#get-metrics) and [`GET /stats`](API.md#get-stats).
+
+Tokens expire after `[auth].token_ttl_seconds` (12 h by default), so a scraper needs a token it can renew. Either set a long `token_ttl_seconds` (this applies to every user's tokens) or refresh the token file on a schedule. Create a dedicated admin user for it so it can be disabled independently; a disabled or demoted user's token stops working immediately.
+
+```bash
+# Obtain a token for a dedicated admin user and store it where Prometheus can read it
+curl -s -X POST https://photos.example.org/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"login":"prometheus","password":"..."}'
+# copy the token field from the response into /etc/prometheus/phto.token (mode 0600)
+```
+
+Example `prometheus.yml` scrape job:
+
+```yaml
+scrape_configs:
+  - job_name: phto
+    scheme: https
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/phto.token
+    static_configs:
+      - targets: ["photos.example.org:8443"]
+```
+
+Older Prometheus versions use `bearer_token_file: /etc/prometheus/phto.token` instead of the `authorization` block. For plain HTTP on loopback use `scheme: http`; do not send tokens over plain HTTP across a network.
+
+Notes:
+
+- Behind a reverse proxy, scrape the daemon directly or make sure the proxy forwards `/metrics` and the `Authorization` header; do not expose `/metrics` publicly.
+- Each scrape is an authenticated request and shows up in the [access log](#access-log) and in `phto_http_requests_total` (`route="/metrics"`).
+- `phto_process_resident_memory_bytes` and `..._peak_bytes` read `/proc/self/status` and are `0` on systems without it; use them with the figures in [Large uploads and memory](#large-uploads-and-memory).
+- `phto_http_rejected_total{reason="unauthorized"}` and `phto_logins_total{result="failure"}` are the useful signals for alerting on credential guessing.
 
 ## Access log
 

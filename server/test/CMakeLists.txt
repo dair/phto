@@ -402,3 +402,25 @@ add_test(
 )
 
 set_tests_properties(server_streaming_mem_test PROPERTIES TIMEOUT 300)
+
+# ---- server_metrics_test — /stats admin sections, /metrics Prometheus exposition (ports 19640–19659) ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_metrics.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_metrics.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_metrics.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_metrics_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_metrics.sh"
+)
+
+set_tests_properties(server_metrics_test PROPERTIES TIMEOUT 180)

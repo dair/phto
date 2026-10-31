@@ -6,6 +6,8 @@ Imager has always-on, lock-free instrumentation built into the ingestion pipelin
 
 The `metrics::Metrics` class is owned by each `Imager` instance and tracks all pipeline activity since the instance was created (or since the last `reset()` call). All metric primitives are lock-free atomics — recording a metric is a single `fetch_add` with no heap allocation and no mutex.
 
+For the `imagerd` daemon, the library metrics below plus per-request metrics are exported to admins as JSON (`GET /stats`) and Prometheus text (`GET /metrics`, library names get a `phto_library_` prefix); see [REST API](API.md#get-metrics) and [Deployment: Monitoring](DEPLOYMENT.md#monitoring).
+
 ## Accessing Metrics
 
 ```cpp

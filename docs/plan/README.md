@@ -47,7 +47,7 @@ Each plan carries its own `Status` line; this table is a summary. Per-plan desig
 | Plan | Status |
 |---|---|
 | 0001–0004 | Implemented |
-| 0005 MONITORING | Substantially implemented (no export layer, no metrics in `imagerd`) |
+| 0005 MONITORING | Substantially implemented (`imagerd` exports metrics via admin `GET /stats` and Prometheus `GET /metrics`; no OpenTelemetry) |
 | 0006 UTILITY | Implemented (`--graph` later removed by 0016; `--delete`, `--memory-report` added) |
 | 0007–0010 (HEIC, NEF, MOV, AAE) | Implemented |
 | 0011 ARCHIVES | Planned, not implemented |

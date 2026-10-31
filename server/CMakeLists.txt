@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 
 add_library(server_lib STATIC
     App.cpp Json.cpp AuthRoutes.cpp UserRoutes.cpp LoginThrottle.cpp ItemRoutes.cpp TagRoutes.cpp
-    ClientIp.cpp AccessLog.cpp Upload.cpp)
+    ClientIp.cpp AccessLog.cpp Upload.cpp ServerMetrics.cpp)
 
 target_include_directories(server_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 

@@ -188,3 +188,9 @@
 - **Task**: Add Adam7 PNG tests; re-verify after NEF clamped-stream fix.
 - **Outcome**: Interlaced PNG (small, 1x1, >8 MB) accepted by Blob + stream validators and addFile; truncated interlaced rejected and agreeing (no product bug). NEF byte-4 case agrees. ImagerTests 108 cases. Full suite 40/40 clang x2, g++ x1.
 - **Next Step**: Stand down.
+
+## [2026-10-31 19:00] - Server metrics end-to-end test
+- **Agent**: m4-test
+- **Task**: Write `server_metrics_test` (ports 19640–19659) for `/stats` admin sections and `/metrics` Prometheus exposition.
+- **Outcome**: 87 checks: auth/shape, exact counter deltas, cardinality, no sensitive data, Prometheus format validator, concurrency. 4 initial failures were test-side only (fixed). No product bugs. Suite 41/41 on clang x2 and g++ x1. See docs/testing/metrics.md.
+- **Next Step**: None.

@@ -1,0 +1,452 @@
+#!/usr/bin/env bash
+# server/test/test_metrics.sh.in — server request metrics end-to-end test
+#
+#   GET /stats   non-admin shape unchanged; admin adds "server" + "library"
+#   GET /metrics admin-only (401/403), Prometheus text 0.0.4
+#   counters move by exactly the known amounts; route label cardinality is bounded
+#   no logins / ids / IPs / tokens / raw paths in either output
+#   line-level Prometheus format validation; 50 concurrent requests counted exactly
+# Registered as "server_metrics_test". Configured by CMake configure_file(@ONLY).
+# Ports 19640–19659 (this script uses 19640).
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+
+PASS=0
+FAIL=0
+check() {
+  local name="$1"; shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "PASS: $name"; PASS=$((PASS + 1))
+  else echo "FAIL: $name"; FAIL=$((FAIL + 1)); fi
+}
+
+for tool in curl python3; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_metrics_test skipped"
+    exit 0
+  fi
+done
+if [ ! -f "$JPEG_FIXTURE" ]; then echo "FATAL: fixture $JPEG_FIXTURE missing"; exit 1; fi
+
+PORT=19640
+B="http://127.0.0.1:$PORT"
+T=$(mktemp -d)
+mkdir -p "$T/storage" "$T/spool"
+SECRET="this-is-a-32-byte-test-secret-ok"
+DPID=""
+cleanup() {
+  if [ -n "$DPID" ] && kill -0 "$DPID" 2>/dev/null; then
+    kill -KILL "$DPID" 2>/dev/null || true
+    wait "$DPID" 2>/dev/null || true
+  fi
+  rm -rf "$T"
+}
+trap cleanup EXIT
+
+cat > "$T/cfg.toml" <<CFGEOF
+[[targets]]
+root = "$T/storage"
+database = "$T/imager.db"
+
+[server]
+bind = "127.0.0.1"
+port = $PORT
+threads = 4
+max_upload_mb = 2
+
+[auth]
+database = "$T/auth.db"
+jwt_secret = "$SECRET"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+max_login_failures = 3
+max_ip_failures = 1000
+lockout_seconds = 60
+CFGEOF
+
+# ---- python helper: Prometheus text parser / validator ------------------------
+cat > "$T/mx.py" <<'PYEOF'
+import re, sys, math
+NAME = re.compile(r'^[a-zA-Z_:][a-zA-Z0-9_:]*$')
+LNAME = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+LABELS = re.compile(r'\s*([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\[\\"n])*)"\s*(,|$)')
+SAMPLE = re.compile(r'^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{(.*)\})?\s+(\S+)$')
+
+def unesc(s):
+    return s.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+
+def parse(path):
+    """returns (samples, helps, types, order, problems)"""
+    problems, samples, helps, types = [], [], {}, {}
+    text = open(path, encoding="utf-8").read()
+    if text and not text.endswith("\n"):
+        problems.append("missing trailing newline")
+    first_seen = {}
+    for ln, line in enumerate(text.split("\n"), 1):
+        if line == "":
+            continue
+        if line.startswith("# HELP "):
+            parts = line[7:].split(" ", 1)
+            if not NAME.match(parts[0]): problems.append("%d: bad HELP name" % ln)
+            if parts[0] in helps: problems.append("%d: duplicate HELP %s" % (ln, parts[0]))
+            helps[parts[0]] = parts[1] if len(parts) > 1 else ""
+            continue
+        if line.startswith("# TYPE "):
+            parts = line[7:].split(" ")
+            if len(parts) != 2 or not NAME.match(parts[0]) or parts[1] not in ("counter", "gauge", "histogram", "summary", "untyped"):
+                problems.append("%d: bad TYPE line: %s" % (ln, line)); continue
+            if parts[0] in types: problems.append("%d: duplicate TYPE %s" % (ln, parts[0]))
+            if parts[0] in first_seen: problems.append("%d: TYPE after samples for %s" % (ln, parts[0]))
+            types[parts[0]] = parts[1]
+            continue
+        if line.startswith("#"):
+            continue
+        m = SAMPLE.match(line)
+        if not m:
+            problems.append("%d: unparsable sample: %s" % (ln, line)); continue
+        name, _, lbl, val = m.groups()
+        labels = {}
+        if lbl:
+            pos = 0
+            while pos < len(lbl):
+                lm = LABELS.match(lbl, pos)
+                if not lm or lm.end() == pos:
+                    problems.append("%d: bad label syntax: %s" % (ln, line)); break
+                if lm.group(1) in labels: problems.append("%d: duplicate label %s" % (ln, lm.group(1)))
+                labels[lm.group(1)] = unesc(lm.group(2))
+                pos = lm.end()
+        try:
+            v = float(val)
+        except ValueError:
+            problems.append("%d: bad value: %s" % (ln, val)); continue
+        fam = name
+        for suf in ("_bucket", "_sum", "_count"):
+            if name.endswith(suf) and types.get(name[:-len(suf)]) == "histogram":
+                fam = name[:-len(suf)]
+        first_seen.setdefault(fam, ln)
+        if fam not in types: problems.append("%d: sample %s without preceding TYPE" % (ln, name))
+        if fam not in helps: problems.append("%d: sample %s without HELP" % (ln, name))
+        if not name.startswith("phto_"): problems.append("%d: metric %s lacks phto_ prefix" % (ln, name))
+        if types.get(fam) == "counter" and (v < 0 or math.isnan(v)): problems.append("%d: negative counter" % ln)
+        samples.append((name, labels, v, fam))
+    return samples, helps, types, problems
+
+def validate(path):
+    samples, helps, types, problems = parse(path)
+    seen = set()
+    for name, labels, v, fam in samples:
+        key = (name, tuple(sorted(labels.items())))
+        if key in seen: problems.append("duplicate sample %s %s" % (name, labels))
+        seen.add(key)
+        for k in labels:
+            if k.startswith("__"): problems.append("reserved label %s" % k)
+    for fam, t in types.items():
+        if t != "histogram": continue
+        groups = {}
+        for name, labels, v, f in samples:
+            if f != fam: continue
+            base = tuple(sorted((k, x) for k, x in labels.items() if k != "le"))
+            g = groups.setdefault(base, {"b": [], "sum": None, "count": None})
+            if name == fam + "_bucket":
+                if "le" not in labels: problems.append("%s bucket without le" % fam); continue
+                le = math.inf if labels["le"] == "+Inf" else float(labels["le"])
+                g["b"].append((le, v))
+            elif name == fam + "_sum": g["sum"] = v
+            elif name == fam + "_count": g["count"] = v
+        if not groups: continue
+        for base, g in groups.items():
+            b = g["b"]
+            if not b: problems.append("%s %s has no buckets" % (fam, base)); continue
+            les = [x[0] for x in b]
+            if les != sorted(les) or len(set(les)) != len(les): problems.append("%s %s le not strictly ascending" % (fam, base))
+            cs = [x[1] for x in b]
+            if any(cs[i] > cs[i + 1] for i in range(len(cs) - 1)): problems.append("%s %s buckets not cumulative" % (fam, base))
+            if les[-1] != math.inf: problems.append("%s %s missing +Inf" % (fam, base))
+            elif g["count"] is None or g["count"] != cs[-1]: problems.append("%s %s _count != +Inf bucket" % (fam, base))
+            if g["sum"] is None: problems.append("%s %s missing _sum" % (fam, base))
+    for p in problems: print(p)
+    return 0 if not problems else 1
+
+def get(path, name, want):
+    samples, _, _, _ = parse(path)
+    tot = 0.0
+    for n, labels, v, _ in samples:
+        if n == name and all(labels.get(k) == x for k, x in want.items()):
+            tot += v
+    print(int(tot) if tot == int(tot) else tot)
+
+def values(path, name, label):
+    samples, _, _, _ = parse(path)
+    print("\n".join(sorted({l[label] for n, l, v, _ in samples if n == name and label in l})))
+
+cmd = sys.argv[1]
+if cmd == "validate": sys.exit(validate(sys.argv[2]))
+elif cmd == "get":
+    get(sys.argv[2], sys.argv[3], dict(a.split("=", 1) for a in sys.argv[4:]))
+elif cmd == "values": values(sys.argv[2], sys.argv[3], sys.argv[4])
+PYEOF
+
+mx() { python3 -I "$T/mx.py" "$@"; }
+json_get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+st() { cat "$1.status"; }
+http() { # http <prefix> curl-args...
+  local prefix="$1"; shift
+  curl --silent --dump-header "$prefix.hdr" --output "$prefix.body" --write-out "%{http_code}" "$@" \
+    > "$prefix.status" 2>/dev/null || echo 000 > "$prefix.status"
+}
+login() { # login <login> <password> → token
+  local r
+  r=$(curl --silent --request POST --header "Content-Type: application/json" \
+    --data "{\"login\":\"$1\",\"password\":\"$2\"}" "$B/auth/login")
+  python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$r" 2>/dev/null || true
+}
+login_status() {
+  curl --silent --output /dev/null --write-out "%{http_code}" --request POST \
+    --header "Content-Type: application/json" \
+    --data "{\"login\":\"$1\",\"password\":\"$2\"}" "$B/auth/login" 2>/dev/null || echo 000
+}
+snap() { # snap <file> : scrape /metrics as admin
+  curl --silent --output "$1" -H "Authorization: Bearer $ADMIN_TOK" "$B/metrics"
+}
+# delta <before> <after> <metric> [label=value ...] → after - before
+delta() {
+  local b a
+  b=$(mx get "$1" "$3" "${@:4}"); a=$(mx get "$2" "$3" "${@:4}")
+  python3 -c 'import sys; d=float(sys.argv[2])-float(sys.argv[1]); print(int(d) if d==int(d) else d)' "$b" "$a"
+}
+eq() { [ "$1" = "$2" ]; }  # eq <got> <want>
+
+# ---- seed users ---------------------------------------------------------------
+printf '%s' "adminpass1" | "$IMAGERADMIN_BIN" "$T/cfg.toml" user add opsadmin "Ops Admin" --admin --password-stdin || { echo "FATAL: seed opsadmin"; exit 1; }
+printf '%s' "bobpass123" | "$IMAGERADMIN_BIN" "$T/cfg.toml" user add bob "Bob" --password-stdin || { echo "FATAL: seed bob"; exit 1; }
+
+# ---- fixtures -----------------------------------------------------------------
+cp "$JPEG_FIXTURE" "$T/ok.jpg"
+OK_SIZE=$(stat -c %s "$T/ok.jpg")
+python3 -I -c 'import sys; open(sys.argv[1],"wb").write(b"\xff\xd8" + b"\x00" * (3*1024*1024))' "$T/over.jpg"
+
+# ---- start --------------------------------------------------------------------
+TMPDIR="$T/spool" "$IMAGERD_BIN" "$T/cfg.toml" >"$T/d.stdout" 2>"$T/d.stderr" &
+DPID=$!
+READY=$(curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 --retry-delay 1 \
+  --retry-connrefused --max-time 12 "$B/health" 2>/dev/null || echo 000)
+check "setup: daemon starts" test "$READY" = 200
+ADMIN_TOK=$(login opsadmin adminpass1)
+BOB_TOK=$(login bob bobpass123)
+check "setup: admin token" test -n "$ADMIN_TOK"
+check "setup: bob token" test -n "$BOB_TOK"
+AH="Authorization: Bearer $ADMIN_TOK"
+BH="Authorization: Bearer $BOB_TOK"
+
+# ===========================================================================
+# 1. Auth / shapes
+# ===========================================================================
+http "$T/m_anon" "$B/metrics"
+check "metrics: no token → 401" test "$(st $T/m_anon)" = 401
+http "$T/m_bob" -H "$BH" "$B/metrics"
+check "metrics: non-admin → 403" test "$(st $T/m_bob)" = 403
+http "$T/m_adm" -H "$AH" "$B/metrics"
+check "metrics: admin → 200" test "$(st $T/m_adm)" = 200
+check "metrics: Content-Type is text/plain; version=0.0.4" \
+  grep -Eiq '^content-type: *text/plain; *version=0\.0\.4' "$T/m_adm.hdr"
+
+http "$T/s_anon" "$B/stats"
+check "stats: no token → 401" test "$(st $T/s_anon)" = 401
+http "$T/s_bob" -H "$BH" "$B/stats"
+check "stats: non-admin → 200" test "$(st $T/s_bob)" = 200
+check "stats: non-admin shape is exactly {imageCount, tagCount}" \
+  test "$(json_get $T/s_bob.body "sorted(d.keys())")" = "['imageCount', 'tagCount']"
+http "$T/s_adm" -H "$AH" "$B/stats"
+check "stats: admin → 200" test "$(st $T/s_adm)" = 200
+check "stats: admin still has imageCount and tagCount" \
+  test "$(json_get $T/s_adm.body "'imageCount' in d and 'tagCount' in d")" = True
+check "stats: admin has server and library objects" \
+  test "$(json_get $T/s_adm.body "isinstance(d['server'],dict) and isinstance(d['library'],dict)")" = True
+check "stats: server section has the documented keys" \
+  test "$(json_get $T/s_adm.body "sorted(d['server'].keys())")" = "['in_flight_requests', 'logins_total', 'process', 'rejected_total', 'request_duration', 'requests', 'upload_bytes_total', 'uptime_seconds']"
+check "stats: rejected_total keys" \
+  test "$(json_get $T/s_adm.body "sorted(d['server']['rejected_total'].keys())")" = "['throttled', 'too_large', 'unauthorized']"
+check "stats: logins_total keys" \
+  test "$(json_get $T/s_adm.body "sorted(d['server']['logins_total'].keys())")" = "['failure', 'success']"
+check "stats: process memory keys positive and peak >= resident" \
+  test "$(json_get $T/s_adm.body "(lambda p: p['resident_memory_bytes']>0 and p['peak_resident_memory_bytes']>=p['resident_memory_bytes'])(d['server']['process'])")" = True
+check "stats: library has counters/gauges/histograms" \
+  test "$(json_get $T/s_adm.body "sorted(d['library'].keys())")" = "['counters', 'gauges', 'histograms']"
+check "stats: requests entries are {method,route,status_class,count}" \
+  test "$(json_get $T/s_adm.body "all(sorted(r.keys())==['count','method','route','status_class'] and r['count']>0 for r in d['server']['requests']) and len(d['server']['requests'])>0")" = True
+
+# ===========================================================================
+# 2. Exact counter deltas
+# ===========================================================================
+snap "$T/c0.txt"
+for _ in 1 2 3; do http "$T/i" -H "$AH" "$B/items"; done
+check "counters: GET /items → 200" test "$(st $T/i)" = 200
+http "$T/up" -X PUT -H "$AH" -H "X-Filename: ok.jpg" --data-binary "@$T/ok.jpg" "$B/items"
+check "counters: upload → 201" test "$(st $T/up)" = 201
+http "$T/up413" -X PUT -H "$AH" -H "X-Filename: over.jpg" --data-binary "@$T/over.jpg" "$B/items"
+check "counters: oversized upload → 413" test "$(st $T/up413)" = 413
+http "$T/t401" "$B/tags"
+check "counters: unauthenticated GET /tags → 401" test "$(st $T/t401)" = 401
+check "counters: unknown login → 401" test "$(login_status ghost whatever1)" = 401
+for _ in 1 2 3; do login_status bob wrongpass1 >/dev/null; done
+check "counters: bob locked out → 429" test "$(login_status bob bobpass123)" = 429
+check "counters: successful login → 200" test "$(login_status opsadmin adminpass1)" = 200
+snap "$T/c1.txt"
+
+R=phto_http_requests_total
+check "counters: GET /items 2xx +3"  eq "$(delta $T/c0.txt $T/c1.txt $R method=GET route=/items status_class=2xx)" 3
+check "counters: PUT /items 2xx +1"  eq "$(delta $T/c0.txt $T/c1.txt $R method=PUT route=/items status_class=2xx)" 1
+check "counters: PUT /items 4xx +1 (early 413)" eq "$(delta $T/c0.txt $T/c1.txt $R method=PUT route=/items status_class=4xx)" 1
+check "counters: GET /tags 4xx +1"   eq "$(delta $T/c0.txt $T/c1.txt $R method=GET route=/tags status_class=4xx)" 1
+check "counters: POST /auth/login 2xx +1" eq "$(delta $T/c0.txt $T/c1.txt $R method=POST route=/auth/login status_class=2xx)" 1
+check "counters: POST /auth/login 4xx +5 (4×401, 1×429)" eq "$(delta $T/c0.txt $T/c1.txt $R method=POST route=/auth/login status_class=4xx)" 5
+check "counters: no 5xx anywhere" eq "$(mx get $T/c1.txt $R status_class=5xx)" 0
+check "counters: upload bytes +file size ($OK_SIZE)" eq "$(delta $T/c0.txt $T/c1.txt phto_upload_bytes_total)" "$OK_SIZE"
+check "counters: rejected too_large +1"     eq "$(delta $T/c0.txt $T/c1.txt phto_http_rejected_total reason=too_large)" 1
+check "counters: rejected throttled +1"     eq "$(delta $T/c0.txt $T/c1.txt phto_http_rejected_total reason=throttled)" 1
+check "counters: rejected unauthorized +5 (GET /tags + 4 failed logins)" eq "$(delta $T/c0.txt $T/c1.txt phto_http_rejected_total reason=unauthorized)" 5
+check "counters: logins failure +4" eq "$(delta $T/c0.txt $T/c1.txt phto_logins_total result=failure)" 4
+check "counters: logins success +1" eq "$(delta $T/c0.txt $T/c1.txt phto_logins_total result=success)" 1
+check "counters: latency count for /items +4 (3 GET + 1 PUT; early 413 not timed)" \
+  eq "$(delta $T/c0.txt $T/c1.txt phto_http_request_duration_seconds_count route=/items)" 4
+check "counters: latency sum is non-negative and non-decreasing" \
+  test "$(delta $T/c0.txt $T/c1.txt phto_http_request_duration_seconds_sum route=/items)" != "" -a \
+       "$(python3 -c 'import sys; print(float(sys.argv[1])>=0)' "$(delta $T/c0.txt $T/c1.txt phto_http_request_duration_seconds_sum route=/items)")" = True
+check "counters: uptime is non-decreasing between scrapes" \
+  python3 -c 'import sys; print(sys.argv[1:]); sys.exit(0 if float(sys.argv[2])>=float(sys.argv[1]) else 1)' \
+    "$(mx get $T/c0.txt phto_uptime_seconds)" "$(mx get $T/c1.txt phto_uptime_seconds)"
+check "counters: in-flight gauge is 1 when idle (the scrape itself)" eq "$(mx get $T/c1.txt phto_http_requests_in_flight)" 1
+check "counters: library images_added counter rose" \
+  test "$(mx get $T/c1.txt phto_library_images_added_total)" -ge 1
+check "counters: /metrics 401 and 403 counted" bash -c '
+  [ "$(python3 -I "$1" get "$2" phto_http_requests_total method=GET route=/metrics status_class=4xx)" -ge 2 ]' _ "$T/mx.py" "$T/c1.txt"
+check "counters: RSS gauge positive, peak >= RSS" \
+  python3 -c 'import sys; sys.exit(0 if 0<float(sys.argv[1])<=float(sys.argv[2]) else 1)' \
+    "$(mx get $T/c1.txt phto_process_resident_memory_bytes)" "$(mx get $T/c1.txt phto_process_resident_memory_peak_bytes)"
+
+# /stats mirrors the same counters
+http "$T/s2" -H "$AH" "$B/stats"
+check "stats: upload_bytes_total >= file size" \
+  test "$(json_get $T/s2.body "d['server']['upload_bytes_total']>=$OK_SIZE")" = True
+check "stats: logins_total.failure == 4" test "$(json_get $T/s2.body "d['server']['logins_total']['failure']")" = 4
+check "stats: rejected_total.too_large == 1" test "$(json_get $T/s2.body "d['server']['rejected_total']['too_large']")" = 1
+check "stats: requests list has GET /items 2xx count >= 3" \
+  test "$(json_get $T/s2.body "[r['count'] for r in d['server']['requests'] if (r['method'],r['route'],r['status_class'])==('GET','/items','2xx')][0]>=3")" = True
+check "stats: histogram buckets cumulative and end in +Inf == count" \
+  test "$(json_get $T/s2.body "all(h['buckets'][-1]['le']=='+Inf' and h['buckets'][-1]['count']==h['count'] and all(h['buckets'][i]['count']<=h['buckets'][i+1]['count'] for i in range(len(h['buckets'])-1)) for h in d['server']['request_duration']) and len(d['server']['request_duration'])>0")" = True
+check "stats: library histograms cumulative and end in +Inf == count" \
+  test "$(json_get $T/s2.body "all(h['buckets'][-1]['le']=='+Inf' and h['buckets'][-1]['count']==h['count'] and all(h['buckets'][i]['count']<=h['buckets'][i+1]['count'] for i in range(len(h['buckets'])-1)) for h in d['library']['histograms'].values())")" = True
+
+# ===========================================================================
+# 3. Cardinality
+# ===========================================================================
+snap "$T/k0.txt"
+IDS=()
+for i in $(seq 1 30); do
+  id=$(python3 -c 'import os; print(os.urandom(32).hex())')
+  IDS+=("$id")
+  curl -s -o /dev/null -H "$AH" "$B/items/$id"
+done
+for i in $(seq 1 10); do curl -s -o /dev/null -H "$AH" "$B/items/${IDS[$i]}/tags"; done
+for i in $(seq 1 5); do curl -s -o /dev/null -H "$AH" "$B/items/${IDS[$i]}/content"; done
+curl -s -o /dev/null -H "$AH" "$B/users/bob"
+curl -s -o /dev/null -H "$AH" "$B/tags/secret-tag-name"
+for p in nope-1 nope-2 a/b/c/d "users/../x" "%00weird%20path"; do curl -s -o /dev/null --path-as-is -H "$AH" "$B/$p"; done
+snap "$T/k1.txt"
+check "cardinality: 30 distinct ids → GET /items/{id} 4xx +30" \
+  eq "$(delta $T/k0.txt $T/k1.txt $R method=GET route=/items/{id} status_class=4xx)" 30
+check "cardinality: /items/{id}/tags +10 under one template" \
+  eq "$(delta $T/k0.txt $T/k1.txt $R method=GET route=/items/{id}/tags)" 10
+check "cardinality: /items/{id}/content +5 under one template" \
+  eq "$(delta $T/k0.txt $T/k1.txt $R method=GET route=/items/{id}/content)" 5
+check "cardinality: GET /users/bob → /users/{login}" eq "$(delta $T/k0.txt $T/k1.txt $R method=GET route=/users/{login})" 1
+check "cardinality: GET /tags/x → /tags/{name}" eq "$(delta $T/k0.txt $T/k1.txt $R method=GET route=/tags/{name})" 1
+check "cardinality: unknown paths → route=other (+5)" \
+  eq "$(delta $T/k0.txt $T/k1.txt $R method=GET route=other status_class=4xx)" 5
+ALLOWED='/health /stats /metrics /auth/login /auth/me /auth/password /users /users/{login} /items /items/{id} /items/{id}/content /items/{id}/tags /items/{id}/tags/{tag} /tags /tags/{name} other'
+check "cardinality: every route label is a known template or 'other'" bash -c '
+  for r in $(python3 -I "$1" values "$2" phto_http_requests_total route) $(python3 -I "$1" values "$2" phto_http_request_duration_seconds_count route); do
+    case " $3 " in *" $r "*) ;; *) echo "unexpected route label: $r"; exit 1;; esac
+  done' _ "$T/mx.py" "$T/k1.txt" "$ALLOWED"
+check "cardinality: method label values are a small known set" bash -c '
+  for m in $(python3 -I "$1" values "$2" phto_http_requests_total method); do
+    case " GET PUT POST DELETE PATCH HEAD OPTIONS other " in *" $m "*) ;; *) echo "unexpected method: $m"; exit 1;; esac
+  done' _ "$T/mx.py" "$T/k1.txt"
+check "cardinality: status_class values only 2xx/3xx/4xx/5xx" bash -c '
+  for s in $(python3 -I "$1" values "$2" phto_http_requests_total status_class); do
+    case " 2xx 3xx 4xx 5xx " in *" $s "*) ;; *) echo "unexpected class: $s"; exit 1;; esac
+  done' _ "$T/mx.py" "$T/k1.txt"
+check "cardinality: /metrics series count stays small (< 1500 lines: ~16 routes × 21 histogram lines + library)" bash -c 'n=$(wc -l < "$1"); echo "lines=$n"; [ "$n" -lt 1500 ]' _ "$T/k1.txt"
+
+# ===========================================================================
+# 4. No sensitive data
+# ===========================================================================
+http "$T/sf" -H "$AH" "$B/stats"
+for f in "$T/k1.txt" "$T/sf.body"; do
+  n=$(basename "$f")
+  check "sensitive($n): no login names" bash -c 'if grep -Eqi "opsadmin|bob|ghost|Ops Admin" "$1"; then grep -Eoi "opsadmin|bob|ghost|Ops Admin" "$1" | head -3; exit 1; fi' _ "$f"
+  check "sensitive($n): no item ids" bash -c '! grep -Eq "[0-9a-f]{40,}" "$1"' _ "$f"
+  check "sensitive($n): no IP addresses" bash -c '! grep -Eq "127\.0\.0\.1|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|::1" "$1"' _ "$f"
+  check "sensitive($n): no tokens / secrets / passwords" bash -c '! grep -qF -e "$2" -e "$3" -e "$4" -e adminpass1 -e bobpass123 -e wrongpass1 -e Bearer -e eyJ "$1"' _ "$f" "$ADMIN_TOK" "$BOB_TOK" "$SECRET"
+  check "sensitive($n): no raw request paths / tag names / filenames" bash -c '! grep -Eq "nope-|secret-tag-name|users/\.\.|weird|ok\.jpg|over\.jpg|/tmp" "$1"' _ "$f"
+done
+
+# ===========================================================================
+# 5. Prometheus format
+# ===========================================================================
+snap "$T/f.txt"
+check "format: whole exposition validates (HELP/TYPE/names/labels/histograms)" mx validate "$T/f.txt"
+check "format: expected families have TYPE lines" bash -c '
+  for fam in phto_http_requests_total:counter phto_http_request_duration_seconds:histogram phto_http_requests_in_flight:gauge \
+             phto_http_rejected_total:counter phto_upload_bytes_total:counter phto_logins_total:counter phto_uptime_seconds:gauge \
+             phto_process_resident_memory_bytes:gauge phto_process_resident_memory_peak_bytes:gauge; do
+    grep -qx "# TYPE ${fam%%:*} ${fam##*:}" "$1" || { echo "missing TYPE for $fam"; exit 1; }
+  done' _ "$T/f.txt"
+check "format: library counters exported as phto_library_*_total" grep -Eq '^phto_library_[a-z_]+_total ' "$T/f.txt"
+check "format: library histograms exported as phto_library_*_seconds" grep -Eq '^# TYPE phto_library_[a-z_]+_seconds histogram$' "$T/f.txt"
+check "format: histogram has +Inf bucket for /items" grep -Eq '^phto_http_request_duration_seconds_bucket\{[^}]*route="/items"[^}]*le="\+Inf"[^}]*\} [0-9]+' "$T/f.txt"
+check "format: no CRLF line endings" bash -c '! grep -q $'"'"'\r'"'"' "$1"' _ "$T/f.txt"
+if command -v promtool >/dev/null 2>&1; then
+  check "format: promtool check metrics accepts the exposition" bash -c 'promtool check metrics < "$1"' _ "$T/f.txt"
+else
+  echo "NOTE: promtool not installed — skipped (inline validator used)"
+fi
+# validator self-test: it must reject known-bad input
+printf '# TYPE phto_x histogram\n# HELP phto_x h\nphto_x_bucket{le="1"} 5\nphto_x_bucket{le="+Inf"} 3\nphto_x_sum 1\nphto_x_count 4\n' > "$T/bad1.txt"
+printf '# HELP phto_y h\n# TYPE phto_y counter\nphto_y{a="b\\q"} 1\n9bad 1\n' > "$T/bad2.txt"
+check "format: validator rejects non-cumulative/mismatched histogram" bash -c '! python3 -I "$1" validate "$2" >/dev/null' _ "$T/mx.py" "$T/bad1.txt"
+check "format: validator rejects bad escapes / bad names" bash -c '! python3 -I "$1" validate "$2" >/dev/null' _ "$T/mx.py" "$T/bad2.txt"
+
+# ===========================================================================
+# 6. Concurrency — exact counts
+# ===========================================================================
+snap "$T/p0.txt"
+CP=()
+for i in $(seq 1 50); do curl -s -o /dev/null "$B/health" & CP+=("$!"); done
+for p in "${CP[@]}"; do wait "$p" 2>/dev/null; done
+snap "$T/p1.txt"
+check "concurrency: 50 parallel GET /health → requests +50 exactly" \
+  eq "$(delta $T/p0.txt $T/p1.txt $R method=GET route=/health status_class=2xx)" 50
+check "concurrency: /health latency count +50 exactly" \
+  eq "$(delta $T/p0.txt $T/p1.txt phto_http_request_duration_seconds_count route=/health)" 50
+check "concurrency: in-flight gauge returns to 1 (the scrape)" eq "$(mx get $T/p1.txt phto_http_requests_in_flight)" 1
+CP=()
+for i in $(seq 1 25); do curl -s -o /dev/null -H "$AH" "$B/items/${IDS[$((i % 30))]}" & CP+=("$!"); done
+for i in $(seq 1 25); do curl -s -o /dev/null -H "$AH" "$B/items?limit=1" & CP+=("$!"); done
+for p in "${CP[@]}"; do wait "$p" 2>/dev/null; done
+snap "$T/p2.txt"
+check "concurrency: 25 parallel GET /items/{id} → +25" \
+  eq "$(delta $T/p1.txt $T/p2.txt $R method=GET route=/items/{id})" 25
+check "concurrency: 25 parallel GET /items → +25" \
+  eq "$(delta $T/p1.txt $T/p2.txt $R method=GET route=/items status_class=2xx)" 25
+check "concurrency: histogram stays valid after load" mx validate "$T/p2.txt"
+check "concurrency: daemon healthy afterwards" test "$(curl -s -o /dev/null -w '%{http_code}' "$B/health")" = 200
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

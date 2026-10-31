@@ -46,9 +46,17 @@ crow::response hardened(crow::response r) {
 }
 
 /// Fills `res`, logs the request and returns false (the "reject" return value of the Crow hooks).
-bool reject(AccessLog& log, const crow::request& req, crow::response& res, crow::response r, std::string_view login) {
+struct Sinks {
+  AccessLog& log;
+  ServerMetrics* metrics;
+};
+
+bool reject(const Sinks& s, const crow::request& req, crow::response& res, crow::response r, std::string_view login) {
   res = hardened(std::move(r));
-  log.log(req, res.code, res.body.size(), login, 0);
+  if (s.metrics != nullptr) { // these never reach the middleware, so count them here (no latency, not in flight)
+    s.metrics->record(req.method, req.url, res.code, ServerMetrics::NO_LATENCY);
+  }
+  s.log.log(req, res.code, res.body.size(), login, 0);
   return false;
 }
 
@@ -161,7 +169,9 @@ void installRequestPolicy(crow::App<AuthMiddleware>& app, uint64_t maxUploadByte
   AuthMiddleware& mw = app.get_middleware<AuthMiddleware>();
   const uint64_t uploadLimit = maxUploadBytes != 0 ? maxUploadBytes : UINT64_MAX;
 
-  app.header_filter([&mw, &accessLog, uploadLimit](crow::request& req, crow::response& res) {
+  const Sinks sinks{accessLog, mw.metrics}; // App wires mw.metrics before installing the policy
+
+  app.header_filter([&mw, sinks, uploadLimit](crow::request& req, crow::response& res) {
     const bool uploadRoute = req.method == crow::HTTPMethod::Put && req.url == "/items";
     std::string login;
     bool spooled = false;
@@ -179,9 +189,9 @@ void installRequestPolicy(crow::App<AuthMiddleware>& app, uint64_t maxUploadByte
     const auto declared = declaredLength(req);
     if (declared && *declared > limit) {
       if (uploadRoute && !spooled) {
-        return reject(accessLog, req, res, unauthorized("authentication required"), login);
+        return reject(sinks, req, res, unauthorized("authentication required"), login);
       }
-      return reject(accessLog, req, res, tooLarge(what), login);
+      return reject(sinks, req, res, tooLarge(what), login);
     }
 
     if (!(declared && *declared > 0) && req.get_header_value("Transfer-Encoding").empty()) {
@@ -190,9 +200,9 @@ void installRequestPolicy(crow::App<AuthMiddleware>& app, uint64_t maxUploadByte
 
     if (!spooled) {
       std::string* body = &req.body; // the request outlives its sink
-      req.body_sink = [body, &accessLog, &req, login, what](const char* p, size_t n, crow::response& res) {
+      req.body_sink = [body, sinks, &req, login, what](const char* p, size_t n, crow::response& res) {
         if (body->size() + n > JSON_BODY_LIMIT) {
-          return reject(accessLog, req, res, tooLarge(what), login);
+          return reject(sinks, req, res, tooLarge(what), login);
         }
         body->append(p, n);
         return true;
@@ -203,22 +213,23 @@ void installRequestPolicy(crow::App<AuthMiddleware>& app, uint64_t maxUploadByte
     auto state = std::make_shared<UploadState>(limit);
     if (!state->spool.ok()) {
       CROW_LOG_ERROR << "PUT /items: cannot create spool file";
-      return reject(
-        accessLog, req, res, errorResponse(imager::ErrorCode::StorageError, "internal storage error"), login
-      );
+      return reject(sinks, req, res, errorResponse(imager::ErrorCode::StorageError, "internal storage error"), login);
     }
     Spool* spool = &state->spool;
     req.user_data = std::move(state);
-    req.body_sink = [spool, &accessLog, &req, login, what](const char* p, size_t n, crow::response& res) {
+    req.body_sink = [spool, sinks, &req, login, what](const char* p, size_t n, crow::response& res) {
       switch (spool->write(p, n)) {
         case Spool::Result::Ok:
+          if (sinks.metrics != nullptr) {
+            sinks.metrics->addUploadBytes(n);
+          }
           return true;
         case Spool::Result::TooLarge:
-          return reject(accessLog, req, res, tooLarge(what), login);
+          return reject(sinks, req, res, tooLarge(what), login);
         default:
           CROW_LOG_ERROR << "PUT /items: spool write failed";
           return reject(
-            accessLog, req, res, errorResponse(imager::ErrorCode::StorageError, "internal storage error"), login
+            sinks, req, res, errorResponse(imager::ErrorCode::StorageError, "internal storage error"), login
           );
       }
     };

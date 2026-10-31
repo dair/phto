@@ -281,3 +281,9 @@
 - **Task**: Fix stream validators found weaker/broken by st-test's stream-vs-Blob equivalence tests (HEIC, NEF), since files > 8 MB now take the stream path.
 - **Outcome**: HEIC: `heifWaitForFileSize` always returned size_reached, so libheif never saw EOF and rejected valid files; the reader userdata is now {FILE*, size} and the callback returns size_beyond_eof past EOF. NEF: not a post-open check — `nef_detail::validateNef` has no check beyond TIFF magic + libraw_open_buffer + libraw_unpack. The difference is LibRaw's datastream: LibRaw_buffer_datastream clamps seeks to [0,size]; LibRaw_file_datastream does not, so a corrupt IFD0 offset (valid.nef byte 4 XOR 0xFF) was recovered and accepted on the file path (make Nikon D40, unpack OK) but rejected on the buffer path. NEF stream validator now reads through a custom LibRaw_abstract_datastream (ClampedFileStream) with buffer semantics (clamped seeks, eof = tell>=size), still chunk-read from disk, and mirrors validateNef's steps and messages (TIFF magic, open, unpack). clang: 40/40 pass; g++ warning-free, key suites pass.
 - **Next Step**: st-test owns the build again; consider a shared stream/buffer helper if the validators drift.
+
+## [2026-10-31 12:00] - Server metrics (GET /stats admin extension, GET /metrics)
+- **Agent**: m4-dev
+- **Task**: Add request metrics to imagerd using the metrics:: library; expose via /stats (admin) and Prometheus /metrics.
+- **Outcome**: New server/ServerMetrics.{h,cpp}; hooks in AuthMiddleware (in-flight, record), Upload.cpp reject path and spool bytes; App.cpp routes. clang++ and g++ clean, 40/40 tests pass.
+- **Next Step**: m4-test adds tests, m4-docs documents API.

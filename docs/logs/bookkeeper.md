@@ -45,3 +45,15 @@
 - **Task**: Word file I/O memory as up to 8 MB (in-memory) or 4 MB per target root while writing (streamed), per team-lead (FileStorage.cpp:179, STREAM_CHUNK_SIZE verified).
 - **Outcome**: DEPLOYMENT.md, architecture.md, DEVELOPMENT_NOTES.md, ANALYSIS.md.
 - **Next Step**: None.
+
+## [2026-10-31 26:00] - Server metrics docs (/stats admin sections, /metrics)
+- **Agent**: bookkeeper (m4-docs)
+- **Task**: Document the server request metrics step per m4-dev's summary, verified against server/ServerMetrics.cpp and server/App.cpp.
+- **Outcome**: Edited docs/user/API.md (/stats, new /metrics, plan-differences bullet), docs/user/DEPLOYMENT.md (Monitoring section, Prometheus scrape example), docs/user/metrics.md, README.md, CLAUDE.md, docs/plan/0005 status, docs/plan/README.md, docs/plan/0022 metrics note, docs/analysis/ANALYSIS.md. Example JSON/text values are illustrative; structure is from the code. No CHANGELOG exists in the repo, none created.
+- **Next Step**: CLAUDE.md test-suite list still needs m4-test's new test names and count.
+
+## [2026-10-31 26:30] - Test count/list refresh
+- **Agent**: bookkeeper (m4-docs)
+- **Task**: Fix stale test list per team-lead (add ImagerMemoryTests, imagestore_dryrun_streaming_tests, server_streaming_mem_test, server_metrics_test).
+- **Outcome**: CLAUDE.md, docs/analysis/ANALYSIS.md, docs/user/getting-started.md now say 41 tests (provisional). docs/testing/README.md has no count.
+- **Next Step**: Confirm 41 against m4-test's `ctest -N`.

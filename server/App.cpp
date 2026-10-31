@@ -38,6 +38,7 @@ App::App(
   mw.service = &m_tokenService;
   mw.users = &m_userStore;
   mw.accessLog = &m_log;
+  mw.metrics = &m_metrics;
 }
 
 App::~App() = default;
@@ -52,7 +53,8 @@ void App::registerRoutes() {
 
   // GET /stats — library size counters (authenticated).
   CROW_ROUTE(m_crow, "/stats").methods(crow::HTTPMethod::Get)([this](const crow::request& req) {
-    if (!requireAuth(m_crow, req)) {
+    const auto claims = requireAuth(m_crow, req);
+    if (!claims) {
       return unauthorized("authentication required");
     }
     try {
@@ -65,9 +67,29 @@ void App::registerRoutes() {
       crow::json::wvalue body;
       body["imageCount"] = *images;
       body["tagCount"] = *tags;
+      if (claims->isAdmin) {
+        body["server"] = serverJson(m_metrics.snapshot());
+        body["library"] = libraryJson(m_imager.metrics().snapshot());
+      }
       return jsonOk(200, body);
     } catch (const std::exception& e) {
       CROW_LOG_ERROR << "GET /stats threw: " << e.what();
+      return internalError();
+    }
+  });
+
+  // GET /metrics — Prometheus text exposition format 0.0.4 (admin Bearer token).
+  CROW_ROUTE(m_crow, "/metrics").methods(crow::HTTPMethod::Get)([this](const crow::request& req) {
+    crow::response res;
+    if (!requireAdmin(m_crow, req, res)) {
+      return res;
+    }
+    try {
+      crow::response ok{200, prometheusText(m_metrics.snapshot(), m_imager.metrics().snapshot())};
+      ok.add_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+      return ok;
+    } catch (const std::exception& e) {
+      CROW_LOG_ERROR << "GET /metrics threw: " << e.what();
       return internalError();
     }
   });

@@ -39,7 +39,7 @@ Build artifacts go to `build/` in the repo root (configured in `CMakePresets.jso
 │   └── test/
 ├── imagestore/    # Batch import CLI: stdin pipe, bounded concurrency, progress, error file
 ├── auth/          # User store (SQLite), PBKDF2 password hashing, HS256 JWT TokenService, input Validation helpers (namespace auth)
-├── server/        # imagerd: Crow HTTP(S) REST daemon — routes, auth middleware, login throttle, trusted-proxy client IP, access log, streaming upload spool, native TLS (namespace server)
+├── server/        # imagerd: Crow HTTP(S) REST daemon — routes, auth middleware, login throttle, trusted-proxy client IP, access log, streaming upload spool, native TLS, request metrics (`ServerMetrics`: admin `GET /stats` sections + Prometheus `GET /metrics`) (namespace server)
 ├── imageradmin/   # User administration CLI (add/del/passwd/enable/disable/promote/demote/list)
 ├── metrics/       # Lock-free monitoring: Histogram, Counter, Gauge, Timer (namespace metrics)
 └── docs/
@@ -94,11 +94,11 @@ Config is read once at startup (no hot reload).
 - **File identity**: SHA256 hex string (64 chars), stored sharded by first 2 hex chars (`<root>/a1/a1b2c3...f4.jpg`)
 - **Validation**: JPEG/PNG validated via system libjpeg/libpng; HEIC via system libheif; MOV/MP4 via system libavformat+libavcodec (container parse + trial decode); NEF via system LibRaw; AAE via lightweight XML/plist structure scan (no external library)
 - **Sidecar files**: AAE files are stored using their parent's content hash as the filename prefix (not their own hash), preserving the pairing relationship. Orphan AAEs (added before parent) are relocated when the parent arrives. Sidecars are cascade-deleted when their parent is deleted.
-- **Metrics**: always-on lock-free instrumentation (histograms, counters, gauges) for pipeline bottleneck analysis
+- **Metrics**: always-on lock-free instrumentation (histograms, counters, gauges) for pipeline bottleneck analysis; `imagerd` exports it to admins via `GET /stats` (JSON) and `GET /metrics` (Prometheus, `phto_` prefix)
 
 ## Testing
 
-CPPUnit-based. Test suites (`ctest --preset default -N`, 37 tests): `metrics_tests`, `blob_tests`, `coro_tests`, `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `heic_validator_tests`, `nef_validator_tests`, `mov_validator_tests`, `aae_validator_tests`, `config_tests`, `auth_tests`, `auth_userstore_tests`, `auth_token_tests`, `auth_validation_tests`, `ImagerTests`, `TimestampTests`, `imagestore_cli_tests`, `imagestore_memcheck`, `imagestore_output_tests`, `imageradmin_cli_tests`, and the server tests `server_health_test`, `server_auth_test`, `server_authz_test`, `server_json_tests`, `server_clientip_tests` (CPPUnit: client IP / `X-Forwarded-For`, access-log format), `server_items_test`, `server_content_test`, `server_list_test`, `server_item_tags_test`, `server_tags_test`, `server_users_test`, `server_hardening_test`, `server_tls_test`, `server_api_test`, `server_fixups_test`, `server_loose_ends_test` (shell tests run a live `imagerd`).
+CPPUnit-based. Test suites (`ctest --preset default -N`, 41 tests): `metrics_tests`, `blob_tests`, `coro_tests`, `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `heic_validator_tests`, `nef_validator_tests`, `mov_validator_tests`, `aae_validator_tests`, `config_tests`, `auth_tests`, `auth_userstore_tests`, `auth_token_tests`, `auth_validation_tests`, `ImagerTests`, `ImagerMemoryTests`, `TimestampTests`, `imagestore_cli_tests`, `imagestore_memcheck`, `imagestore_output_tests`, `imagestore_dryrun_streaming_tests`, `imageradmin_cli_tests`, and the server tests `server_health_test`, `server_auth_test`, `server_authz_test`, `server_json_tests`, `server_clientip_tests` (CPPUnit: client IP / `X-Forwarded-For`, access-log format), `server_items_test`, `server_content_test`, `server_list_test`, `server_item_tags_test`, `server_tags_test`, `server_users_test`, `server_hardening_test`, `server_tls_test`, `server_api_test`, `server_fixups_test`, `server_loose_ends_test`, `server_streaming_mem_test`, `server_metrics_test` (shell tests run a live `imagerd`).
 
 Use temporary directories for test databases and file storage; clean up in `tearDown()`.
 
