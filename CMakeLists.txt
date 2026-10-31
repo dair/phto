@@ -35,7 +35,7 @@ FetchContent_Declare(
     SYSTEM # third-party headers must not trip first-party -Werror
     # Body-sink / header-filter hooks so the server can bound and stream uploads (third_party/crow/*.patch).
     PATCH_COMMAND ${CMAKE_COMMAND}
-        -DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/third_party/crow/crow-body-sink.patch
+        "-DPATCH_FILES=${CMAKE_CURRENT_SOURCE_DIR}/third_party/crow/crow-body-sink.patch|${CMAKE_CURRENT_SOURCE_DIR}/third_party/crow/crow-remote-ip.patch"
         -DSOURCE_DIR=<SOURCE_DIR>
         -P ${CMAKE_CURRENT_SOURCE_DIR}/third_party/crow/apply_patch.cmake
 )

@@ -23,6 +23,7 @@ struct ServerConfig {
   uint64_t maxUploadBytes = 4ULL * 1024 * 1024 * 1024; ///< [server].max_upload_mb (MB -> bytes)
   std::vector<std::string> trustedProxies; ///< [server].trusted_proxies (IPs/CIDRs; empty = ignore X-Forwarded-For)
   bool accessLog = true;                   ///< [server].access_log
+  std::string accessLogFormat = "text";    ///< [server].access_log_format ("text" | "json")
   uint32_t drainTimeoutSeconds = 30;       ///< [server].drain_timeout_s (1..3600)
 };
 

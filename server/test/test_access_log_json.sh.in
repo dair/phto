@@ -1,0 +1,497 @@
+#!/usr/bin/env bash
+# server/test/test_access_log_json.sh.in — structured (JSON) access log + X-Request-Id end-to-end test
+#
+#   [server].access_log_format = "text" (default, unchanged 8-field line) | "json"
+#   JSON line fields: ts, client_ip, login, method, route, path, status, bytes, duration_ms, request_id
+#   X-Request-Id: honoured iff ^[A-Za-z0-9._-]{1,64}$, otherwise generated; echoed on every response.
+# Registered as "server_access_log_json_test". Configured by CMake configure_file(@ONLY).
+# Ports 19660–19679.
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+
+PASS=0
+FAIL=0
+check() {
+  local name="$1"; shift
+  local rc=0
+  ( set -euo pipefail; "$@" ) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "PASS: $name"; PASS=$((PASS + 1))
+  else echo "FAIL: $name"; FAIL=$((FAIL + 1)); fi
+}
+
+for tool in curl python3 timeout sha256sum; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_access_log_json_test skipped"
+    exit 0
+  fi
+done
+if [ ! -f "$JPEG_FIXTURE" ]; then echo "FATAL: fixture $JPEG_FIXTURE missing"; exit 1; fi
+
+P_JSON=19660; P_TEXT=19661; P_DEFAULT=19662; P_NOLOGJ=19663; P_NOLOGT=19664; P_THR=19665; P_BAD=19666
+
+T=$(mktemp -d)
+ROOT1="$T/storage"; mkdir -p "$ROOT1"
+AUTH_DB="$T/auth.db"
+SECRET="this-is-a-32-byte-test-secret-ok"
+PIDS=()
+cleanup() {
+  for p in "${PIDS[@]:-}"; do
+    if [ -n "${p:-}" ] && kill -0 "$p" 2>/dev/null; then
+      kill -KILL "$p" 2>/dev/null || true
+      wait "$p" 2>/dev/null || true
+    fi
+  done
+  rm -rf "$T"
+}
+trap cleanup EXIT
+
+# make_cfg <file> <port> <db-name> <server-extra> <auth-extra> [max_upload_mb]
+make_cfg() {
+  cat > "$1" <<CFGEOF
+[[targets]]
+root = "$ROOT1/$3"
+database = "$T/imager-$3.db"
+
+[server]
+bind = "127.0.0.1"
+port = $2
+threads = 4
+max_upload_mb = ${6:-512}
+$4
+
+[auth]
+database = "$AUTH_DB"
+jwt_secret = "$SECRET"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+$5
+CFGEOF
+  mkdir -p "$ROOT1/$3"
+}
+
+http() { # http <prefix> curl-args...
+  local prefix="$1"; shift
+  curl --silent --dump-header "$prefix.hdr" --output "$prefix.body" --write-out "%{http_code}" "$@" \
+    > "$prefix.status" 2>/dev/null || echo 000 > "$prefix.status"
+}
+st() { cat "$1.status"; }
+hdr() { grep -i "^$2:" "$1.hdr" | tail -1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'; }
+nhdr() { grep -ic "^$2:" "$1.hdr" || true; }
+wait_ready() {
+  curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 --retry-delay 1 \
+    --retry-connrefused --max-time 12 "http://127.0.0.1:$1/health" 2>/dev/null || echo 000
+}
+login() { # login <port> <login> <password> → token
+  local r p="$1" l="$2" pw="$3"
+  r=$(curl --silent --request POST --header "Content-Type: application/json" \
+    --data "{\"login\":\"$l\",\"password\":\"$pw\"}" "http://127.0.0.1:$p/auth/login")
+  python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$r" 2>/dev/null || true
+}
+start_daemon() { # start_daemon <cfg> <port> <tag> → DPID
+  "$IMAGERD_BIN" "$1" >"$T/$3.stdout" 2>"$T/$3.stderr" &
+  DPID=$!
+  PIDS+=("$DPID")
+  [ "$(wait_ready "$2")" = "200" ]
+}
+stop_daemon() {
+  kill -TERM "$1" 2>/dev/null
+  local i
+  for i in $(seq 1 100); do kill -0 "$1" 2>/dev/null || break; sleep 0.1; done
+  wait "$1" 2>/dev/null || true
+}
+nlines() { wc -l < "$1" | tr -d ' '; }
+
+# ---- python helpers ----------------------------------------------------------
+# alog.py <cmd> <stderr-file> <skip-lines> [args]
+cat > "$T/alog.py" <<'PYEOF'
+import sys, json, re
+cmd, path, skip = sys.argv[1], sys.argv[2], int(sys.argv[3])
+KEYS = {"ts","client_ip","login","method","route","path","status","bytes","duration_ms","request_id"}
+TS = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+RID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+def isint(v): return isinstance(v, int) and not isinstance(v, bool)
+def load():
+    raw = open(path, "rb").read().split(b"\n")[skip:]
+    out = []
+    for ln in raw:
+        if ln.startswith(b"{"):
+            out.append(ln)
+    return out
+def parse(ln):
+    return json.loads(ln.decode("utf-8"), strict=True)   # strict: no raw control chars in strings
+def schema_errors(d):
+    e = []
+    if not isinstance(d, dict): return ["not an object"]
+    if set(d.keys()) != KEYS: e.append("keys %s" % sorted(d.keys()))
+    if not (isinstance(d.get("ts"), str) and TS.match(d["ts"])): e.append("ts %r" % d.get("ts"))
+    for k in ("client_ip", "method", "route", "path", "request_id"):
+        if not isinstance(d.get(k), str): e.append("%s type" % k)
+    if not (d.get("login") is None or isinstance(d.get("login"), str)): e.append("login type")
+    if not isint(d.get("status")): e.append("status type")
+    if not (isint(d.get("bytes")) and d["bytes"] >= 0): e.append("bytes type")
+    if not (isinstance(d.get("duration_ms"), (int, float)) and not isinstance(d.get("duration_ms"), bool) and d["duration_ms"] >= 0): e.append("duration_ms")
+    if isinstance(d.get("request_id"), str) and not RID.match(d["request_id"]): e.append("request_id charset")
+    return e
+recs = []
+for ln in load():
+    try:
+        d = parse(ln)
+    except Exception as ex:
+        print("BAD-JSON %r (%s)" % (ln[:200], ex)); sys.exit(1)
+    recs.append(d)
+if cmd == "validate":
+    for d in recs:
+        e = schema_errors(d)
+        if e: print("BAD-SCHEMA", e, d); sys.exit(1)
+    print(len(recs))
+elif cmd == "count":      # count <key> <value|null|int:N>
+    k, v = sys.argv[4], sys.argv[5]
+    if v == "null": want = None
+    elif v.startswith("int:"): want = int(v[4:])
+    else: want = v
+    print(sum(1 for d in recs if d.get(k) == want and (want is not None or k in d)))
+elif cmd == "ids":
+    for d in recs: print(d["request_id"])
+elif cmd == "single":     # single <key> <value> → prints key2 of the one match
+    k, v, k2 = sys.argv[4], sys.argv[5], sys.argv[6]
+    m = [d for d in recs if d.get(k) == v]
+    if len(m) != 1: print("matches=%d" % len(m)); sys.exit(1)
+    print(m[0][k2] if m[0][k2] is not None else "null")
+elif cmd == "nomatch":    # nomatch <key> <value>
+    k, v = sys.argv[4], sys.argv[5]
+    sys.exit(1 if any(d.get(k) == v for d in recs) else 0)
+elif cmd == "ts":
+    print(len(set(d["ts"][-5:-1] for d in recs)))
+PYEOF
+
+# raw.py <port> <python-bytes-literal> <hdr-out> — raw HTTP, writes response head to <hdr-out>
+cat > "$T/raw.py" <<'PYEOF'
+import sys, socket, ast
+port, req, out = int(sys.argv[1]), ast.literal_eval(sys.argv[2]), sys.argv[3]
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
+s.sendall(req)
+buf = b""
+try:
+    while b"\r\n\r\n" not in buf:
+        c = s.recv(4096)
+        if not c: break
+        buf += c
+except socket.timeout:
+    pass
+open(out, "wb").write(buf.split(b"\r\n\r\n")[0] + b"\r\n")
+s.close()
+PYEOF
+
+alog() { python3 -I "$T/alog.py" "$@"; }
+rid_valid() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; }
+
+# ---- seed users + fixtures -----------------------------------------------------
+make_cfg "$T/seed.toml" $P_JSON json "" ""
+printf '%s' "alicepass1" | "$IMAGERADMIN_BIN" "$T/seed.toml" user add alice "Alice" --password-stdin || { echo "FATAL: seed alice"; exit 1; }
+printf '%s' "bobpass123" | "$IMAGERADMIN_BIN" "$T/seed.toml" user add bob "Bob" --password-stdin || { echo "FATAL: seed bob"; exit 1; }
+head -c 3145728 /dev/zero > "$T/over.bin"       # 3 MB > max_upload_mb = 2 → early 413
+OK_SHA=$(sha256sum "$JPEG_FIXTURE" | cut -d' ' -f1)
+
+# ===========================================================================
+# 1. JSON daemon
+# ===========================================================================
+make_cfg "$T/json.toml" $P_JSON json 'access_log_format = "json"' "" 2
+start_daemon "$T/json.toml" $P_JSON json; STARTED=$?
+check "json: daemon starts" test "$STARTED" -eq 0
+J_PID=$DPID
+B="http://127.0.0.1:$P_JSON"
+LOG="$T/json.stderr"
+TOK=$(login $P_JSON alice alicepass1)
+check "json: alice token" test -n "$TOK"
+AUTHH="Authorization: Bearer $TOK"
+BASE=$(nlines "$LOG")
+
+# --- content: known traffic ---
+http "$T/c1" "$B/health?filename=secret"
+http "$T/c2" -X PUT -H "$AUTHH" -H "X-Filename: ok.jpg" --data-binary "@$JPEG_FIXTURE" "$B/items"
+http "$T/c3" -H "$AUTHH" "$B/items/$OK_SHA?filename=secret"
+http "$T/c4" "$B/definitely/not/a/route"
+http "$T/c5" "$B/items/$OK_SHA"
+http "$T/c6" -H "$AUTHH" "$B/items?filename=secret&limit=1"
+sleep 0.5
+check "content: statuses as expected (200, 201, 200, 404, 401, 200)" \
+  test "$(st $T/c1) $(st $T/c2) $(st $T/c3) $(st $T/c4) $(st $T/c5) $(st $T/c6)" = "200 201 200 404 401 200"
+check "format: every JSON line parses and has exactly the documented fields/types" alog validate "$LOG" "$BASE"
+check "format: exactly one record per request (6 requests)" test "$(alog validate "$LOG" "$BASE")" -eq 6
+check "format: ts is RFC 3339 UTC with milliseconds (validated per line)" alog validate "$LOG" "$BASE"
+check "content: anonymous requests have login null" test "$(alog count "$LOG" "$BASE" login null)" -ge 3
+check "content: GET /health record has login null" \
+  test "$(alog single "$LOG" "$BASE" path /health login)" = null
+check "content: authenticated PUT has login alice" \
+  test "$(alog single "$LOG" "$BASE" method PUT login)" = alice
+check "content: PUT /items route is /items" test "$(alog single "$LOG" "$BASE" method PUT route)" = /items
+check "content: PUT /items status 201 and bytes is an integer" \
+  bash -c '[ "$(python3 -I "$1" single "$2" "$3" method PUT status)" = 201 ] && [ "$(python3 -I "$1" single "$2" "$3" method PUT bytes)" != "" ]' _ "$T/alog.py" "$LOG" "$BASE"
+check "content: item route template is /items/{id}" \
+  test "$(alog count "$LOG" "$BASE" route '/items/{id}')" -ge 2
+check "content: item path is the concrete path without query" \
+  test "$(alog count "$LOG" "$BASE" path "/items/$OK_SHA")" -ge 2
+check "content: unknown route is 'other'" test "$(alog single "$LOG" "$BASE" path /definitely/not/a/route route)" = other
+check "content: unknown route path is still logged verbatim" test "$(alog single "$LOG" "$BASE" path /definitely/not/a/route status)" = 404
+check "content: 401 request has login null" \
+  test "$(alog count "$LOG" "$BASE" status int:401)" -ge 1
+check "content: query string 'secret' never appears anywhere in the log" bash -c '! grep -q secret "$1"' _ "$LOG"
+check "content: '?' never appears in a logged path" bash -c '! grep -Eq "\"path\":\"[^\"]*\?" "$1"' _ "$LOG"
+check "content: /health?filename=secret logged with path /health" test "$(alog count "$LOG" "$BASE" path /health)" -ge 1
+check "content: duration_ms is a small non-negative integer" bash -c \
+  'python3 -I - "$1" "$2" <<PYX
+import sys,json
+rs=[json.loads(l) for l in open(sys.argv[1],"rb").read().decode().split("\n")[int(sys.argv[2]):] if l.startswith("{")]
+assert rs and all(0 <= r["duration_ms"] < 10000 for r in rs)
+PYX' _ "$LOG" "$BASE"
+check "content: client_ip is 127.0.0.1" test "$(alog count "$LOG" "$BASE" client_ip 127.0.0.1)" -eq 6
+check "content: method values are upper-case verbs" test "$(alog count "$LOG" "$BASE" method GET)" -ge 5
+
+# --- secrets ---
+check "secrets: token not in log" bash -c '! grep -qF "$1" "$2"' _ "$TOK" "$LOG"
+check "secrets: no JWT prefix, 'Bearer', 'Authorization' or passwords in log" \
+  bash -c '! grep -Eqi "eyJ|bearer|authorization|alicepass1|bobpass123" "$1"' _ "$LOG"
+
+# --- request id: valid client ids are echoed + logged ---
+http "$T/r1" -H "X-Request-Id: req-123.A_b" "$B/health"
+check "reqid: valid client id echoed" test "$(hdr $T/r1 X-Request-Id)" = "req-123.A_b"
+ID64=$(printf 'a%.0s' $(seq 1 64))
+http "$T/r2" -H "X-Request-Id: $ID64" "$B/health"
+check "reqid: 64-char client id (boundary) echoed" test "$(hdr $T/r2 X-Request-Id)" = "$ID64"
+http "$T/r3" -H "X-Request-Id: 1" "$B/health"
+check "reqid: 1-char client id (boundary) echoed" test "$(hdr $T/r3 X-Request-Id)" = "1"
+sleep 0.3
+check "reqid: client id is logged as request_id" test "$(alog count "$LOG" "$BASE" request_id req-123.A_b)" -eq 1
+check "reqid: 64-char id logged" test "$(alog count "$LOG" "$BASE" request_id "$ID64")" -eq 1
+
+# --- request id: invalid → generated ---
+ID65=$(printf 'a%.0s' $(seq 1 65))
+check_replaced() { # check_replaced <label> <bad-value> [more curl args]
+  local label="$1" bad="$2"; shift 2
+  http "$T/rep" -H "X-Request-Id: $bad" "$@" "$B/health"
+  local got; got=$(hdr "$T/rep" X-Request-Id)
+  check "reqid: invalid ($label) replaced by a generated valid id" bash -c \
+    '[[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]] && [ "$1" != "$2" ]' _ "$got" "$bad"
+  check "reqid: invalid ($label) → exactly one X-Request-Id header" test "$(nhdr $T/rep X-Request-Id)" -eq 1
+}
+check_replaced "65 chars" "$ID65"
+check_replaced "space" "has space"
+check_replaced "semicolon" "a;b"
+check_replaced "quote" 'a"b'
+check_replaced "JSON forge attempt" 'x","status":999,"y":"'
+check_replaced "percent-encoded CRLF" 'abc%0d%0aX-Evil: 1'
+check_replaced "angle brackets" '<script>'
+check_replaced "slash" 'a/b'
+check_replaced "backslash" 'a\b'
+check_replaced "unicode" 'caf'$'\xc3\xa9'
+check "reqid: no X-Evil header leaked after injection attempt" bash -c '! grep -qi "^X-Evil" "$1"' _ "$T/rep.hdr"
+
+# raw-socket injection attempts (real CR/LF/control bytes in the request)
+raw() { python3 -I "$T/raw.py" "$@"; }
+raw $P_JSON 'b"GET /health HTTP/1.1\r\nHost: a\r\nX-Request-Id: ab\x01cd\r\nConnection: close\r\n\r\n"' "$T/raw1.hdr"
+raw $P_JSON 'b"GET /health HTTP/1.1\r\nHost: a\r\nX-Request-Id: ok-id\r\nX-Request-Id: second\r\nConnection: close\r\n\r\n"' "$T/raw2.hdr"
+raw $P_JSON 'b"GET /health HTTP/1.1\r\nHost: a\r\nX-Request-Id: \r\nConnection: close\r\n\r\n"' "$T/raw3.hdr"
+raw $P_JSON 'b"GET /health HTTP/1.1\r\nHost: a\r\nX-Request-Id: ab\tcd\r\nConnection: close\r\n\r\n"' "$T/raw4.hdr"
+check "reqid: control char (0x01) in client id → request rejected by parser (no echo) or id replaced" bash -c \
+  'v=$(grep -i "^X-Request-Id:" "$1" | tail -1 | cut -d: -f2- | tr -d "\r " ); [ -z "$v" ] || { [[ "$v" =~ ^[A-Za-z0-9._-]{1,64}$ ]] && [ "$v" != "abcd" ]; }' _ "$T/raw1.hdr"
+check "reqid: empty client id → generated valid id" bash -c \
+  'v=$(grep -i "^X-Request-Id:" "$1" | tail -1 | cut -d: -f2- | tr -d "\r " ); [[ "$v" =~ ^[A-Za-z0-9._-]{1,64}$ ]]' _ "$T/raw3.hdr"
+check "reqid: tab inside client id → replaced or response header still valid" bash -c \
+  'v=$(grep -i "^X-Request-Id:" "$1" | tail -1 | cut -d: -f2- | tr -d "\r " ); [[ "$v" =~ ^[A-Za-z0-9._-]{1,64}$ ]]' _ "$T/raw4.hdr"
+check "reqid: duplicate client headers → response id is valid and single" bash -c \
+  '[ "$(grep -ic "^X-Request-Id:" "$1")" -eq 1 ] && v=$(grep -i "^X-Request-Id:" "$1" | cut -d: -f2- | tr -d "\r ") && [[ "$v" =~ ^[A-Za-z0-9._-]{1,64}$ ]]' _ "$T/raw2.hdr"
+sleep 0.3
+check "reqid: all lines still valid after injection attempts" alog validate "$LOG" "$BASE"
+check "reqid: forged status 999 never appears as a record" test "$(alog count "$LOG" "$BASE" status int:999)" -eq 0
+
+# --- request id: header on assorted statuses ---
+http "$T/s200" "$B/health"
+http "$T/s401" "$B/items/$OK_SHA"
+http "$T/s404" "$B/nope"
+http "$T/s404b" -H "$AUTHH" "$B/items/$(printf '0%.0s' $(seq 1 64))"
+check "reqid: header on 200" bash -c '[[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]]' _ "$(hdr $T/s200 X-Request-Id)"
+check "reqid: header on 401" bash -c '[ "$1" = 401 ] && [[ "$2" =~ ^[A-Za-z0-9._-]{1,64}$ ]]' _ "$(st $T/s401)" "$(hdr $T/s401 X-Request-Id)"
+check "reqid: header on 404 (unknown route)" bash -c '[ "$1" = 404 ] && [[ "$2" =~ ^[A-Za-z0-9._-]{1,64}$ ]]' _ "$(st $T/s404)" "$(hdr $T/s404 X-Request-Id)"
+check "reqid: header on 404 (missing item)" bash -c '[ "$1" = 404 ] && [[ "$2" =~ ^[A-Za-z0-9._-]{1,64}$ ]]' _ "$(st $T/s404b)" "$(hdr $T/s404b X-Request-Id)"
+http "$T/s413" -X PUT -H "$AUTHH" -H "X-Request-Id: big-upload.1" -H "X-Filename: over.bin" --data-binary "@$T/over.bin" "$B/items"
+check "reqid: early 413 (header-filter reject) → status 413" test "$(st $T/s413)" = 413
+check "reqid: early 413 carries X-Request-Id (client id echoed)" test "$(hdr $T/s413 X-Request-Id)" = "big-upload.1"
+http "$T/s413b" -X PUT -H "$AUTHH" -H "X-Filename: over.bin" --data-binary "@$T/over.bin" "$B/items"
+check "reqid: early 413 without client id gets a generated one" bash -c '[ "$1" = 413 ] && [[ "$2" =~ ^[A-Za-z0-9._-]{1,64}$ ]]' _ "$(st $T/s413b)" "$(hdr $T/s413b X-Request-Id)"
+sleep 0.4
+check "reqid: early 413 is logged as JSON with the same request_id" \
+  test "$(alog single "$LOG" "$BASE" request_id big-upload.1 status)" = 413
+check "reqid: early 413 record route is /items" test "$(alog single "$LOG" "$BASE" request_id big-upload.1 route)" = /items
+check "reqid: early 413 record login is alice or null (never a token)" bash -c \
+  '[ "$1" = alice ] || [ "$1" = null ]' _ "$(alog single "$LOG" "$BASE" request_id big-upload.1 login)"
+check "reqid: response header id equals logged id (200)" \
+  test "$(alog count "$LOG" "$BASE" request_id "$(hdr $T/s200 X-Request-Id)")" -eq 1
+check "reqid: response header id equals logged id (401)" \
+  test "$(alog single "$LOG" "$BASE" request_id "$(hdr $T/s401 X-Request-Id)" status)" = 401
+check "reqid: response header id equals logged id (404)" \
+  test "$(alog single "$LOG" "$BASE" request_id "$(hdr $T/s404 X-Request-Id)" status)" = 404
+
+# --- request id: uniqueness over 200 requests ---
+BASE200=$(nlines "$LOG")
+curl --silent --output /dev/null --dump-header "$T/u200.hdr" "$B/health?n=[1-200]" 2>/dev/null || true
+grep -i '^X-Request-Id:' "$T/u200.hdr" | cut -d: -f2- | tr -d '\r ' > "$T/u200.ids"
+sleep 0.5
+check "reqid: 200 responses each carry an X-Request-Id" test "$(wc -l < "$T/u200.ids" | tr -d ' ')" -eq 200
+check "reqid: 200 generated ids are unique" test "$(sort -u "$T/u200.ids" | wc -l | tr -d ' ')" -eq 200
+check "reqid: all 200 generated ids are valid" bash -c '! grep -Evq "^[A-Za-z0-9._-]{1,64}$" "$1"' _ "$T/u200.ids"
+alog ids "$LOG" "$BASE200" | sort > "$T/u200.logged"
+sort "$T/u200.ids" > "$T/u200.sorted"
+check "reqid: logged ids for those 200 requests equal the response ids" cmp -s "$T/u200.sorted" "$T/u200.logged"
+
+# --- hostile input: percent-encoded (curl --path-as-is) ---
+BASEH=$(nlines "$LOG")
+HOSTILE_PCT=('/a%22b' '/a%5Cb' '/a%01%1b%7f' '/%0a%7b%22ts%22:%22forged%22%7d' '/x%0d%0ay' '/%ff%fe%c3%28' '/%00z' '/a%20b' '/%e2%82%ac' '/%22%7d%7b%22status%22:999')
+for p in "${HOSTILE_PCT[@]}"; do
+  curl --silent --output /dev/null --path-as-is --max-time 5 "$B$p" 2>/dev/null || true
+done
+sleep 0.5
+check "hostile: every line valid single-line JSON after percent-encoded hostile paths" alog validate "$LOG" "$BASEH"
+check "hostile: exactly one record per hostile request" test "$(alog validate "$LOG" "$BASEH")" -eq "${#HOSTILE_PCT[@]}"
+check "hostile: no forged record (path/ts/status)" bash -c \
+  'python3 -I "$1" nomatch "$2" "$3" ts forged && [ "$(python3 -I "$1" count "$2" "$3" status int:999)" -eq 0 ]' _ "$T/alog.py" "$LOG" "$BASEH"
+check "hostile: no raw control characters (except trailing newline) in the log tail" bash -c \
+  'tail -n +$(( $2 + 1 )) "$1" | LC_ALL=C grep -q "[[:cntrl:]]" && exit 1 || exit 0' _ "$LOG" "$((BASEH + 1))"
+
+# --- hostile input: raw bytes in the request line (invalid UTF-8, quote, backslash, tab) ---
+BASER=$(nlines "$LOG")
+raw $P_JSON 'b"GET /\xff\xfe\xc3( HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n"' "$T/h1.hdr"
+raw $P_JSON 'b"GET /q\"uote\\back HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n"' "$T/h2.hdr"
+raw $P_JSON 'b"GET /\x01\x02\x1b[31m HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n"' "$T/h3.hdr"
+raw $P_JSON 'b"GET /\xed\xa0\x80\xf4\x90\x80\x80 HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n"' "$T/h4.hdr"
+raw $P_JSON 'b"GET /ok HTTP/1.1\r\nHost: a\r\nX-Forwarded-For: \xff\"\r\nConnection: close\r\n\r\n"' "$T/h5.hdr"
+sleep 0.5
+check "hostile: raw hostile request lines → every record is valid JSON (strict, UTF-8)" alog validate "$LOG" "$BASER"
+check "hostile: raw hostile request lines → no forged record" test "$(alog count "$LOG" "$BASER" status int:999)" -eq 0
+check "hostile: daemon still serves after hostile input" test "$(curl -s -o /dev/null -w '%{http_code}' "$B/health")" = 200
+
+# --- concurrency: 50 parallel requests → 50 intact lines ---
+BASEC=$(nlines "$LOG")
+CPIDS=()
+for i in $(seq 1 50); do
+  curl --silent --output /dev/null -H "X-Request-Id: conc-$i" -H "$AUTHH" "$B/items/$OK_SHA?i=$i" &
+  CPIDS+=($!)
+done
+for p in "${CPIDS[@]}"; do wait "$p" 2>/dev/null || true; done
+sleep 0.7
+check "concurrency: 50 parallel requests → 50 valid JSON lines" test "$(alog validate "$LOG" "$BASEC")" -eq 50
+check "concurrency: all 50 request ids present exactly once" bash -c \
+  '[ "$(python3 -I "$1" ids "$2" "$3" | sort -u | grep -c "^conc-")" -eq 50 ]' _ "$T/alog.py" "$LOG" "$BASEC"
+check "concurrency: no two JSON objects on one line" bash -c \
+  '! tail -n +$(( $2 + 1 )) "$1" | grep -Eq "\}.*\{\"ts\""' _ "$LOG" "$BASEC"
+check "concurrency: authenticated login recorded on every line" test "$(alog count "$LOG" "$BASEC" login alice)" -eq 50
+
+# --- login endpoint secrets ---
+BASEL=$(nlines "$LOG")
+http "$T/lg" -X POST -H "Content-Type: application/json" --data '{"login":"bob","password":"bobpass123"}' "$B/auth/login"
+sleep 0.4
+check "secrets: /auth/login record exists, route /auth/login, no password in it" bash -c \
+  '[ "$(python3 -I "$1" count "$2" "$3" route /auth/login)" -eq 1 ] && ! tail -n +$(( $3 + 1 )) "$2" | grep -q bobpass123' _ "$T/alog.py" "$LOG" "$BASEL"
+check "secrets: final scan — no token/password/Authorization anywhere in whole JSON log" \
+  bash -c '! grep -Eqi "eyJ|bearer|authorization|alicepass1|bobpass123|$1" "$2"' _ "$SECRET" "$LOG"
+stop_daemon "$J_PID"
+
+# ===========================================================================
+# 2. text mode (explicit) and default → old format byte-for-byte, plus X-Request-Id header
+# ===========================================================================
+text_daemon_checks() { # <label> <port> <server-extra>
+  local label="$1" port="$2" extra="$3"
+  make_cfg "$T/$label.toml" "$port" "$label" "$extra" ""
+  start_daemon "$T/$label.toml" "$port" "$label"; local rc=$?
+  check "$label: daemon starts" test "$rc" -eq 0
+  local pid=$DPID tok log="$T/$label.stderr" b="http://127.0.0.1:$port"
+  tok=$(login "$port" alice alicepass1)
+  local base; base=$(nlines "$log")
+  http "$T/$label.a" -H "X-Request-Id: txt-1" "$b/health?filename=secret"
+  http "$T/$label.b" -H "Authorization: Bearer $tok" -H "X-Filename: ok.jpg" -X PUT --data-binary "@$JPEG_FIXTURE" "$b/items"
+  http "$T/$label.c" "$b/nope"
+  sleep 0.5
+  tail -n +$((base + 1)) "$log" > "$T/$label.new"
+  check "$label: access lines use the unchanged 8-field text format" bash -c \
+    'grep -Ecq "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z (127\.0\.0\.1|-) (-|alice) [A-Z]+ /[^ ]* [0-9]{3} ([0-9]+|-) [0-9]+ms$" "$1"' _ "$T/$label.new"
+  check "$label: GET /health line exact shape" grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z 127\.0\.0\.1 - GET /health 200 ([0-9]+|-) [0-9]+ms$' "$T/$label.new"
+  check "$label: PUT line shows login alice, status 201" grep -Eq 'Z 127\.0\.0\.1 alice PUT /items 201 ([0-9]+|-) [0-9]+ms$' "$T/$label.new"
+  check "$label: 404 line" grep -Eq 'Z (127\.0\.0\.1|-) - GET /nope 404 ([0-9]+|-) [0-9]+ms$' "$T/$label.new"
+  check "$label: every new line has exactly 8 fields" bash -c '! awk "NF != 8" "$1" | grep -q .' _ "$T/$label.new"
+  check "$label: no JSON in text mode" bash -c '! grep -q "[{]" "$1"' _ "$T/$label.new"
+  check "$label: query not logged" bash -c '! grep -q secret "$1"' _ "$T/$label.new"
+  check "$label: request id not added to the text line" bash -c '! grep -q txt-1 "$1"' _ "$T/$label.new"
+  check "$label: X-Request-Id echoed on 200" test "$(hdr $T/$label.a X-Request-Id)" = txt-1
+  check "$label: X-Request-Id generated on 201" bash -c '[[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]]' _ "$(hdr $T/$label.b X-Request-Id)"
+  check "$label: X-Request-Id generated on 404" bash -c '[[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]]' _ "$(hdr $T/$label.c X-Request-Id)"
+  stop_daemon "$pid"
+}
+text_daemon_checks text $P_TEXT 'access_log_format = "text"'
+text_daemon_checks default $P_DEFAULT ''
+
+# ===========================================================================
+# 3. access_log = false silences both formats (header still present)
+# ===========================================================================
+for fmt in json text; do
+  if [ "$fmt" = json ]; then port=$P_NOLOGJ; else port=$P_NOLOGT; fi
+  make_cfg "$T/nolog-$fmt.toml" $port "nolog-$fmt" "access_log = false
+access_log_format = \"$fmt\"" ""
+  start_daemon "$T/nolog-$fmt.toml" $port "nolog-$fmt"; rc=$?
+  check "nolog-$fmt: daemon starts" test "$rc" -eq 0
+  NPID=$DPID
+  login $port alice alicepass1 >/dev/null
+  http "$T/nl-$fmt" -H "X-Request-Id: quiet-1" "http://127.0.0.1:$port/health"
+  curl -s -o /dev/null "http://127.0.0.1:$port/nope"
+  sleep 0.4
+  check "nolog-$fmt: no access-log lines (JSON or text) on stderr" bash -c \
+    '! grep -Eq "^\{|^[0-9]{4}-[0-9]{2}-[0-9]{2}T.* (GET|POST) " "$1"' _ "$T/nolog-$fmt.stderr"
+  check "nolog-$fmt: X-Request-Id header still echoed" test "$(hdr $T/nl-$fmt X-Request-Id)" = quiet-1
+  stop_daemon "$NPID"
+done
+
+# ===========================================================================
+# 4. 429 carries X-Request-Id and is logged as JSON (login throttle)
+# ===========================================================================
+make_cfg "$T/thr.toml" $P_THR thr 'access_log_format = "json"' 'max_login_failures = 3
+max_ip_failures = 100
+lockout_seconds = 30'
+start_daemon "$T/thr.toml" $P_THR thr; STARTED=$?
+check "429: daemon starts" test "$STARTED" -eq 0
+THR_PID=$DPID
+for i in 1 2 3; do
+  curl -s -o /dev/null -X POST -H "Content-Type: application/json" --data "{\"login\":\"bob\",\"password\":\"wrong$i\"}" "http://127.0.0.1:$P_THR/auth/login"
+done
+http "$T/t429" -X POST -H "X-Request-Id: throttled-7" -H "Content-Type: application/json" --data '{"login":"bob","password":"bobpass123"}' "http://127.0.0.1:$P_THR/auth/login"
+http "$T/t429b" -X POST -H "Content-Type: application/json" --data '{"login":"bob","password":"bobpass123"}' "http://127.0.0.1:$P_THR/auth/login"
+sleep 0.4
+check "429: throttled login → 429" test "$(st $T/t429)" = 429
+check "429: X-Request-Id echoed on 429" test "$(hdr $T/t429 X-Request-Id)" = throttled-7
+check "429: generated X-Request-Id on 429" bash -c '[[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]]' _ "$(hdr $T/t429b X-Request-Id)"
+check "429: every JSON line valid" alog validate "$T/thr.stderr" 0
+check "429: record has status 429 and route /auth/login" bash -c \
+  '[ "$(python3 -I "$1" single "$2" 0 request_id throttled-7 status)" = 429 ] && [ "$(python3 -I "$1" single "$2" 0 request_id throttled-7 route)" = /auth/login ]' _ "$T/alog.py" "$T/thr.stderr"
+check "429: wrong passwords never logged" bash -c '! grep -Eq "wrong[123]|bobpass123" "$1"' _ "$T/thr.stderr"
+stop_daemon "$THR_PID"
+
+# ===========================================================================
+# 5. bad access_log_format exits 2 with an 'imagerd:' line
+# ===========================================================================
+bad_case() { # bad_case <label> <tag> <server-extra>
+  make_cfg "$T/bad-$2.toml" $P_BAD "bad-$2" "$3" ""
+  timeout 10 "$IMAGERD_BIN" "$T/bad-$2.toml" >"$T/bad-$2.out" 2>"$T/bad-$2.err"
+  local rc=$?
+  check "bad config ($1): exit status 2" test "$rc" -eq 2
+  check "bad config ($1): 'imagerd:' line on stderr" grep -q '^imagerd:' "$T/bad-$2.err"
+  check "bad config ($1): mentions access_log_format" grep -q 'access_log_format' "$T/bad-$2.err"
+}
+bad_case 'access_log_format = "xml"'  a 'access_log_format = "xml"'
+bad_case 'access_log_format = ""'     b 'access_log_format = ""'
+bad_case 'access_log_format = 42'     c 'access_log_format = 42'
+bad_case 'access_log_format = "jsonl"' d 'access_log_format = "jsonl"'
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

@@ -424,3 +424,25 @@ add_test(
 )
 
 set_tests_properties(server_metrics_test PROPERTIES TIMEOUT 180)
+
+# ---- server_access_log_json_test — JSON access log + X-Request-Id (ports 19660–19679) ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_access_log_json.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_access_log_json.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_access_log_json.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_access_log_json_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_access_log_json.sh"
+)
+
+set_tests_properties(server_access_log_json_test PROPERTIES TIMEOUT 240)

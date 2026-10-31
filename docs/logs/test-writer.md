@@ -194,3 +194,15 @@
 - **Task**: Write `server_metrics_test` (ports 19640–19659) for `/stats` admin sections and `/metrics` Prometheus exposition.
 - **Outcome**: 87 checks: auth/shape, exact counter deltas, cardinality, no sensitive data, Prometheus format validator, concurrency. 4 initial failures were test-side only (fixed). No product bugs. Suite 41/41 on clang x2 and g++ x1. See docs/testing/metrics.md.
 - **Next Step**: None.
+
+## [2026-10-31 22:35] - Structured access log tests
+- **Agent**: l5-test
+- **Task**: `server_access_log_json_test` (ports 19660–19666) and `AccessLogJsonTest` CPPUnit cases for JSON access log + X-Request-Id.
+- **Outcome**: Tests written; first run found 2 product issues (JSON `bytes` 0 not null; empty client_ip on unmatched-route 404), reported to l5-dev. See docs/testing/access-log-json.md.
+- **Next Step**: Re-run after fixes; full suite clang x2, g++ x1.
+
+## [2026-10-31 23:10] - Structured access log tests: final
+- **Agent**: l5-test
+- **Task**: Finish access-log JSON tests and run full suite.
+- **Outcome**: 135 shell checks + 15 CPPUnit cases. Found/fixed (by l5-dev) empty client_ip on unmatched routes; bytes decided always numeric. Suite 42/42 clang x2, g++ x1.
+- **Next Step**: None.

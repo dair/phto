@@ -287,3 +287,21 @@
 - **Task**: Add request metrics to imagerd using the metrics:: library; expose via /stats (admin) and Prometheus /metrics.
 - **Outcome**: New server/ServerMetrics.{h,cpp}; hooks in AuthMiddleware (in-flight, record), Upload.cpp reject path and spool bytes; App.cpp routes. clang++ and g++ clean, 40/40 tests pass.
 - **Next Step**: m4-test adds tests, m4-docs documents API.
+
+## [2026-10-31 22:00] - Structured (JSON) access log + request ids
+- **Agent**: l5-dev
+- **Task**: `[server].access_log_format = "text"|"json"`, JSON lines, `X-Request-Id` (inbound validated or generated, echoed on every response incl. header-filter rejects).
+- **Outcome**: AccessLog.{h,cpp} (formatJson, parseFormat, validRequestId, generateRequestId, ensureRequestId), hooks in AuthMiddleware/Upload.cpp/App.cpp, config key validated in Config.cpp. Route template reuses ServerMetrics::classify/routeTemplate. Text format unchanged (8 fields, no id). Crow's own error log left as is. clang++ and g++ clean, 41/41 existing tests pass.
+- **Next Step**: l5-test adds tests; l5-docs documents.
+
+## [2026-10-31 23:00] - client_ip filled for unmatched routes (Crow patch)
+- **Agent**: l5-dev
+- **Task**: Requests to unmatched paths logged an empty client IP.
+- **Outcome**: Root cause: Crow `handle_url()` completes unmatched-route 404s at URL-parse time, before `handle_header()` sets `remote_ip_address`. Added one line to third_party/crow/crow-body-sink.patch setting it in `handle_url()`; mirrored into build/ and build-gcc/ crow-src (patch round-trip verified on a copy). Also: `bytes` in JSON is always numeric.
+- **Next Step**: l5-test rebuilds and re-runs.
+
+## [2026-10-31 23:30] - Crow remote-ip patch split out (supersedes edit to crow-body-sink.patch)
+- **Agent**: l5-dev
+- **Task**: Fill client IP for unmatched-route requests without invalidating existing patched Crow trees.
+- **Outcome**: crow-body-sink.patch restored to its original content; new third_party/crow/crow-remote-ip.patch (one line in handle_url()); apply_patch.cmake now takes PATCH_FILES ("|"-separated) with per-patch reverse-check-then-apply; CMakeLists.txt passes both. Verified in a scratch fresh configure (both applied) and by removing the line and re-configuring (re-applied). Scratch dirs deleted.
+- **Next Step**: l5-test re-configures and rebuilds build/; l5-docs documents the unmatched-route limits.

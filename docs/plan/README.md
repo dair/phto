@@ -59,7 +59,7 @@ Each plan carries its own `Status` line; this table is a summary. Per-plan desig
 | 0018 MEMORY | Instrumentation implemented; investigation open |
 | 0019 DELETE, 0020 TIMESTAMPS | Implemented |
 | 0021 REORGANIZATION | Implemented (settings hygiene done 2026-10-31) |
-| 0022 SERVER (Phase 2) | Implemented; see [API](../user/API.md), [DEPLOYMENT](../user/DEPLOYMENT.md) |
+| 0022 SERVER (Phase 2) | Implemented (incl. JSON access log, request ids); see [API](../user/API.md), [DEPLOYMENT](../user/DEPLOYMENT.md) |
 | 0023 TRANSCODING | Proposal, not implemented |
 
 ## Next work

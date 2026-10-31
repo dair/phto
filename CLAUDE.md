@@ -39,7 +39,7 @@ Build artifacts go to `build/` in the repo root (configured in `CMakePresets.jso
 │   └── test/
 ├── imagestore/    # Batch import CLI: stdin pipe, bounded concurrency, progress, error file
 ├── auth/          # User store (SQLite), PBKDF2 password hashing, HS256 JWT TokenService, input Validation helpers (namespace auth)
-├── server/        # imagerd: Crow HTTP(S) REST daemon — routes, auth middleware, login throttle, trusted-proxy client IP, access log, streaming upload spool, native TLS, request metrics (`ServerMetrics`: admin `GET /stats` sections + Prometheus `GET /metrics`) (namespace server)
+├── server/        # imagerd: Crow HTTP(S) REST daemon — routes, auth middleware, login throttle, trusted-proxy client IP, access log (text or JSON lines, `X-Request-Id`), streaming upload spool, native TLS, request metrics (`ServerMetrics`: admin `GET /stats` sections + Prometheus `GET /metrics`) (namespace server)
 ├── imageradmin/   # User administration CLI (add/del/passwd/enable/disable/promote/demote/list)
 ├── metrics/       # Lock-free monitoring: Histogram, Counter, Gauge, Timer (namespace metrics)
 └── docs/
@@ -61,7 +61,7 @@ Build artifacts go to `build/` in the repo root (configured in `CMakePresets.jso
 | libavcodec | Video codec trial decode | System — `pkg_check_modules(LibAvCodec REQUIRED libavcodec)` |
 | libavutil | FFmpeg memory/error utilities | System — `pkg_check_modules(LibAvUtil REQUIRED libavutil)` |
 | toml++ | Config parsing | FetchContent from GitHub |
-| Crow (v1.2.1.2) | HTTP(S) server (`server/`) | FetchContent from GitHub (no Debian package); built without Boost, `CROW_ENABLE_SSL`. **Patched** at configure time with `third_party/crow/crow-body-sink.patch` (via `apply_patch.cmake`, idempotent): adds `App::header_filter` and `request::body_sink` so oversized/streamed upload bodies are never buffered. Upload policy lives in `server/Upload.cpp` |
+| Crow (v1.2.1.2) | HTTP(S) server (`server/`) | FetchContent from GitHub (no Debian package); built without Boost, `CROW_ENABLE_SSL`. **Patched** at configure time with `third_party/crow/crow-body-sink.patch` and `crow-remote-ip.patch` (via `apply_patch.cmake`, each idempotent): the first adds `App::header_filter` and `request::body_sink` so oversized/streamed upload bodies are never buffered; the second makes the client address available at URL-parse time (unmatched-route access log). Upload policy lives in `server/Upload.cpp` |
 | asio | Crow's networking layer | System — `libasio-dev`, found by Crow's `Findasio.cmake` |
 | cpp-jwt | JWT issue/verify (`auth/`) | System — `find_package(cpp-jwt CONFIG REQUIRED)` (`libcpp-jwt-dev`) |
 | CPPUnit | Testing | System dependency |
@@ -98,7 +98,7 @@ Config is read once at startup (no hot reload).
 
 ## Testing
 
-CPPUnit-based. Test suites (`ctest --preset default -N`, 41 tests): `metrics_tests`, `blob_tests`, `coro_tests`, `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `heic_validator_tests`, `nef_validator_tests`, `mov_validator_tests`, `aae_validator_tests`, `config_tests`, `auth_tests`, `auth_userstore_tests`, `auth_token_tests`, `auth_validation_tests`, `ImagerTests`, `ImagerMemoryTests`, `TimestampTests`, `imagestore_cli_tests`, `imagestore_memcheck`, `imagestore_output_tests`, `imagestore_dryrun_streaming_tests`, `imageradmin_cli_tests`, and the server tests `server_health_test`, `server_auth_test`, `server_authz_test`, `server_json_tests`, `server_clientip_tests` (CPPUnit: client IP / `X-Forwarded-For`, access-log format), `server_items_test`, `server_content_test`, `server_list_test`, `server_item_tags_test`, `server_tags_test`, `server_users_test`, `server_hardening_test`, `server_tls_test`, `server_api_test`, `server_fixups_test`, `server_loose_ends_test`, `server_streaming_mem_test`, `server_metrics_test` (shell tests run a live `imagerd`).
+CPPUnit-based. Test suites (`ctest --preset default -N`, 42 tests): `metrics_tests`, `blob_tests`, `coro_tests`, `DatabaseTests`, `jpeg_validator_tests`, `test_validate_png`, `heic_validator_tests`, `nef_validator_tests`, `mov_validator_tests`, `aae_validator_tests`, `config_tests`, `auth_tests`, `auth_userstore_tests`, `auth_token_tests`, `auth_validation_tests`, `ImagerTests`, `ImagerMemoryTests`, `TimestampTests`, `imagestore_cli_tests`, `imagestore_memcheck`, `imagestore_output_tests`, `imagestore_dryrun_streaming_tests`, `imageradmin_cli_tests`, and the server tests `server_health_test`, `server_auth_test`, `server_authz_test`, `server_json_tests`, `server_clientip_tests` (CPPUnit: client IP / `X-Forwarded-For`, access-log format incl. JSON lines), `server_items_test`, `server_content_test`, `server_list_test`, `server_item_tags_test`, `server_tags_test`, `server_users_test`, `server_hardening_test`, `server_tls_test`, `server_api_test`, `server_fixups_test`, `server_loose_ends_test`, `server_streaming_mem_test`, `server_metrics_test`, `server_access_log_json_test` (shell tests run a live `imagerd`).
 
 Use temporary directories for test databases and file storage; clean up in `tearDown()`.
 

@@ -1,0 +1,21 @@
+Crow v1.2.1.2: client address for requests rejected at URL time (phto: structured access log).
+
+Stock Crow sets request::remote_ip_address in handle_header()/handle(). A request whose URL matches no
+route is answered with a 404 from handle_url(), i.e. while the request line is being parsed and before
+either runs, so those requests reach the middleware's after_handle with an empty address. This patch sets
+the address at the start of handle_url(), so it is known for every request.
+
+For such unmatched-route requests the rest of the request is not parsed yet: X-Forwarded-For and
+X-Request-Id are not available (the client address is the direct peer, a request id is generated), and
+the middleware's before_handle does not run (duration is reported as 0).
+
+diff --git a/include/crow/http_connection.h b/include/crow/http_connection.h
+--- a/include/crow/http_connection.h
++++ b/include/crow/http_connection.h
+@@ -108,6 +108,7 @@
+         void handle_url()
+         {
++            req_.remote_ip_address = adaptor_.remote_endpoint().address().to_string();
+             routing_handle_result_ = handler_->handle_initial(req_, res);
+             // if no route is found for the request method, return the response without parsing or processing anything further.
+             if (!routing_handle_result_->rule_index)

@@ -63,6 +63,7 @@ struct AuthMiddleware {
 
   void before_handle(crow::request& req, crow::response& /*res*/, context& ctx) {
     ctx.start = std::chrono::steady_clock::now();
+    ensureRequestId(req);
     if (metrics != nullptr) {
       metrics->beginRequest();
     }
@@ -71,6 +72,7 @@ struct AuthMiddleware {
 
   void after_handle(crow::request& req, crow::response& res, context& ctx) {
     res.set_header("X-Content-Type-Options", "nosniff");
+    res.set_header("X-Request-Id", ensureRequestId(req));
     if (res.get_header_value("Cache-Control").empty()) {
       res.set_header("Cache-Control", "no-store");
     }
@@ -88,14 +90,14 @@ struct AuthMiddleware {
       );
     }
     if (accessLog != nullptr && accessLog->enabled()) {
-      const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+      const auto us = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
       uint64_t bytes = res.body.size();
       if (bytes == 0 && res.is_static_type()) { // streamed file: the body is empty, Crow sets Content-Length
         const std::string& cl = res.get_header_value("Content-Length");
         std::from_chars(cl.data(), cl.data() + cl.size(), bytes);
       }
       accessLog->log(
-        req, res.code, bytes, ctx.claims ? std::string_view{ctx.claims->login} : "", static_cast<uint64_t>(ms)
+        req, res.code, bytes, ctx.claims ? std::string_view{ctx.claims->login} : "", static_cast<uint64_t>(us)
       );
     }
     // A later request on this connection that skips before_handle (e.g. no route) must not inherit either.

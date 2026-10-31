@@ -104,6 +104,7 @@ Added to every response by the middleware (`server/AuthMiddleware.h:60`):
 
 - `X-Content-Type-Options: nosniff`
 - `Cache-Control: no-store`, unless the handler set one (only item content does)
+- `X-Request-Id`: the request's id. A client-supplied `X-Request-Id` matching `^[A-Za-z0-9._-]{1,64}$` is echoed; otherwise the server generates a 32-character hex id. Also present on early rejects (`413`, `401` on `PUT /items`). For paths that match no route (`404` from Crow), a client-supplied value is ignored and a generated id is always returned. The id is recorded in the [JSON access log](DEPLOYMENT.md#request-ids).
 
 ## Endpoints
 
@@ -432,4 +433,4 @@ Where [plan 0022](../plan/0022.SERVER.md) and the code differ, this document fol
 - Token validity is re-checked against the user database per request (live revocation, live admin flag).
 - A per-IP login throttle (20 failures by default) exists in addition to the per-login one (5); the limits and lockout time are configurable.
 - Oversized requests are rejected with `413` from the headers, before the body is read, and the upload body is streamed to a temp file instead of buffered in memory.
-- The daemon writes a plain-text access log to stderr, not the structured log of plan 0022 §12; see [Deployment](DEPLOYMENT.md#access-log).
+- The daemon writes the access log to stderr, as plain text by default or as JSON lines with `access_log_format = "json"` (plan 0022 §12); see [Deployment](DEPLOYMENT.md#access-log). There is no separate error log.

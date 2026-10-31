@@ -215,6 +215,17 @@ AppConfig loadConfig(const std::filesystem::path& configPath) {
       throw std::runtime_error("Config [server]: 'access_log' must be a boolean");
     }
 
+    if (auto v = (*serverTbl)["access_log_format"].value<std::string>()) {
+      if (*v != "text" && *v != "json") {
+        throw std::runtime_error(
+          "Config [server]: 'access_log_format' must be \"text\" or \"json\", got \"" + *v + "\""
+        );
+      }
+      cfg.server.accessLogFormat = *v;
+    } else if ((*serverTbl)["access_log_format"]) {
+      throw std::runtime_error("Config [server]: 'access_log_format' must be a string (\"text\" or \"json\")");
+    }
+
     readRanged(*serverTbl, "server", "drain_timeout_s", 1, 3600, cfg.server.drainTimeoutSeconds);
 
     if (const auto node = (*serverTbl)["trusted_proxies"]) {

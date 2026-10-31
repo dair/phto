@@ -54,6 +54,7 @@ Build output is under `build/` (see `CMakePresets.json`). The relevant executabl
 | `max_upload_mb` | integer | `4096` | Cap for `PUT /items`, in MiB; must be > 0. Over the cap gives `413 TooLarge` before the body is read. |
 | `trusted_proxies` | array of strings | `[]` | IPv4/IPv6 addresses or CIDRs of reverse proxies whose `X-Forwarded-For` is trusted. Empty means the header is ignored. An invalid entry is a startup error (exit 2). See [Reverse proxy](#reverse-proxy). |
 | `access_log` | boolean | `true` | One log line per request on stderr. See [Access log](#access-log). |
+| `access_log_format` | string | `"text"` | `"text"` (eight-field line) or `"json"` (one JSON object per line). Any other value is a startup error (exit 2). Only matters when `access_log = true`. See [Access log](#access-log). |
 | `drain_timeout_s` | integer | `30` | Seconds to wait for running requests on `SIGINT`/`SIGTERM` before forcing exit `3`. Range 1..3600. |
 
 ### `[auth]`
@@ -261,7 +262,7 @@ Caveats:
 
 ## Large uploads and memory
 
-Stock Crow buffers the whole request body before any handler runs. `imagerd` builds Crow with a small patch (`third_party/crow/crow-body-sink.patch`, applied by CMake at configure time) that adds a header filter and a body sink, so the body is no longer buffered. Policy lives in `server/Upload.cpp`.
+Stock Crow buffers the whole request body before any handler runs. `imagerd` builds Crow with a small patch (`third_party/crow/crow-body-sink.patch`, applied by CMake at configure time; a second patch, `crow-remote-ip.patch`, makes the client address available while the URL is parsed) that adds a header filter and a body sink, so the body is no longer buffered. Policy lives in `server/Upload.cpp`.
 
 - **Early rejection.** The limit is checked when the headers arrive: `max_upload_mb` for authenticated `PUT /items`, 64 KiB for every other route. A larger `Content-Length` gets `413 TooLarge` with `Connection: close` without the body being read. Chunked bodies are cut off with `413` once they pass the limit.
 - **Streaming spool.** An authenticated upload is written to `phto-upload-XXXXXX` in the system temp directory (`$TMPDIR`, else `/tmp`) in 64 KiB blocks, then ingested via `Imager::addFile`. The temp file is deleted on every path: success, error, client abort and forced exit. The temp directory needs free space of at least the largest concurrent uploads, and `/tmp` on tmpfs counts against RAM.
@@ -363,7 +364,54 @@ With `[server].access_log = true` (the default), `imagerd` writes one line to st
 | bytes | Response bytes, or `-` if unknown |
 | duration | Time spent handling the request, in milliseconds |
 
-A line always has exactly eight space-separated fields, and lines from different threads never interleave. `Authorization` headers, cookies, tokens, passwords and request bodies are never logged. Set `access_log = false` to turn it off.
+A line always has exactly eight space-separated fields, and lines from different threads never interleave. `Authorization` headers, cookies, tokens, passwords and request bodies are never logged. Set `access_log = false` to turn it off. The text format carries no request id; use the JSON format for that.
+
+### JSON format
+
+Set `access_log_format = "json"` to get one compact JSON object per line on stderr instead (default is `"text"`, unchanged):
+
+```toml
+[server]
+access_log = true
+access_log_format = "json"
+```
+
+An illustrative line (values are examples; the structure comes from `server/AccessLog.cpp`):
+
+```json
+{"ts":"2026-10-31T21:05:03.123Z","client_ip":"203.0.113.7","login":"alice","method":"GET","route":"/items/{id}","path":"/items/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","status":200,"bytes":48213,"duration_ms":12.345,"request_id":"3f2a9c1e7b4d4a0e8c55d1f06a7b9e21"}
+```
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `ts` | string | UTC, RFC 3339 with milliseconds |
+| `client_ip` | string | The [client IP](#reverse-proxy), as in the text format |
+| `login` | string or `null` | Authenticated login; `null` for unauthenticated requests |
+| `method` | string | HTTP method |
+| `route` | string | Route template, the same label as in the [metrics](#monitoring) (`/items/{id}`, ...), or `"other"` for unmatched paths |
+| `path` | string | Request path without the query string |
+| `status` | number | HTTP status code |
+| `bytes` | number | Response bytes; always a number, `0` for an empty body (the text format prints `-` instead) |
+| `duration_ms` | number | Handling time in milliseconds with microsecond resolution (three decimals). Requests rejected early show `0.000` |
+| `request_id` | string | See [Request ids](#request-ids) |
+
+Fields appear in this order. Strings escape `"` and `\`, write control bytes as `\u00XX`, replace invalid UTF-8 with U+FFFD, and are truncated with `…` after 2048 bytes, so a hostile path cannot break or forge a line. Headers, tokens, passwords, query strings and bodies are never logged. Each line is written with a single `write(2)` under a mutex, so lines do not interleave.
+
+Example: show slow requests and count status codes with `jq` (use `fromjson?` to skip any non-JSON lines such as startup messages):
+
+```bash
+imagerd config.toml 2>&1 >/dev/null | jq -R 'fromjson? | select(.duration_ms > 500) | {ts, route, status, duration_ms, request_id}'
+```
+
+Any collector that parses JSON lines from stderr/journald works the same way; index `request_id` and `route` for lookups.
+
+### Request ids
+
+Every response carries an `X-Request-Id` header, including early rejects such as `413` and `401` on `PUT /items`. If the client (or your reverse proxy) sends `X-Request-Id` matching `^[A-Za-z0-9._-]{1,64}$`, it is used as is; otherwise `imagerd` generates a 32-character hex id. Have the proxy forward or set the header to correlate proxy logs with `imagerd` logs. The id appears only in the JSON access log.
+
+**Unmatched routes.** Requests whose path matches no route are answered by Crow while it is still parsing the request line, so their log line has these limits: `client_ip` is the direct peer address (`X-Forwarded-For` is not parsed yet, so behind a trusted proxy it is the proxy's address); an inbound `X-Request-Id` is ignored and a generated id is used in both the log and the response header; `duration_ms` is `0.000`. Everything else is as for other requests.
+
+The server writes no separate error log of its own; Crow's error lines on stderr are unchanged.
 
 ## Troubleshooting
 

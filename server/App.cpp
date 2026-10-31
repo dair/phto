@@ -32,7 +32,7 @@ App::App(
     m_tokenService(tokenService),
     m_authCfg(authCfg),
     m_proxies(TrustedProxies::parse(cfg.trustedProxies)), // throws std::invalid_argument on a bad entry
-    m_log(cfg.accessLog, m_proxies) {
+    m_log(cfg.accessLog, m_proxies, AccessLog::parseFormat(cfg.accessLogFormat).value_or(AccessLog::Format::Text)) {
   // Wire TokenService into the middleware so it can verify tokens.
   auto& mw = m_crow.get_middleware<AuthMiddleware>();
   mw.service = &m_tokenService;

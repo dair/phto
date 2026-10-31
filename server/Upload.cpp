@@ -53,6 +53,7 @@ struct Sinks {
 
 bool reject(const Sinks& s, const crow::request& req, crow::response& res, crow::response r, std::string_view login) {
   res = hardened(std::move(r));
+  res.set_header("X-Request-Id", req.get_header_value("X-Request-Id")); // set by the header filter
   if (s.metrics != nullptr) { // these never reach the middleware, so count them here (no latency, not in flight)
     s.metrics->record(req.method, req.url, res.code, ServerMetrics::NO_LATENCY);
   }
@@ -172,6 +173,7 @@ void installRequestPolicy(crow::App<AuthMiddleware>& app, uint64_t maxUploadByte
   const Sinks sinks{accessLog, mw.metrics}; // App wires mw.metrics before installing the policy
 
   app.header_filter([&mw, sinks, uploadLimit](crow::request& req, crow::response& res) {
+    ensureRequestId(req);
     const bool uploadRoute = req.method == crow::HTTPMethod::Put && req.url == "/items";
     std::string login;
     bool spooled = false;

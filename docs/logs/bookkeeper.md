@@ -57,3 +57,15 @@
 - **Task**: Fix stale test list per team-lead (add ImagerMemoryTests, imagestore_dryrun_streaming_tests, server_streaming_mem_test, server_metrics_test).
 - **Outcome**: CLAUDE.md, docs/analysis/ANALYSIS.md, docs/user/getting-started.md now say 41 tests (provisional). docs/testing/README.md has no count.
 - **Next Step**: Confirm 41 against m4-test's `ctest -N`.
+
+## [2026-10-31 27:00] - Structured access log docs
+- **Agent**: bookkeeper (l5-docs)
+- **Task**: Document `[server].access_log_format` (text|json) and `X-Request-Id`.
+- **Outcome**: Edited docs/user/DEPLOYMENT.md (config row, JSON format, field table, jq example, Request ids), docs/user/API.md (response header, plan-differences bullet), docs/plan/0022 §12 note, docs/plan/README.md, docs/analysis/ANALYSIS.md, CLAUDE.md, README.md. Verified against server/AccessLog.cpp, config/Config.cpp, AuthMiddleware.h, Upload.cpp. Example line values illustrative. No CHANGELOG in repo.
+- **Next Step**: CLAUDE.md/ANALYSIS.md test count (new test_access_log_json.sh) pending team-lead.
+
+## [2026-10-31 27:30] - Test count 42, unmatched-route notes
+- **Agent**: bookkeeper (l5-docs)
+- **Task**: Apply bytes correction, unmatched-route limits, final test count.
+- **Outcome**: DEPLOYMENT.md/API.md/CLAUDE.md updated; CLAUDE.md, ANALYSIS.md, getting-started.md now 42 tests incl. server_access_log_json_test.
+- **Next Step**: none.
