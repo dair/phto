@@ -312,3 +312,25 @@ add_test(
 
 # Exit 77 = openssl/curl missing → ctest reports "Skipped".
 set_tests_properties(server_tls_test PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+
+# ---- server_api_test — J3 full end-to-end API journey (two targets, plain HTTP) ----
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_api.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_api.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_api.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_api_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_api.sh"
+)
+
+set_tests_properties(server_api_test PROPERTIES TIMEOUT 120)

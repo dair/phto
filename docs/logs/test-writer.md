@@ -128,3 +128,9 @@
 - **Outcome**: Wrote `server/test/test_tls.sh.in`, registered `server_tls_test` (ports 19570–19574, SKIP_RETURN_CODE 77), added `docs/testing/tls.md` and dashboard row. Not yet built or run (build not handed over).
 - **Next Step**: Wait for j2-dev contract and "build is yours"; build, run, align, record assertion count.
 - **Update 2026-10-31 (final)**: Aligned to j2-dev contract (exit 2, "imagerd: TLS error:"); server_tls_test 29 passed / 0 failed; full ctest result below in report.
+
+## [2026-10-31 18:00] - J3 full API end-to-end journey
+- **Agent**: test-spec-writer
+- **Task**: Write the single-journey end-to-end API test (plan §14.3, J3).
+- **Outcome**: `server/test/test_api.sh.in` → `server_api_test` (ports 19580–19584); 69 assertions passed / 0 failed; full ctest 33/33. Docs: `docs/testing/api-e2e.md`, README row. No server bugs found.
+- **Next Step**: Root reviews and commits.

@@ -1,0 +1,289 @@
+#!/usr/bin/env bash
+# server/test/test_api.sh.in — J3 full end-to-end API journey (plain HTTP, two targets)
+#
+# One daemon, one realistic client journey across all route families:
+# bootstrap -> admin session -> user uploads -> tagging/listing/stats ->
+# retrieval -> authz boundaries -> cleanup + per-target consistency -> shutdown.
+# Not an edge-case suite: each area has its own test_*.sh.in.
+#
+# Configured by CMake configure_file(@ONLY). Registered as "server_api_test".
+
+set -uo pipefail
+
+IMAGERD_BIN="@IMAGERD_BIN@"
+IMAGERADMIN_BIN="@IMAGERADMIN_BIN@"
+JPEG_FIXTURE="@JPEG_FIXTURE@"
+MOV_FIXTURE="@MOV_FIXTURE@"
+
+PASS=0
+FAIL=0
+check() {   # check <name> <cmd...>
+  local name="$1"; shift
+  if ( "$@" ) >/dev/null 2>&1; then echo "PASS: $name"; PASS=$((PASS+1))
+  else echo "FAIL: $name"; FAIL=$((FAIL+1)); fi
+}
+
+for tool in curl python3; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "SKIP: $tool not found — server_api_test skipped"; exit 0
+  fi
+done
+
+PORT=19580
+for p in 19580 19581 19582 19583 19584; do
+  if ! ss -tln 2>/dev/null | grep -q ":${p} "; then PORT=$p; break; fi
+done
+
+T=$(mktemp -d)
+R1="$T/root1"; R2="$T/root2"; DB1="$T/imager1.db"; DB2="$T/imager2.db"
+CFG="$T/test.toml"
+mkdir -p "$R1" "$R2"
+
+cat > "$CFG" <<CFGEOF
+[[targets]]
+root = "$R1"
+database = "$DB1"
+
+[[targets]]
+root = "$R2"
+database = "$DB2"
+
+[server]
+bind = "127.0.0.1"
+port = $PORT
+threads = 2
+max_upload_mb = 8
+
+[auth]
+database = "$T/auth.db"
+jwt_secret = "this-is-a-32-byte-test-secret-ok"
+issuer = "phto-test"
+token_ttl_seconds = 3600
+CFGEOF
+
+DAEMON_PID=0
+cleanup() {
+  if [ "${DAEMON_PID:-0}" -gt 0 ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
+  rm -rf "$T"
+}
+trap cleanup EXIT
+
+# ---- helpers ---------------------------------------------------------------
+BASE_URL="http://127.0.0.1:${PORT}"
+# http <prefix> <curl args...> -> <prefix>.body/.status/.hdr
+http() {
+  local prefix="$1"; shift
+  curl --silent --dump-header "$prefix.hdr" --output "$prefix.body" --write-out "%{http_code}" "$@" \
+    > "$prefix.status" 2>/dev/null || echo 000 > "$prefix.status"
+}
+# req <prefix> <token|-> <METHOD> <path> [json-body]
+req() {
+  local prefix="$1" tok="$2" m="$3" path="$4"; shift 4
+  local args=(-X "$m")
+  [ "$tok" != "-" ] && args+=(-H "Authorization: Bearer $tok")
+  [ $# -ge 1 ] && args+=(-H "Content-Type: application/json" --data "$1")
+  http "$prefix" "${args[@]}" "$BASE_URL$path"
+}
+st() { cat "$1.status"; }
+jg() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); r=eval(sys.argv[2]); print(", ".join(map(str,r)) if isinstance(r,tuple) else r)' "$1.body" "$2"; }
+hdr() { python3 -I -c '
+import sys
+n = sys.argv[2].lower()
+for line in open(sys.argv[1], "rb").read().decode("latin1").splitlines():
+    if ":" in line and line.split(":", 1)[0].strip().lower() == n:
+        print(line.split(":", 1)[1].strip()); break
+' "$1.hdr" "$2"; }
+sha() { python3 -I -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
+# upload <prefix> <token> <file> <name>
+upload() { http "$1" -X PUT -H "Authorization: Bearer $2" -H "X-Filename: $4" --data-binary "@$3" "$BASE_URL/items"; }
+# names <query> -> sorted item names for GET /items<query> (as $UT)
+names() { req "$T/ls" "$UT" GET "/items$1"; jg "$T/ls" "','.join(sorted(i['name'] for i in d['items']))"; }
+login() { req "$T/login" - POST /auth/login "{\"login\":\"$1\",\"password\":\"$2\"}"; }
+token() { jg "$T/login" "d['token']"; }
+
+# ---- 1. Bootstrap ----------------------------------------------------------
+printf '%s' "rootpass1" | "$IMAGERADMIN_BIN" "$CFG" user add root "Root Admin" --admin --password-stdin >/dev/null 2>&1 \
+  || { echo "FATAL: seed admin failed"; exit 1; }
+check "bootstrap: imageradmin created first admin" true
+
+"$IMAGERD_BIN" "$CFG" >"$T/daemon.stdout" 2>"$T/daemon.stderr" &
+DAEMON_PID=$!
+READY=$(curl --silent --output /dev/null --write-out "%{http_code}" --retry 10 --retry-delay 1 \
+  --retry-connrefused --max-time 12 "$BASE_URL/health" 2>/dev/null) || READY=000
+if [ "$READY" != "200" ]; then echo "FATAL: daemon not ready ($READY)"; cat "$T/daemon.stderr"; exit 1; fi
+
+req "$T/health" - GET /health
+check "GET /health → 200" test "$(st $T/health)" = 200
+check "health: nosniff header" test "$(hdr $T/health X-Content-Type-Options)" = nosniff
+
+# ---- 2. Admin session ------------------------------------------------------
+login root rootpass1
+check "admin login → 200" test "$(st $T/login)" = 200
+AT=$(token)
+check "admin login returns a token" test -n "$AT"
+check "login: JSON responses are no-store" bash -c "[[ '$(hdr $T/login Cache-Control)' == *no-store* ]]"
+req "$T/me" "$AT" GET /auth/me
+check "GET /auth/me → 200" test "$(st $T/me)" = 200
+check "/auth/me: login root, isAdmin true" test "$(jg $T/me "d['login'],d['isAdmin']")" = "root, True"
+req "$T/mk" "$AT" POST /users '{"login":"alice","fullName":"Alice A","password":"alicepass1","isAdmin":false}'
+check "admin POST /users alice → 201" test "$(st $T/mk)" = 201
+
+# ---- 3. User uploads -------------------------------------------------------
+login alice alicepass1
+check "user login → 200" test "$(st $T/login)" = 200
+UT=$(token)
+req "$T/me2" "$UT" GET /auth/me
+check "/auth/me for user: isAdmin false" test "$(jg $T/me2 "d['login'],d['isAdmin']")" = "alice, False"
+
+python3 -I - "$JPEG_FIXTURE" "$T" <<'PYEOF'
+import sys, zlib, struct
+data = open(sys.argv[1], "rb").read()
+com = b"variant-2"
+seg = b"\xff\xfe" + (len(com) + 2).to_bytes(2, "big") + com
+open(sys.argv[2] + "/photo2.jpg", "wb").write(data[:2] + seg + data[2:])
+def chunk(t, b):
+    c = struct.pack(">I", len(b)) + t + b
+    return c + struct.pack(">I", zlib.crc32(t + b) & 0xffffffff)
+w = h = 8
+raw = b"".join(b"\x00" + b"\x20\x80\xe0" * w for _ in range(h))
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) \
+      + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+open(sys.argv[2] + "/pic.png", "wb").write(png)
+PYEOF
+
+upload "$T/u1" "$UT" "$JPEG_FIXTURE" photo.jpg
+upload "$T/u2" "$UT" "$T/photo2.jpg" photo2.jpg
+upload "$T/u3" "$UT" "$T/pic.png" pic.png
+upload "$T/u4" "$UT" "$MOV_FIXTURE" clip.mov
+check "upload JPEG → 201" test "$(st $T/u1)" = 201
+check "upload second JPEG → 201" test "$(st $T/u2)" = 201
+check "upload PNG → 201" test "$(st $T/u3)" = 201
+check "upload MOV → 201" test "$(st $T/u4)" = 201
+JID=$(jg $T/u1 "d['id']"); J2=$(jg $T/u2 "d['id']"); PID=$(jg $T/u3 "d['id']"); MID=$(jg $T/u4 "d['id']")
+check "JPEG id is sha256 of the content" test "$JID" = "$(sha "$JPEG_FIXTURE")"
+check "new uploads report duplicate:false" test "$(jg $T/u1 "d['duplicate']")" = False
+upload "$T/dup" "$UT" "$JPEG_FIXTURE" again.jpg
+check "duplicate upload → 200" test "$(st $T/dup)" = 200
+check "duplicate upload: duplicate:true, same id" test "$(jg $T/dup "d['duplicate'],d['id']")" = "True, $JID"
+check "stored in root1 and root2 (JPEG)" test -f "$R1/${JID:0:2}/$JID.jpg" -a -f "$R2/${JID:0:2}/$JID.jpg"
+check "upload response headers: nosniff" test "$(hdr $T/u1 X-Content-Type-Options)" = nosniff
+
+# ---- 4. Tagging, listing, stats --------------------------------------------
+for tg in alpha beta gamma; do req "$T/tg_$tg" "$UT" POST /tags "{\"name\":\"$tg\"}"; done
+check "POST /tags ×3 → 201" test "$(st $T/tg_alpha)$(st $T/tg_beta)$(st $T/tg_gamma)" = 201201201
+req "$T/tl" "$UT" GET /tags
+check "GET /tags lists the three tags" test "$(jg $T/tl "','.join(t['name'] if isinstance(t,dict) else t for t in d['tags'])")" = alpha,beta,gamma
+req "$T/p1" "$UT" PUT "/items/$JID/tags" '{"tags":["alpha","beta"]}'
+req "$T/p2" "$UT" POST "/items/$J2/tags" '{"tags":["alpha"]}'
+req "$T/p3" "$UT" PUT "/items/$PID/tags" '{"tags":["gamma"]}'
+check "PUT/POST item tags → 200" test "$(st $T/p1)$(st $T/p2)$(st $T/p3)" = 200200200
+req "$T/it" "$UT" GET "/items/$JID/tags"
+check "GET /items/{id}/tags sorted" test "$(jg $T/it "sorted(d['tags'])")" = "['alpha', 'beta']"
+check "list tags=alpha → both JPEGs" test "$(names '?tags=alpha')" = "photo.jpg,photo2.jpg"
+check "list tags=alpha,beta (AND) → photo.jpg only" test "$(names '?tags=alpha,beta')" = "photo.jpg"
+check "list untagged=true → clip.mov only" test "$(names '?untagged=true')" = "clip.mov"
+req "$T/pg0" "$UT" GET "/items?offset=0&limit=2"
+req "$T/pg1" "$UT" GET "/items?offset=2&limit=2"
+check "pagination: pages hold 2+2 items" test "$(jg $T/pg0 "len(d['items'])")$(jg $T/pg1 "len(d['items'])")" = 22
+check "pagination: pages cover all 4 distinct items" \
+  test "$(python3 -I -c 'import json,sys; print(len({i["id"] for f in sys.argv[1:] for i in json.load(open(f))["items"]}))' $T/pg0.body $T/pg1.body)" = 4
+check "list: JSON is no-store + nosniff" bash -c "[[ '$(hdr $T/pg0 Cache-Control)' == *no-store* ]] && [ '$(hdr $T/pg0 X-Content-Type-Options)' = nosniff ]"
+req "$T/stats" "$UT" GET /stats
+check "GET /stats: imageCount 4, tagCount 3" test "$(jg $T/stats "d['imageCount'],d['tagCount']")" = "4, 3"
+
+# ---- 5. Retrieval ----------------------------------------------------------
+req "$T/meta" "$UT" GET "/items/$JID"
+check "GET /items/{id} → 200 with metadata" test "$(jg $T/meta "d['id'],d['name'],d['ext'],d['size']")" = "$JID, photo.jpg, .jpg, $(stat -c %s "$JPEG_FIXTURE")"
+check "item metadata carries its tags" test "$(jg $T/meta "sorted(d['tags'])")" = "['alpha', 'beta']"
+http "$T/dl" -H "Authorization: Bearer $UT" "$BASE_URL/items/$JID/content"
+check "download JPEG → 200, sha256 equals id" test "$(st $T/dl)" = 200 -a "$(sha $T/dl.body)" = "$JID"
+check "download Content-Type image/jpeg" test "$(hdr $T/dl Content-Type)" = image/jpeg
+http "$T/dlp" -H "Authorization: Bearer $UT" "$BASE_URL/items/$PID/content"
+check "download PNG byte-identical" test "$(sha $T/dlp.body)" = "$PID"
+http "$T/dlm" -H "Authorization: Bearer $UT" "$BASE_URL/items/$MID/content"
+check "download MOV byte-identical" test "$(sha $T/dlm.body)" = "$MID"
+http "$T/rng" -H "Authorization: Bearer $UT" -H "Range: bytes=0-99" "$BASE_URL/items/$JID/content"
+check "Range bytes=0-99 → 206 with 100 bytes" test "$(st $T/rng)" = 206 -a "$(stat -c %s $T/rng.body)" = 100
+check "Range body equals fixture prefix" cmp -n 100 "$T/rng.body" "$JPEG_FIXTURE"
+http "$T/inm" -H "Authorization: Bearer $UT" -H "If-None-Match: \"$JID\"" "$BASE_URL/items/$JID/content"
+check "If-None-Match with ETag → 304" test "$(st $T/inm)" = 304
+
+# ---- 6. Authorisation boundaries -------------------------------------------
+req "$T/a1" "$UT" GET /users
+check "regular user GET /users → 403" test "$(st $T/a1)" = 403
+check "403 error code is Forbidden" test "$(jg $T/a1 "d['error']['code']")" = Forbidden
+req "$T/a2" - GET /items
+check "no token on GET /items → 401" test "$(st $T/a2)" = 401
+check "401 error code is Unauthorized" test "$(jg $T/a2 "d['error']['code']")" = Unauthorized
+req "$T/a3" "$AT" PATCH /users/alice '{"enabled":false}'
+check "admin PATCH alice enabled:false → 204" test "$(st $T/a3)" = 204
+req "$T/a4" "$UT" GET /items
+check "disabled user's existing token → 401 without re-login" test "$(st $T/a4)" = 401
+login alice alicepass1
+check "disabled user cannot log in again (403)" test "$(st $T/login)" = 403
+req "$T/a5" "$AT" GET /items
+check "admin token unaffected → 200" test "$(st $T/a5)" = 200
+
+# ---- 7. Cleanup (admin) ----------------------------------------------------
+req "$T/c1" "$AT" DELETE /tags/gamma
+check "DELETE /tags/gamma → 204" test "$(st $T/c1)" = 204
+req "$T/c2" "$AT" GET "/items/$PID"
+check "item no longer has deleted tag" test "$(jg $T/c2 "d['tags']")" = "[]"
+req "$T/c3" "$AT" GET /tags
+check "deleted tag gone from /tags" test "$(jg $T/c3 "sorted(t['name'] if isinstance(t,dict) else t for t in d['tags'])")" = "['alpha', 'beta']"
+
+check "before delete: MOV stored in both roots" test -f "$R1/${MID:0:2}/$MID.mov" -a -f "$R2/${MID:0:2}/$MID.mov"
+req "$T/c4" "$AT" DELETE "/items/$MID"
+check "DELETE item → 204" test "$(st $T/c4)" = 204
+http "$T/c5" -H "Authorization: Bearer $AT" "$BASE_URL/items/$MID/content"
+check "content of deleted item → 404" test "$(st $T/c5)" = 404
+check "404 error code is NotFound" test "$(jg $T/c5 "d['error']['code']")" = NotFound
+check "deleted item's file gone from root1" test ! -e "$R1/${MID:0:2}/$MID.mov"
+check "deleted item's file gone from root2" test ! -e "$R2/${MID:0:2}/$MID.mov"
+req "$T/c6" "$AT" GET /stats
+check "stats after cleanup: imageCount 3, tagCount 2" test "$(jg $T/c6 "d['imageCount'],d['tagCount']")" = "3, 2"
+
+req "$T/c7" "$AT" DELETE /users/alice
+check "DELETE user alice → 204" test "$(st $T/c7)" = 204
+req "$T/c8" "$AT" GET /users/alice
+check "deleted user → 404" test "$(st $T/c8)" = 404
+req "$T/c9" "$AT" DELETE /users/root
+check "last-admin guard: DELETE root → 409" test "$(st $T/c9)" = 409
+check "last-admin guard error code LastAdmin" test "$(jg $T/c9 "d['error']['code']")" = LastAdmin
+check "409 JSON: nosniff + no-store" bash -c "[ '$(hdr $T/c9 X-Content-Type-Options)' = nosniff ] && [[ '$(hdr $T/c9 Cache-Control)' == *no-store* ]]"
+req "$T/c10" "$AT" GET /auth/me
+check "root still operational after guard refusal" test "$(st $T/c10)" = 200
+
+cat > "$T/same.py" <<'PYEOF'
+import sqlite3, sys
+def rows(p):
+    c = sqlite3.connect(p, timeout=10)
+    r = {t: sorted(c.execute(q).fetchall()) for t, q in (
+        ("file", "SELECT * FROM file"), ("tag", "SELECT * FROM tag"), ("file_tag", "SELECT * FROM file_tag"))}
+    c.close(); return r
+a, b = rows(sys.argv[1]), rows(sys.argv[2])
+print("same" if a == b else "DIFF")
+print(len(a["file"]), len(a["tag"]), len(a["file_tag"]), file=sys.stderr)
+PYEOF
+check "per-target DBs identical (file, tag, file_tag)" test "$(python3 -I $T/same.py $DB1 $DB2 2>/dev/null)" = same
+check "per-target DBs: 3 files, 2 tags, 3 file_tag rows" test "$(python3 -I $T/same.py $DB1 $DB2 2>&1 >/dev/null)" = "3 2 3"
+check "both roots hold exactly 3 stored files each" test "$(find $R1 -type f | wc -l)$(find $R2 -type f | wc -l)" = 33
+
+# ---- 9. Shutdown -----------------------------------------------------------
+SIGTERM_OK=0
+if kill -TERM "$DAEMON_PID" 2>/dev/null; then
+  for _i in $(seq 1 50); do kill -0 "$DAEMON_PID" 2>/dev/null || break; sleep 0.1; done
+  if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+    EXIT=0; wait "$DAEMON_PID" 2>/dev/null || EXIT=$?
+    [ "$EXIT" -eq 0 ] && SIGTERM_OK=1
+  else kill -KILL "$DAEMON_PID" 2>/dev/null || true; fi
+fi
+check "SIGTERM causes clean exit (status 0)" test "$SIGTERM_OK" = 1
+DAEMON_PID=0
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]
