@@ -51,6 +51,8 @@ if(VALGRIND)
     set(VALGRIND_SUPP "${CMAKE_CURRENT_SOURCE_DIR}/../valgrind.supp")
     set(JPEG_FIXTURE
         "${CMAKE_CURRENT_SOURCE_DIR}/../validations/jpeg/test/testimg.jpg")
+    set(PNG_FIXTURE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../validations/png/test/testimg.png")
 
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/test/test_memcheck.sh.in"
@@ -135,3 +137,25 @@ add_test(
 )
 
 set_tests_properties(imagestore_dryrun_streaming_tests PROPERTIES TIMEOUT 300)
+
+# Plan 0018 guard: ~40 distinct HEIC imports at --jobs 1 must stay under 400 MiB
+# peak RSS (glibc malloc arena cap, imager/MallocTuning.h).
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/test_heic_rss.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_heic_rss.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_heic_rss.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME imagestore_heic_rss_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_heic_rss.sh"
+)
+
+set_tests_properties(imagestore_heic_rss_test PROPERTIES TIMEOUT 120)

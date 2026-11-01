@@ -133,7 +133,7 @@ Identical to `addFile` but step 1 (disk read) is skipped — the caller provides
 
 ### Streaming path (files above 8 MB)
 
-`addFile` reads files of 8 MB or less into a `Blob` as shown above. Larger files are not loaded: they are hashed and validated in chunks of at most 4 MB by stream validators and `StreamHasher`, then copied to each root from disk, so file I/O memory stays bounded: one 4 MB chunk while hashing, then a 4 MB buffer per target root while writing (the roots are written in parallel). The validator's decoder memory (estimated from under 1 MB for PNG up to about 300 MB for a large HEIC) comes on top; see [DEPLOYMENT.md](DEPLOYMENT.md#large-uploads-and-memory). Formats without a stream validator get `UnsupportedFormat` above 8 MB, and `.aae` sidecars get `TooLarge`. See plan [0017](../plan/0017.LARGE_FILES.md).
+`addFile` reads files of 8 MB or less into a `Blob` as shown above. Larger files are not loaded: they are hashed and validated in chunks of at most 4 MB by stream validators and `StreamHasher`, then copied to each root from disk, so file I/O memory stays bounded: one 4 MB chunk while hashing, then a 4 MB buffer per target root while writing (the roots are written in parallel). The validator's decoder memory (estimated at under 1 MB for PNG; measured at about 60-80 MiB per concurrent 12 MP HEIC decode) comes on top; see [DEPLOYMENT.md](DEPLOYMENT.md#large-uploads-and-memory). Formats without a stream validator get `UnsupportedFormat` above 8 MB, and `.aae` sidecars get `TooLarge`. See plan [0017](../plan/0017.LARGE_FILES.md).
 
 ### `validateOnly(blob, filename)` and `validateOnlyFile(path, filename)` Pipelines
 

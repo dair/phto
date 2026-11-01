@@ -69,3 +69,39 @@
 - **Task**: Apply bytes correction, unmatched-route limits, final test count.
 - **Outcome**: DEPLOYMENT.md/API.md/CLAUDE.md updated; CLAUDE.md, ANALYSIS.md, getting-started.md now 42 tests incl. server_access_log_json_test.
 - **Next Step**: none.
+
+## [2026-11-01] — Plan 0018 findings recorded (interim)
+- **Agent**: bookkeeper (mi-docs)
+- **Task**: Record mi-dbg's memory-growth findings.
+- **Outcome**: Appended an interim entry to docs/logs/memory.md; updated the 0018 status in docs/plan/0018.MEMORY.md and docs/plan/README.md.
+- **Next Step**: Add H3/H4 numbers and the post-fix confirmation when mi-dbg reports them.
+
+## [2026-11-01] — Plan 0018 closed
+- **Agent**: bookkeeper (mi-docs)
+- **Task**: Record the confirmed PNG leak fix.
+- **Outcome**: Appended a fix entry to docs/logs/memory.md; updated status in docs/plan/0018.MEMORY.md and docs/plan/README.md.
+- **Next Step**: none
+
+## [2026-11-01] — Plan 0018 HEIC/NEF/jobs 4 numbers recorded
+- **Agent**: bookkeeper (mi-docs)
+- **Task**: Add the final H3/H4 measurements.
+- **Outcome**: Appended an entry to docs/logs/memory.md; updated the "Not measured" bullet in docs/plan/0018.MEMORY.md. Status stays closed (no growth found).
+- **Next Step**: Possible follow-up on the HEIC memory estimate in docs/user/DEPLOYMENT.md (not edited; fixture resolution unknown).
+
+## [2026-11-01] — Plan 0018 HEIC arena finding recorded
+- **Agent**: bookkeeper (mi-docs)
+- **Task**: Record the HEIC memory cause (arena retention) and truncation-leniency details.
+- **Outcome**: Appended an entry to docs/logs/memory.md; added a note to the 0018 Status section and the weak-HEIC item in docs/plan/README.md.
+- **Next Step**: Once the mallopt fix lands, mark it fixed, then add the DEPLOYMENT.md working-set wording (team-lead to supply).
+
+## [2026-11-01] — Plan 0018 HEIC arena cap documented as fixed
+- **Agent**: bookkeeper (mi-docs)
+- **Task**: Record the implemented malloc arena cap and corrected HEIC memory figures.
+- **Outcome**: Edited docs/user/DEPLOYMENT.md (new "Memory and malloc arenas" section, HEIC row, measured-figures sentence), docs/user/architecture.md, CLAUDE.md (HEIC figure, 43 tests, imagestore_heic_rss_test), docs/analysis/ANALYSIS.md and docs/user/getting-started.md (43 tests), docs/plan/0018.MEMORY.md, docs/logs/memory.md.
+- **Next Step**: none
+
+## [2026-11-01] — Final 0018 docs pass
+- **Agent**: bookkeeper (mi-docs)
+- **Task**: Add CLAUDE.md malloc-arena bullet and the --memory-report shutdown-lag Next work item.
+- **Outcome**: Edited CLAUDE.md (new "Malloc arena cap" bullet) and docs/plan/README.md (new item 6, decoder-memory item renumbered to 7).
+- **Next Step**: none

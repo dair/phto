@@ -273,16 +273,31 @@ Stock Crow buffers the whole request body before any handler runs. `imagerd` bui
   | JPEG, baseline | under 1 MB |
   | JPEG, progressive | about 3-6 bytes per pixel (70-140 MB at 24 MP) |
   | PNG | under 1 MB (row by row) |
-  | HEIC | about 4-6 bytes per pixel (50-70 MB at 12 MP, up to about 300 MB at 48 MP) |
+  | HEIC | about 60-80 MiB per concurrent decode at 12 MP, measured with the malloc arena cap (see [Memory and malloc arenas](#memory-and-malloc-arenas)); larger images scale with pixel count (estimate) |
   | NEF | raw sensor buffer, width x height x 2 bytes (about 12 MB at 6 MP, about 90 MB at 45 MP) |
   | MOV/MP4 | about 20-50 MB at 1080p H.264, 50-100 MB at 4K, more for HEVC or 10-bit |
   | AAE | negligible |
 
-  These figures are estimates from reading the code, not measurements. The only measured run is 8 MOV files (718 MB total), which peaked at 75 MiB RSS. Per concurrent upload, budget about `12 MB + the format's decoder memory` (the 12 MB assumes two targets; for streamed files use `4 MB x number of targets` instead, and 8 MB for files that fit in memory). Peak server memory is that times the number of uploads running at once, which `threads` bounds, plus the base process. Two format limits follow from this: an `.aae` sidecar above 8 MB is rejected with `TooLarge` even if `[file_size_limits]` allows more, and a format without a stream validator is rejected with `UnsupportedFormat` above 8 MB. Rejected requests (413, 401) close the connection.
+  Apart from the HEIC row, these figures are estimates from reading the code, not measurements. Measured runs ([plan 0018 log](../logs/memory.md)): 8 MOV files (718 MB total) peaked at 75 MiB RSS; JPEG/PNG/MOV imports plateau at about 88 MiB RSS at `--jobs 1` and 136 MiB at 8 jobs; NEF at 83-145 MiB at `--jobs 1` and 231 MiB at 8; large streamed JPEGs (up to 9 MB) peaked at about 120 MiB at 8 jobs. Per concurrent upload, budget about `12 MB + the format's decoder memory` (the 12 MB assumes two targets; for streamed files use `4 MB x number of targets` instead, and 8 MB for files that fit in memory). Peak server memory is that times the number of uploads running at once, which `threads` bounds, plus the base process. Two format limits follow from this: an `.aae` sidecar above 8 MB is rejected with `TooLarge` even if `[file_size_limits]` allows more, and a format without a stream validator is rejected with `UnsupportedFormat` above 8 MB. Rejected requests (413, 401) close the connection.
 - Uploads still arriving at shutdown are cut off and their temp files removed.
 - Downloads do not buffer the file: full responses are streamed in 16 KiB chunks. Range responses buffer up to 8 MiB each.
 
 A reverse proxy limit (`client_max_body_size`, `request_body max_size`) is still worthwhile, but is no longer needed to protect RAM from a declared oversized body.
+
+### Memory and malloc arenas
+
+HEIC decoding (libheif + libde265) uses worker threads that allocate large plane/tile buffers. With glibc's default of up to 8 x cores per-thread malloc arenas, those arenas retain and fragment the freed buffers, so resident memory grows far beyond the decoded image (about 1.0-1.35 GiB at `--jobs 1` and 1.7-2.0 GiB at the default jobs for a 3024x4032 test fixture, although one decoded image is about 37 MB). This is arena retention, not a leak: the memory is reusable and stops growing once the cap is applied.
+
+`imagestore` and `imagerd` therefore cap glibc to 2 arenas at startup (`imager/MallocTuning.h`, `mallopt(M_ARENA_MAX, 2)`, glibc only). Measured on 800 distinct 12 MP HEIC files with two targets:
+
+| Setting | Before the cap | With the cap |
+|---------|----------------|--------------|
+| `--jobs 1` | 1.0-1.35 GiB | about 145-165 MiB |
+| default jobs (8) | 1.7-2.0 GiB | about 560-610 MiB |
+
+Throughput is unchanged (5 files/s at `--jobs 1`, 14 files/s at 8 jobs). Budget roughly 60-80 MiB per concurrent HEIC decode of a 12 MP image after the cap; an all-HEIC workload at the default 8 jobs needs about 600 MiB in total.
+
+To override the cap, set the `MALLOC_ARENA_MAX` environment variable (for example `Environment=MALLOC_ARENA_MAX=4` in the systemd unit). If it is set, the built-in cap is not applied. Raising it bought nothing measurable here: in a single-thread decode loop, 4 arenas used about 150 MiB and 8 used about 200 MiB, against about 110 MiB at 2.
 
 ## Backups and multiple targets
 

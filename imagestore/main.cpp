@@ -1,6 +1,7 @@
 #include <config/Config.h>
 #include <getopt.h>
 #include <imager/Imager.h>
+#include <imager/MallocTuning.h>
 #include <imager/Types.h>
 
 #include <atomic>
@@ -104,6 +105,7 @@ imagestore::PipelineStage mapStage(imager::ProcessingStage stage) {
 // ---------------------------------------------------------------------------
 
 int main(int argc, char* argv[]) {
+  imager::capMallocArenas();
 #ifdef MEMORY_TRACE
   imagestore::memoryTraceInit();
 #endif

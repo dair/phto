@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# imagestore/test/test_heic_rss.sh.in — plan 0018 regression guard
+#
+# Importing ~40 distinct HEIC files with --jobs 1 must keep peak RSS (hwm from --memory-report) below
+# LIMIT_MIB. Without imager::capMallocArenas() (glibc per-thread arenas retaining libheif/libde265 worker
+# buffers) the same run exceeds 700 MiB; with the cap it stays around 150 MiB.
+# Registered as "imagestore_heic_rss_test".
+
+set -uo pipefail
+
+BIN="@IMAGESTORE_BIN@"
+HEIC="@HEIC_FIXTURE@"
+COUNT=40
+LIMIT_MIB=400
+
+if [ ! -f "$HEIC" ]; then echo "FATAL: fixture $HEIC missing"; exit 1; fi
+
+# The operator override must not mask the built-in default under test.
+unset MALLOC_ARENA_MAX
+
+T=$(mktemp -d /tmp/imagestore-heic-rss-XXXXXX)
+trap 'rm -rf "$T"' EXIT
+
+mkdir -p "$T/root" "$T/in"
+cat > "$T/cfg.toml" <<EOF
+[[targets]]
+root = "$T/root"
+database = "$T/imager.db"
+EOF
+
+# Distinct files: fixture + (i) trailing zero bytes (still validates, different SHA256).
+: > "$T/list"
+for i in $(seq 1 "$COUNT"); do
+    { cat "$HEIC"; head -c "$i" /dev/zero; } > "$T/in/h$i.heic"
+    echo "$T/in/h$i.heic" >> "$T/list"
+done
+
+"$BIN" --config "$T/cfg.toml" --jobs 1 --memory-report --memory-interval 1 < "$T/list" > "$T/out" 2> "$T/err"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "FAIL: imagestore exited $rc"; tail -5 "$T/err"; exit 1
+fi
+
+line=$(grep '^MEMF' "$T/err" | tail -1)
+echo "$line"
+if ! [[ "$line" =~ hwm=([0-9]+)\ (KiB|MiB|GiB) ]]; then
+    echo "FAIL: cannot parse hwm from MEMF line"; exit 1
+fi
+val=${BASH_REMATCH[1]}
+unit=${BASH_REMATCH[2]}
+case "$unit" in
+    KiB) mib=0 ;;
+    MiB) mib=$val ;;
+    GiB) mib=$((val * 1024)) ;;
+esac
+
+if [ "$mib" -ge "$LIMIT_MIB" ]; then
+    echo "FAIL: peak RSS ${mib} MiB >= ${LIMIT_MIB} MiB after ${COUNT} HEIC imports (malloc arena cap missing?)"
+    exit 1
+fi
+echo "PASS: peak RSS ${mib} MiB < ${LIMIT_MIB} MiB after ${COUNT} HEIC imports"

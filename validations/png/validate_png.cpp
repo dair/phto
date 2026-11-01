@@ -61,6 +61,10 @@ png_detail::ValidationResult png_detail::validatePng(const void* data, size_t da
 
   PngReadState state{static_cast<const uint8_t*>(data), dataSize, 0};
 
+  // Must be declared before setjmp: libpng errors longjmp back here, which
+  // would skip the destructor of any non-trivial object constructed after it.
+  std::vector<uint8_t> row;
+
   if (setjmp(png_jmpbuf(guard.png_ptr))) {
     return INVALID;
   }
@@ -71,7 +75,7 @@ png_detail::ValidationResult png_detail::validatePng(const void* data, size_t da
   uint32_t height = png_get_image_height(guard.png_ptr, guard.info_ptr);
   size_t rowbytes = png_get_rowbytes(guard.png_ptr, guard.info_ptr);
 
-  std::vector<uint8_t> row(rowbytes);
+  row.resize(rowbytes);
   for (uint32_t y = 0; y < height; ++y) {
     png_read_row(guard.png_ptr, row.data(), nullptr);
   }

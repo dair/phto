@@ -2,6 +2,7 @@
 #include <auth/UserStore.h>
 #include <config/Config.h>
 #include <imager/Imager.h>
+#include <imager/MallocTuning.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -55,6 +56,7 @@ std::string loadJwtSecret(const config::AuthConfig& auth) {
 } // namespace
 
 int main(int argc, char* argv[]) {
+  imager::capMallocArenas();
   if (argc != 2) {
     std::cerr << "Usage: imagerd <config.toml>\n";
     return 1;

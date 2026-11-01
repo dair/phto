@@ -34,6 +34,7 @@ VALGRIND="@VALGRIND_BIN@"
 BIN="@IMAGESTORE_BIN@"
 SUPP="@VALGRIND_SUPP@"
 JPEG="@JPEG_FIXTURE@"
+PNG="@PNG_FIXTURE@"
 
 PASS=0
 FAIL=0
@@ -187,6 +188,46 @@ if [ "${rc_miss:-0}" -eq 0 ]; then
 else
     echo "FAIL: delete-mode MISS — Valgrind reported definite/indirect leaks (exit ${rc_miss})"
     FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 5: validation-failure paths (truncated PNG / JPEG)
+# Regression for plan 0018: libpng/libjpeg report errors via longjmp, which
+# skips destructors of objects constructed after setjmp. A truncated PNG used
+# to leak the row buffer on every failure. Several truncation points are used
+# so failures occur in the header, mid-image and near the end.
+# ---------------------------------------------------------------------------
+BADDIR="$TESTDIR/bad"
+mkdir -p "$BADDIR"
+BADLIST="$TESTDIR/bad.lst"
+: > "$BADLIST"
+for n in 40 80 200 800 1600 2800; do
+    head -c "$n" "$PNG" > "$BADDIR/trunc_$n.png"
+    echo "$BADDIR/trunc_$n.png" >> "$BADLIST"
+done
+for n in 100 600 2000 4000; do
+    head -c "$n" "$JPEG" > "$BADDIR/trunc_$n.jpg"
+    echo "$BADDIR/trunc_$n.jpg" >> "$BADLIST"
+done
+
+"$VALGRIND" \
+    --leak-check=full \
+    --errors-for-leak-kinds=definite,indirect \
+    --show-leak-kinds=definite,indirect \
+    --error-exitcode=1 \
+    --suppressions="$SUPP" \
+    "$BIN" --config "$CONFIG" \
+    < "$BADLIST" \
+    2>&1 && rc_bad=0 || rc_bad=$?
+
+# imagestore itself exits 2 when some files fail (expected here); Valgrind's
+# --error-exitcode=1 would mask that only if it equals 1, so treat 1 as a leak.
+if [ "${rc_bad:-0}" -eq 1 ]; then
+    echo "FAIL: truncated PNG/JPEG failure paths — Valgrind reported definite/indirect leaks"
+    FAIL=$((FAIL + 1))
+else
+    echo "PASS: truncated PNG/JPEG failure paths (longjmp cleanup)"
+    PASS=$((PASS + 1))
 fi
 
 # ---------------------------------------------------------------------------

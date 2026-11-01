@@ -56,7 +56,7 @@ Each plan carries its own `Status` line; this table is a summary. Per-plan desig
 | 0014 DISPLAY | Partially superseded (`--graph` removed by 0016) |
 | 0015 GAPS | Historical snapshot, not maintained |
 | 0016 VERBOSE_OUTPUT, 0017 LARGE_FILES | Implemented |
-| 0018 MEMORY | Instrumentation implemented; investigation open |
+| 0018 MEMORY | Implemented; investigation closed (PNG validator failure-path leak found and fixed) |
 | 0019 DELETE, 0020 TIMESTAMPS | Implemented |
 | 0021 REORGANIZATION | Implemented (settings hygiene done 2026-10-31) |
 | 0022 SERVER (Phase 2) | Implemented (incl. JSON access log, request ids); see [API](../user/API.md), [DEPLOYMENT](../user/DEPLOYMENT.md) |
@@ -66,8 +66,8 @@ Each plan carries its own `Status` line; this table is a summary. Per-plan desig
 
 1. **[0023 TRANSCODING](0023.TRANSCODING.md)** — design only so far; the next piece of planned work.
 2. **[0011 ARCHIVES](0011.ARCHIVES.md)** — needs a decision on which archive library to use before implementation (the project allows no new libraries without discussion).
-3. **[0018 MEMORY](0018.MEMORY.md)** — the instrumentation exists; the memory-growth investigation itself is still open.
-4. **Known behaviour:** uploads still in progress when `imagerd` shuts down are cut off once the drain timeout expires (exit code 3); there is no resumable upload. Not planned to change.
-5. **Finding (pre-existing): weak HEIC validation.** The HEIC validator accepts a file truncated to half its size, on both the in-memory and the streaming path, so its validation is weaker than for the other formats. Found by the tests of the streaming step; not yet fixed.
-6. **Finding (pre-existing): empty id on duplicate.** `Imager::addFile` returns an empty `id` with `DuplicateFile`, while `validateOnly` and `validateOnlyFile` return it. The server works around this in `server/ItemRoutes.cpp:173-177` by parsing the id from the tail of the message. Returning the id from `addFile` would remove the workaround.
-7. **Measure decoder memory:** the per-format decoder figures in [DEPLOYMENT.md](../user/DEPLOYMENT.md#large-uploads-and-memory) are estimates from reading the code. Measure peak RSS with real large files per format (progressive JPEG, HEIC, NEF, 4K HEVC MOV) and consider caps such as a maximum image pixel count or libheif security limits.
+3. **Known behaviour:** uploads still in progress when `imagerd` shuts down are cut off once the drain timeout expires (exit code 3); there is no resumable upload. Not planned to change.
+4. **Finding (pre-existing): weak HEIC validation.** The HEIC validator accepts a file truncated to half its size, on both the in-memory and the streaming path, so its validation is weaker than for the other formats. In the plan 0018 runs ([memory log](../logs/memory.md)), 2,000 files truncated at 5–95% were all accepted (0 rejected), and 3,760 of 5,000 small truncations were accepted (NEF, PNG, JPEG and MOV truncations were all rejected). It is not verified whether this is intended; check the `heif_decode_image` error handling and whether decoding warnings (`heif_image_get_decoding_warnings`) should count as failures. Found by the tests of the streaming step; not yet fixed.
+5. **Finding (pre-existing): empty id on duplicate.** `Imager::addFile` returns an empty `id` with `DuplicateFile`, while `validateOnly` and `validateOnlyFile` return it. The server works around this in `server/ItemRoutes.cpp:173-177` by parsing the id from the tail of the message. Returning the id from `addFile` would remove the workaround.
+6. **`--memory-report` shutdown lag:** the `imagestore --memory-report` thread sleeps a full `--memory-interval` before it notices shutdown, so the process can linger up to one interval after finishing. Wake it with a condition variable instead. Found during plan 0018; `imagestore_heic_rss_test` works around it with `--memory-interval 1`.
+7. **Measure decoder memory:** the per-format decoder figures in [DEPLOYMENT.md](../user/DEPLOYMENT.md#large-uploads-and-memory) are estimates from reading the code, except HEIC (measured at 12 MP, plan 0018). Measure peak RSS with real large files per format (progressive JPEG, large HEIC, NEF, 4K HEVC MOV) and consider caps such as a maximum image pixel count or libheif security limits.
