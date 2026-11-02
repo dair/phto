@@ -5,6 +5,8 @@
 # LIMIT_MIB. Without imager::capMallocArenas() (glibc per-thread arenas retaining libheif/libde265 worker
 # buffers) the same run exceeds 700 MiB; with the cap it stays around 150 MiB.
 # Registered as "imagestore_heic_rss_test".
+# (--memory-interval 1 only gives the reporter samples during the run; imagestore no longer lingers a full
+# interval after finishing, see imagestore_cli_tests.)
 
 set -uo pipefail
 

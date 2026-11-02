@@ -523,9 +523,53 @@ run_test "--delete summary uses 'deleted' wording" \
   "
 
 # ---------------------------------------------------------------------------
+# fx2 / F3: --memory-report must not linger up to one --memory-interval after
+# the import finishes. A tiny import with --memory-interval 60 must exit in < 5 s.
+# ---------------------------------------------------------------------------
+TMPDIR_MEM=$(mktemp -d)
+CFG_PATH_MEM="$TMPDIR_MEM/test.toml"
+cat > "$CFG_PATH_MEM" <<MEMCFG
+[[targets]]
+root = "$TMPDIR_MEM/root"
+database = "$TMPDIR_MEM/imager.db"
+MEMCFG
+mkdir -p "$TMPDIR_MEM/root"
+cp "$TMPDIR_TEST/test_image.jpg" "$TMPDIR_MEM/a.jpg" 2>/dev/null || true
+
+memory_report_exits_promptly() {
+  local start end rc=0
+  start=$(date +%s.%N)
+  echo "$TMPDIR_MEM/a.jpg" | timeout 30 "$BIN" --config "$CFG_PATH_MEM" --memory-report --memory-interval 60 \
+    >"$TMPDIR_MEM/out" 2>"$TMPDIR_MEM/err" || rc=$?
+  end=$(date +%s.%N)
+  [ "$rc" -eq 0 ] || { echo "exit code $rc"; return 1; }
+  # elapsed < 5 s
+  awk -v s="$start" -v e="$end" 'BEGIN { exit !((e - s) < 5.0) }'
+}
+
+run_test "--memory-report --memory-interval 60 exits promptly (< 5 s) after a tiny import" \
+  memory_report_exits_promptly
+
+run_test "--memory-report still prints a final MEMF line before exit" \
+  bash -c "grep -q '^MEMF' \"$TMPDIR_MEM/err\""
+
+# Same with a dry run and with an empty stdin (nothing to import).
+memory_report_empty_stdin_prompt() {
+  local start end rc=0
+  start=$(date +%s.%N)
+  : | timeout 30 "$BIN" --config "$CFG_PATH_MEM" --memory-report --memory-interval 60 \
+    >"$TMPDIR_MEM/out2" 2>"$TMPDIR_MEM/err2" || rc=$?
+  end=$(date +%s.%N)
+  [ "$rc" -eq 0 ] || { echo "exit code $rc"; return 1; }
+  awk -v s="$start" -v e="$end" 'BEGIN { exit !((e - s) < 5.0) }'
+}
+run_test "--memory-report --memory-interval 60 exits promptly on empty input" \
+  memory_report_empty_stdin_prompt
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
-rm -rf "$TMPDIR_TEST" "$TMPDIR_TEST2" "$TMPDIR_TEST3" "$TMPDIR_DEL"
+rm -rf "$TMPDIR_MEM" "$TMPDIR_TEST" "$TMPDIR_TEST2" "$TMPDIR_TEST3" "$TMPDIR_DEL"
 
 # ---------------------------------------------------------------------------
 # Results

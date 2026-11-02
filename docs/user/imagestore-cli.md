@@ -18,16 +18,19 @@ Reads file paths from stdin (one per line) and stores each via libimager.
 | `--errors PATH` | `-e` | Error file. Paths listed here are skipped on startup; new failures are appended. |
 | `--jobs N` | `-j` | Maximum number of files processed concurrently. Default: number of CPU cores (capped at 256). |
 | `--dry-run` | `-n` | Validate and hash only; do not write to storage or databases. |
-| `--verbose` | `-v` | Print one status line per file to stderr: `OK`, `DUP`, `ERR`, or `SKIP`. |
+| `--delete` | `-d` | Delete mode: treat stdin paths as files to remove from the collection. Each file is read and hashed, and the matching id is removed from all databases and storage. No validation is performed. |
+| `--verbose` | `-v` | Real-time slot display on a TTY, otherwise one status line per file on stderr: `OK`, `DUP`, `ERR`, or `SKIP`. |
 | `--quiet` | `-q` | Suppress all progress and summary output. |
-| `--graph` | | Display an animated pipeline graph on stderr (requires a TTY). |
+| `--memory-report` | | Periodically log RSS and libimager memory gauges to stderr (`MEM` lines, final `MEMF` line). Cannot be combined with `--quiet`. Stops immediately when the import finishes. |
+| `--memory-interval N` | | Seconds between memory reports. Default: 5. |
 | `--help` | `-h` | Print usage and exit. |
 
 ### Mutually Exclusive Options
 
-- `--quiet` and `--graph` cannot be used together.
-- `--graph` and `--verbose` cannot be used together.
-- If `--graph` is requested but stderr is not a TTY, it silently falls back to normal mode.
+- `--quiet` and `--verbose` cannot be used together.
+- `--quiet` and `--memory-report` cannot be used together.
+- In verbose mode, a TTY on stderr gives a real-time slot display; otherwise `imagestore` prints one line per file.
+- With `--delete`, `--dry-run` computes hashes and checks existence without deleting.
 
 ## Exit Codes
 
@@ -127,7 +130,7 @@ Note that `DuplicateFile` results are never written to the error file — duplic
 
 ## Progress Output
 
-In the default (non-quiet, non-graph) mode, `imagestore` periodically prints a progress summary to stderr:
+In the default (non-quiet, non-verbose) mode, `imagestore` periodically prints a progress summary to stderr:
 
 ```
 [imagestore] 1234/5678 files  |  OK 1100  DUP 120  ERR 14  |  2.3 GB  |  3.4 files/s
@@ -141,20 +144,6 @@ A final summary is always printed after all files are processed:
   4.1 GB  |  147.9 files/s
 ```
 
-### Graph Mode
-
-`--graph` displays an animated real-time view of the ingestion pipeline stages on stderr. Each stage shows the number of files currently in flight:
-
-```
-read       [####    ]   8 files
-validate   [##      ]   4 files
-hash       [####    ]   8 files
-dedup      [#       ]   2 files
-storage    [###     ]   6 files
-db-insert  [##      ]   4 files
-```
-
-This is most useful when profiling a batch import to identify which stage is the bottleneck.
 
 ## AAE Sidecar Files
 
@@ -194,15 +183,15 @@ tmux new-session -s import
 find /media/camera -type f | imagestore --config ~/.imagestore.toml --errors ~/errors.txt
 ```
 
-### Monitor Progress with the Graph
+### Monitor Progress with Verbose Mode
 
-For long imports, `--graph` gives the clearest real-time feedback:
+For long imports on a terminal, `--verbose` gives a real-time per-slot display:
 
 ```bash
 find /media/camera -type f | imagestore \
   --config ~/.imagestore.toml \
   --errors ~/errors.txt \
-  --graph
+  --verbose
 ```
 
 ### Adjust Job Count Based on Storage Type
@@ -242,4 +231,4 @@ The `--quiet` flag suppresses all non-error output, making the script output cle
 
 `imagestore` is a thin shell over `libimager`. It reads file paths from stdin and calls `lib.addFile(path)` (or `lib.validateOnlyFile(path, filename, onStage)` in dry-run mode) for each path. All validation, hashing, deduplication, and storage logic lives in the library.
 
-This means the metrics exposed via `lib.metrics()` accurately reflect what `imagestore` is doing. The `--graph` display is driven entirely by reading the library's metrics.
+This means the metrics exposed via `lib.metrics()` accurately reflect what `imagestore` is doing.

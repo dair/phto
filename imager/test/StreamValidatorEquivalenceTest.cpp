@@ -199,6 +199,11 @@ public:
           s.valid
         );
         (s.valid ? accepted : rejected)++;
+        // fx2/F1: a truncated HEIC must never be accepted (by either validator).
+        if (f.ext == ".heic" && label.rfind("truncated-", 0) == 0) {
+          CPPUNIT_ASSERT_MESSAGE(f.ext + " " + label + ": truncated HEIC rejected by stream validator", !s.valid);
+          CPPUNIT_ASSERT_MESSAGE(f.ext + " " + label + ": truncated HEIC rejected by blob validator", !b.valid);
+        }
         if (!s.valid) {
           CPPUNIT_ASSERT_MESSAGE(f.ext + " " + label + ": rejection carries a message", !s.errorMessage.empty());
         }

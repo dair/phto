@@ -114,7 +114,7 @@ The batch import CLI. Reads paths from stdin, dispatches each to `libimager` wit
 4.  Acquire write mutex                     (metrics: mutex_wait)
     ↓
 5.  Check for duplicate in database         (db::Database read, metrics: dedup_check)
-    → if duplicate: release mutex, return DuplicateFile
+    → if duplicate: release mutex, return DuplicateFile with the existing id
     ↓
 6.  Write file to all storage roots         (coro, FileStorage, fan-out across roots, metrics: storage_write)
     ↓

@@ -74,11 +74,7 @@ int64_t inflightBytes(const metrics::Metrics& m) {
 } // namespace
 
 MemoryReporter::MemoryReporter(
-  bool enabled,
-  std::chrono::seconds interval,
-  const Stats& stats,
-  const metrics::Metrics& metrics,
-  ResultLog& resultLog
+  bool enabled, std::chrono::seconds interval, const Stats& stats, const metrics::Metrics& metrics, ResultLog& resultLog
 )
   : m_enabled(enabled),
     m_interval(std::max(interval, std::chrono::seconds(1))),
@@ -98,9 +94,14 @@ void MemoryReporter::stop() {
   if (!m_enabled) {
     return;
   }
-  if (m_stop.exchange(true)) {
-    return;
+  {
+    std::lock_guard lock(m_mutex);
+    if (m_stop) {
+      return;
+    }
+    m_stop = true;
   }
+  m_cv.notify_all();
   if (m_thread.joinable()) {
     m_thread.join();
   }
@@ -108,12 +109,12 @@ void MemoryReporter::stop() {
 }
 
 void MemoryReporter::loop() {
-  while (!m_stop.load(std::memory_order_relaxed)) {
-    std::this_thread::sleep_for(m_interval);
-    if (m_stop.load(std::memory_order_relaxed)) {
-      break;
-    }
+  std::unique_lock lock(m_mutex);
+  // wait_for returns true when stop was requested; wakes immediately on stop().
+  while (!m_cv.wait_for(lock, m_interval, [this] { return m_stop; })) {
+    lock.unlock();
     emitSample(false);
+    lock.lock();
   }
 }
 

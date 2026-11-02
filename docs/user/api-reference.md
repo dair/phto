@@ -102,7 +102,7 @@ Reads a file from disk and runs it through the full ingestion pipeline: read, va
 - `path` — absolute or relative path to the file on disk. The I/O happens inside the library, making it observable via the `stage_read` and `file_read` metrics.
 - `filename` — the display name stored in the database. If empty, the final component of `path` is used. This parameter accepts an optional path prefix (e.g., `"vacation/IMG_1234.JPG"`) for correct AAE sidecar pairing when importing from a directory hierarchy. See the [Storage and Data Model](storage.md#aae-sidecars) guide for details.
 
-**Returns:** an `AddResult`. On success, `code` is `ErrorCode::Ok` and `id` is the SHA256 hex string (64 characters). On failure, `code` is a non-Ok error code and `message` contains a human-readable description.
+**Returns:** an `AddResult`. On success, `code` is `ErrorCode::Ok` and `id` is the SHA256 hex string (64 characters). On `DuplicateFile`, `id` is the existing entry's id (also in the concurrent-add race). On other failures, `code` is a non-Ok error code and `message` contains a human-readable description.
 
 **Example:**
 
@@ -373,7 +373,7 @@ enum class ErrorCode {
 ```cpp
 struct AddResult {
     ErrorCode code{ErrorCode::Ok};
-    std::string id;      // SHA256 hex string (64 chars); set on Ok and DuplicateFile
+    std::string id;      // SHA256 hex string (64 chars); set on Ok and DuplicateFile (the existing id)
     std::string message; // Human-readable error description; set on non-Ok
 };
 ```

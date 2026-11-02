@@ -206,3 +206,9 @@
 - **Task**: Finish access-log JSON tests and run full suite.
 - **Outcome**: 135 shell checks + 15 CPPUnit cases. Found/fixed (by l5-dev) empty client_ip on unmatched routes; bytes decided always numeric. Suite 42/42 clang x2, g++ x1.
 - **Next Step**: None.
+
+## [2026-11-02 12:00] - fx2 tests: HEIC truncation, duplicate id, memory-report shutdown
+- **Agent**: fx2-test
+- **Task**: Write tests for F1/F2/F3 and verify the full suite.
+- **Outcome**: Added HeicTruncationTest, DuplicateIdTest, server_heic_test and 3 imagestore_cli checks; tightened the equivalence test. 44/44 on clang x2 and g++ x1. See docs/testing/fixes-fx2.md.
+- **Next Step**: None.

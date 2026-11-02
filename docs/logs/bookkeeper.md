@@ -105,3 +105,21 @@
 - **Task**: Add CLAUDE.md malloc-arena bullet and the --memory-report shutdown-lag Next work item.
 - **Outcome**: Edited CLAUDE.md (new "Malloc arena cap" bullet) and docs/plan/README.md (new item 6, decoder-memory item renumbered to 7).
 - **Next Step**: none
+
+## [2026-11-02 22:00] — fx2 docs: HEIC strict decoding, duplicate id, memory-report stop
+- **Agent**: bookkeeper (fx2-docs)
+- **Task**: Document fixes F1-F3 and remove "Next work" items 4-6.
+- **Outcome**: Edited docs/plan/README.md (items removed, decoder-memory renumbered to 4), validations/heic/CLAUDE.md, docs/user/formats.md, docs/user/api-reference.md, docs/user/architecture.md, docs/user/imagestore-cli.md (added --memory-report/--memory-interval), docs/testing/streaming.md. Verified against heic_validator.cpp, HeicStreamValidatorImpl.cpp, Imager.cpp, MemoryReporter.cpp.
+- **Next Step**: Test counts (CLAUDE.md and others) once team-lead reports the final number.
+
+## [2026-11-02 22:20] — imagestore-cli.md drift and HEIC residual risk
+- **Agent**: bookkeeper (fx2-docs)
+- **Task**: Remove stale `--graph` text; add HEIC strict-decoding residual-risk note.
+- **Outcome**: docs/user/imagestore-cli.md options table, exclusivity rules and examples now match `imagestore --help` (`--delete` added, `--graph` removed). Risk note added to validations/heic/CLAUDE.md and docs/user/formats.md.
+- **Next Step**: Update test count when team-lead confirms (expected 44).
+
+## [2026-11-02 22:30] — Test count 44
+- **Agent**: bookkeeper (fx2-docs)
+- **Task**: Update test count after server_heic_test.
+- **Outcome**: CLAUDE.md (count + list), docs/analysis/ANALYSIS.md, docs/user/getting-started.md now say 44.
+- **Next Step**: none

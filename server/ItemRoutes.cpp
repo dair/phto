@@ -23,8 +23,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr size_t ID_LEN = 64;
-
 /// Strip any directory components (both separators) from a client-supplied name.
 std::string baseName(std::string name) {
   auto pos = name.find_last_of("/\\");
@@ -170,13 +168,8 @@ crow::response storeUpload(imager::Imager& imager, const crow::request& req, Spo
     case ErrorCode::Ok:
     case ErrorCode::DuplicateFile: {
       const bool dup = r.code == ErrorCode::DuplicateFile;
-      std::string id = r.id;
-      if (id.empty() && dup && r.message.size() >= ID_LEN) {
-        // Some facade paths report the duplicate id only in the message tail.
-        id = r.message.substr(r.message.size() - ID_LEN);
-      }
       crow::json::wvalue body;
-      body["id"] = std::move(id);
+      body["id"] = r.id;
       body["duplicate"] = dup;
       return jsonOk(dup ? 200 : 201, body);
     }

@@ -33,3 +33,4 @@ Cross-cutting test structure, build/run commands, and conventions live in
 | Post-0022 fix-ups — startup errors, SIGTERM drain, `/auth/password` throttle (`server_fixups_test`; imageradmin guards in `imageradmin_cli_tests`) | [fixups.md](fixups.md) | complete | 7/7 (100%) |
 | Streaming ingest — bounded memory, 8 MB threshold (`ImagerTests` equivalence, `ImagerMemoryTests`, `server_streaming_mem_test`, `imagestore_dryrun_streaming_tests`) | [streaming.md](streaming.md) | complete | 4/4 (100%) |
 | Server request metrics — admin `/stats` sections, Prometheus `/metrics` (`server_metrics_test`, 87 checks) | [metrics.md](metrics.md) | complete | 6/6 (100%) |
+| Fix step fx2 — HEIC truncation, duplicate id from `addFile`, `--memory-report` shutdown (`ImagerTests`, `server_heic_test`, `imagestore_cli_tests`) | [fixes-fx2.md](fixes-fx2.md) | complete | 3/3 (100%) |

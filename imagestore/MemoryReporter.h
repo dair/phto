@@ -1,10 +1,11 @@
 #pragma once
 
-#include <atomic>
-#include <chrono>
-#include <thread>
-
 #include <metrics/Metrics.h>
+
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include "ResultLog.h"
 #include "Stats.h"
@@ -38,7 +39,9 @@ private:
   const Stats& m_stats;
   const metrics::Metrics& m_metrics;
   ResultLog& m_resultLog;
-  std::atomic<bool> m_stop{false};
+  std::mutex m_mutex;
+  std::condition_variable m_cv;
+  bool m_stop{false};
   std::thread m_thread;
 };
 

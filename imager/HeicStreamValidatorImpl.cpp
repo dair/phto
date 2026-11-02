@@ -28,6 +28,13 @@ struct ImageDeleter {
   }
 };
 
+struct OptionsDeleter {
+  void operator()(heif_decoding_options* o) const noexcept {
+    heif_decoding_options_free(o);
+  }
+};
+
+using OptionsPtr = std::unique_ptr<heif_decoding_options, OptionsDeleter>;
 using ContextPtr = std::unique_ptr<heif_context, ContextDeleter>;
 using HandlePtr = std::unique_ptr<heif_image_handle, HandleDeleter>;
 using ImagePtr = std::unique_ptr<heif_image, ImageDeleter>;
@@ -117,7 +124,16 @@ public:
     HandlePtr handle{rawHandle};
 
     heif_image* rawImg = nullptr;
-    err = heif_decode_image(handle.get(), &rawImg, heif_colorspace_RGB, heif_chroma_interleaved_RGB, nullptr);
+    // strict_decoding is what makes truncation fail: with default (lenient) options libheif 1.21 returns Ok with the
+    // full declared dimensions for files cut at 5-99% and only records decoding warnings. Strict mode returns an
+    // error (iloc extent outside file) at every cut point tried; intact plain/alpha/10-bit/grid files still pass.
+    // Keep identical to heic_validator.cpp (StreamValidatorEquivalenceTest).
+    OptionsPtr opts{heif_decoding_options_alloc()};
+    if (!opts) {
+      return {false, "HEIC/HEIF: cannot allocate decoding options"};
+    }
+    opts->strict_decoding = 1;
+    err = heif_decode_image(handle.get(), &rawImg, heif_colorspace_RGB, heif_chroma_interleaved_RGB, opts.get());
     if (err.code != heif_error_Ok) {
       return {false, "HEIC/HEIF image decode failed"};
     }

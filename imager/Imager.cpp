@@ -365,7 +365,7 @@ AddResult Imager::Impl::addImageImpl(const Blob& blob, const std::string& filena
     metrics::SizedGaugeGuard sg(metrics.inflight_dedup_checking, metrics.inflight_dedup_checking_bytes, blobSize);
     metrics::Timer t(metrics.dedup_check);
     if (dbs.fileExists(id)) {
-      return {ErrorCode::DuplicateFile, "", "File already exists: " + id};
+      return {ErrorCode::DuplicateFile, id, "File already exists: " + id};
     }
   } catch (const db::DatabaseException& e) {
     metrics.images_failed.add(1);
@@ -451,7 +451,7 @@ AddResult Imager::Impl::addImageImpl(const Blob& blob, const std::string& filena
       if (e.code() == db::DatabaseErrorCode::ConstraintViolation) {
         // Clean up storage — already written with storageId
         coro::blockOn(pool, storage.deleteFileAsync(storageId, ext));
-        return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
+        return {ErrorCode::DuplicateFile, id, "Duplicate file: " + id};
       }
       coro::blockOn(pool, storage.deleteFileAsync(storageId, ext));
       metrics.images_failed.add(1);
@@ -518,7 +518,7 @@ AddResult Imager::Impl::addImageImpl(const Blob& blob, const std::string& filena
     dbs.addFile(id, bareName, blob.size(), ext);
   } catch (const db::DatabaseException& e) {
     if (e.code() == db::DatabaseErrorCode::ConstraintViolation) {
-      return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
+      return {ErrorCode::DuplicateFile, id, "Duplicate file: " + id};
     }
     // Roll back storage
     coro::blockOn(pool, storage.deleteFileAsync(id, ext));
@@ -805,7 +805,7 @@ AddResult Imager::Impl::addFileLarge(
     metrics::SizedGaugeGuard sg(metrics.inflight_dedup_checking, metrics.inflight_dedup_checking_bytes, fileSz);
     metrics::Timer t(metrics.dedup_check);
     if (dbs.fileExists(id)) {
-      return {ErrorCode::DuplicateFile, "", "File already exists: " + id};
+      return {ErrorCode::DuplicateFile, id, "File already exists: " + id};
     }
   } catch (const db::DatabaseException& e) {
     metrics.images_failed.add(1);
@@ -837,7 +837,7 @@ AddResult Imager::Impl::addFileLarge(
     dbs.addFile(id, bareName, fileSize, ext);
   } catch (const db::DatabaseException& e) {
     if (e.code() == db::DatabaseErrorCode::ConstraintViolation) {
-      return {ErrorCode::DuplicateFile, "", "Duplicate file: " + id};
+      return {ErrorCode::DuplicateFile, id, "Duplicate file: " + id};
     }
     coro::blockOn(pool, storage.deleteFileAsync(id, ext));
     metrics.images_failed.add(1);

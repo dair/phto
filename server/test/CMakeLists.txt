@@ -446,3 +446,27 @@ add_test(
 )
 
 set_tests_properties(server_access_log_json_test PROPERTIES TIMEOUT 240)
+
+# ---- server_heic_test — truncated HEIC → 400 BrokenFile, valid/duplicate HEIC (ports 19680–19699) ----
+
+set(HEIC_FIXTURE "${CMAKE_SOURCE_DIR}/validations/heic/test/fixtures/valid.heic")
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_heic.sh.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/test_heic.sh"
+    @ONLY
+)
+
+file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test_heic.sh"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+
+add_test(
+    NAME server_heic_test
+    COMMAND bash "${CMAKE_CURRENT_BINARY_DIR}/test_heic.sh"
+)
+
+set_tests_properties(server_heic_test PROPERTIES TIMEOUT 120)

@@ -108,7 +108,7 @@ cmake --build build
 ctest --preset default
 ```
 
-All tests use temporary directories and clean up after themselves. A passing run ends with the summary below (per-test lines omitted; `ctest --preset default -N` lists all 43 tests):
+All tests use temporary directories and clean up after themselves. A passing run ends with the summary below (per-test lines omitted; `ctest --preset default -N` lists all 44 tests):
 
 ```
 Test project <repo>/build

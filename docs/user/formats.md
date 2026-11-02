@@ -85,7 +85,7 @@ All extension matching is case-insensitive. `.JPG`, `.Jpg`, and `.jpg` are all r
 **What validation checks:**
 
 - The file is a valid HEIF container (ISO Base Media File Format)
-- The container can be decoded by libheif without errors
+- The container can be decoded by libheif without errors (strict decoding: truncated files are rejected, not just warned about)
 - At least one image item is present in the container
 
 **Accepted files:**
@@ -98,11 +98,12 @@ All extension matching is case-insensitive. `.JPG`, `.Jpg`, and `.jpg` are all r
 **Rejected files:**
 
 - Files that are not valid HEIF containers
-- Files where libheif reports a decode error
+- Files where libheif reports a decode error, including truncated files
 - Containers with no image items
 
 **Notes:**
 
+- **Residual risk:** strict decoding was verified on one 12 MP fixture and generated plain, alpha, 10-bit and grid HEICs. It is not verified on multi-image files, HDR (NCLX/PQ) files or other real camera/iPhone files. If a valid HEIC is rejected as `BrokenFile`, suspect strict decoding first.
 - HEIF is a container format. Imager validates that the container is well-formed and decodable, not that a specific codec is present.
 - `.avif` files (AVIF images) technically use the same HEIF container. They are not listed as a recognized extension, but if passed with a `.heic` or `.heif` extension they will be validated successfully.
 

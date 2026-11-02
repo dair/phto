@@ -23,7 +23,7 @@ Returns `WRONG` if the data lacks an ISOBMFF ftyp box, `INVALID` if the containe
 
 ## Validation strategy
 
-Five steps: magic check (ftyp at offset 4) → container parse → primary image handle → full decode → cleanup. Full decode forces the codec plugin to decompress the image, catching codec-level corruption. RAII wrappers (`ContextPtr`, `HandlePtr`, `ImagePtr`) ensure cleanup on all paths.
+Five steps: magic check (ftyp at offset 4) → container parse → primary image handle → full decode → cleanup. Full decode uses `heif_decoding_options` with `strict_decoding = 1`: libheif's default lenient decoding accepts truncated files and only records decoding warnings, so strict mode is required to reject them (the stream validator `imager/HeicStreamValidatorImpl.cpp` does the same). Full decode forces the codec plugin to decompress the image, catching codec-level corruption. RAII wrappers (`ContextPtr`, `HandlePtr`, `ImagePtr`) ensure cleanup on all paths.
 
 ## Test data
 
@@ -32,3 +32,7 @@ Tests use a 273-byte AVIF file (HEIF container with AV1 compression) embedded as
 ## Supported extensions
 
 `.heic` and `.heif` — handled by `HeicValidator` in `imager/HeicValidatorImpl.cpp`.
+
+## Known residual risk: strict decoding
+
+Strict decoding was verified on the 12 MP fixture and on generated plain 8-bit, RGBA (alpha), 10-bit and 2x2 grid HEICs (all intact files accepted, every truncation rejected). It was NOT verified on multi-image files (several top-level images), HDR files with NCLX/PQ profiles, or real camera/iPhone files beyond the fixture. If a valid real-world HEIC is ever rejected as `BrokenFile`, suspect `strict_decoding` first.

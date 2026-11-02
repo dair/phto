@@ -305,3 +305,9 @@
 - **Task**: Fill client IP for unmatched-route requests without invalidating existing patched Crow trees.
 - **Outcome**: crow-body-sink.patch restored to its original content; new third_party/crow/crow-remote-ip.patch (one line in handle_url()); apply_patch.cmake now takes PATCH_FILES ("|"-separated) with per-patch reverse-check-then-apply; CMakeLists.txt passes both. Verified in a scratch fresh configure (both applied) and by removing the line and re-configuring (re-applied). Scratch dirs deleted.
 - **Next Step**: l5-test re-configures and rebuilds build/; l5-docs documents the unmatched-route limits.
+
+## [2026-11-02 21:40] - fx2-dev: HEIC strict decoding, duplicate id, MemoryReporter stop
+- **Agent**: fx2-dev
+- **Task**: F1 weak HEIC validation, F2 empty id on DuplicateFile, F3 --memory-report shutdown lag.
+- **Outcome**: F1: probe showed libheif returns Ok for truncated files (only decoding warnings, full dimensions); strict_decoding=1 rejects every truncation 5-99% and passes intact fixture plus generated plain/alpha/10-bit/grid HEICs (all truncations rejected). Applied in heic_validator.cpp and HeicStreamValidatorImpl.cpp. F2: all addFile/addImage DuplicateFile results (incl. ConstraintViolation race paths) carry id; removed server message-tail workaround and ID_LEN. imagestore DUP output unchanged (no id shown). F3: MemoryReporter uses mutex+condition_variable wait_for with predicate; stop() wakes immediately; output unchanged. clang and g++ clean (-Werror), 43/43 tests pass.
+- **Next Step**: fx2-test rebuilds and verifies; fx2-docs updates docs.

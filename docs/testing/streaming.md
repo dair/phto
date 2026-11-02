@@ -27,8 +27,8 @@
 
 ## Known Gaps
 - Streamed-path oracle comparison to the Blob API only up to 64 MiB (larger files compare file ops with each other).
-- **Pre-existing finding (HEIC leniency):** libheif accepts a half-truncated HEIC on every path (Blob and stream agree); equivalence is asserted, rejection is not.
+- **Fixed (fx2/F1):** both HEIC validators now decode with `strict_decoding = 1`; truncated HEICs are rejected on the Blob and stream paths (asserted in `StreamValidatorEquivalenceTest`, `HeicTruncationTest`). Previously libheif accepted a half-truncated file.
 - **Fixed bugs found by these tests:** (1) `HeicStreamValidator` rejected valid HEICs (`heifWaitForFileSize` never reported beyond-EOF); (2) `NefStreamValidator` (`libraw_open_file`) accepted a NEF with corrupt IFD0 offset that the Blob validator rejects — now uses a clamped datastream.
-- Pre-existing behaviours documented, not changed: `addFile` returns empty id on DuplicateFile; libheif accepts truncated-half HEIC; stage reporting differs between in-memory (Validating) and streamed (Hashing) paths.
+- Fixed (fx2/F2): `addFile`/`addImage` now return the existing id with `DuplicateFile` (`DuplicateIdTest`). Pre-existing behaviour documented, not changed: stage reporting differs between in-memory (Validating) and streamed (Hashing) paths.
 - No concurrency stress (many files in flight) memory test.
 - StreamingEquivalenceTest.cpp exceeds 300 lines (could be split).

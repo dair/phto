@@ -27,7 +27,7 @@ find_package(SQLite3 REQUIRED)
 
 find_package(PNG REQUIRED)
 
-add_executable(imager_tests ImagerTest.cpp MultiTargetTest.cpp LargeFileTest.cpp StreamingEquivalenceTest.cpp StreamValidatorEquivalenceTest.cpp)
+add_executable(imager_tests ImagerTest.cpp MultiTargetTest.cpp LargeFileTest.cpp StreamingEquivalenceTest.cpp StreamValidatorEquivalenceTest.cpp HeicTruncationTest.cpp DuplicateIdTest.cpp)
 
 target_include_directories(imager_tests
     PRIVATE ${CPPUNIT_INCLUDE_DIRS}
@@ -68,6 +68,10 @@ add_test(NAME TimestampTests COMMAND timestamp_tests)
 
 # Streaming equivalence uses libpng to synthesise a valid PNG fixture.
 target_link_libraries(imager_tests PRIVATE PNG::PNG)
+
+# HeicTruncationTest synthesises valid HEICs with libheif's encoder.
+find_package(libheif REQUIRED)
+target_link_libraries(imager_tests PRIVATE heif)
 
 # Memory-bound ingest test: own process so VmHWM is not polluted by other suites.
 add_executable(imager_memory_tests StreamingMemoryTest.cpp)
